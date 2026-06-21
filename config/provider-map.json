@@ -1,0 +1,27 @@
+{
+  "stock": {
+    "quote": ["alpaca", "finnhub", "fmp"],
+    "candles": ["alpaca", "twelvedata", "fmp"],
+    "news": ["finnhub", "fmp"]
+  },
+  "etf": {
+    "quote": ["alpaca", "finnhub"],
+    "candles": ["alpaca", "twelvedata"],
+    "news": ["finnhub", "fmp"]
+  },
+  "crypto": {
+    "quote": ["alpaca", "binance", "coinbase"],
+    "candles": ["alpaca", "binance", "coinbase"],
+    "news": ["finnhub"]
+  },
+  "index": {
+    "quote": ["fmp", "finnhub"],
+    "candles": ["fmp", "twelvedata"],
+    "news": ["finnhub"]
+  },
+  "forex": {
+    "quote": ["fmp", "twelvedata"],
+    "candles": ["fmp", "twelvedata"],
+    "news": ["finnhub"]
+  }
+}

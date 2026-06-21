@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Exit Rules</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Local-only dashboard</div>
+          <h1>Exit Rules</h1>
+          <p class="lede">Focused view for the scanner thresholds and the profit floor used by the read-only dashboard. Nothing on this page can change live behavior.</p>
+        </div>
+        <div class="header-metrics">
+          <div class="metric-chip">
+            <span>Dashboard port</span>
+            <strong id="dashboardPort">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Trader base URL</span>
+            <strong id="traderBaseUrl">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Current regime</span>
+            <strong id="regimeValue">-</strong>
+          </div>
+        </div>
+        <nav class="page-tabs" aria-label="Dashboard pages">
+          <a class="page-tab" href="/">Home</a>
+          <a class="page-tab" href="/status">Status</a>
+          <a class="page-tab" href="/policy">Policy</a>
+          <a class="page-tab active" href="/exit-rules">Exit Rules</a>
+          <a class="page-tab" href="/alerts">Alerts</a>
+          <a class="page-tab" href="/control">Operator tab</a>
+        </nav>
+      </header>
+
+      <section class="hero-grid">
+        <article class="hero-card">
+          <div class="card-head">
+            <span class="card-title">Profit exit</span>
+            <span class="pill warn" id="rulePill">Loading</span>
+          </div>
+          <div class="threshold-block">
+            <div class="threshold-value" id="profitExitThreshold">-</div>
+            <div class="threshold-caption">Profit-exit threshold</div>
+          </div>
+          <div class="threshold-details">
+            <div><strong>Net profit floor</strong> <span id="profitExitFloor">-</span></div>
+            <div><strong>Loss exit threshold</strong> <span id="lossExitThreshold">-</span></div>
+          </div>
+          <div class="threshold-details" id="thresholdDetails"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid wide">
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Rule summary</span>
+            <span class="subtle">current live snapshot</span>
+          </div>
+          <div class="policy-grid" id="ruleGrid"></div>
+        </article>
+
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Alerts and warnings</span>
+            <span class="subtle">shared snapshot signals</span>
+          </div>
+          <div class="alerts" id="alerts"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/exit-rules.js"></script>
+  </body>
+</html>

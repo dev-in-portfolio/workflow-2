@@ -1,0 +1,9 @@
+node_modules/
+coverage/
+dist/
+data/
+.codex-remote-attachments/
+.DS_Store
+*.log
+.env
+.env.local

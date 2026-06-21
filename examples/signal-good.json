@@ -1,0 +1,18 @@
+{
+  "signal_id": "sig-good",
+  "symbol": "AAPL",
+  "asset_type": "stock",
+  "strategy_name": "breakout",
+  "timeframe": "5m",
+  "direction": "bullish",
+  "stop_loss": 190,
+  "take_profit": 220,
+  "confidence_score": 90,
+  "liquidity_score": 92,
+  "freshness_score": 95,
+  "risk_score": 20,
+  "evidence": [
+    { "source": "news", "sentiment": "positive" },
+    { "source": "price", "sentiment": "bullish" }
+  ]
+}

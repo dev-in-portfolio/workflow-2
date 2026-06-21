@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>System Status</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Local-only dashboard</div>
+          <h1>Status</h1>
+          <p class="lede">Focused view for trader health, runtime freshness, and the current system mode. This page stays read-only and never mutates the trading stack.</p>
+        </div>
+        <div class="header-metrics">
+          <div class="metric-chip">
+            <span>Dashboard port</span>
+            <strong id="dashboardPort">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Trader base URL</span>
+            <strong id="traderBaseUrl">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Regime</span>
+            <strong id="regimeValue">-</strong>
+          </div>
+        </div>
+        <nav class="page-tabs" aria-label="Dashboard pages">
+          <a class="page-tab" href="/">Home</a>
+          <a class="page-tab active" href="/status">Status</a>
+          <a class="page-tab" href="/policy">Policy</a>
+          <a class="page-tab" href="/exit-rules">Exit Rules</a>
+          <a class="page-tab" href="/alerts">Alerts</a>
+          <a class="page-tab" href="/control">Operator tab</a>
+        </nav>
+      </header>
+
+      <section class="hero-grid">
+        <article class="hero-card">
+          <div class="card-head">
+            <span class="card-title">System status</span>
+            <span class="pill warn" id="statusPill">Loading</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <span>Trader state</span>
+              <strong id="traderStateValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Mode</span>
+              <strong id="modeValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Regime</span>
+              <strong id="regimeValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Uptime</span>
+              <strong id="uptimeValue">-</strong>
+            </div>
+          </div>
+          <div class="policy-grid">
+            <div class="policy-item">
+              <span>Freshness</span>
+              <strong id="freshnessValue">-</strong>
+            </div>
+            <div class="policy-item">
+              <span>Dashboard URL</span>
+              <strong id="dashboardUrlValue">-</strong>
+            </div>
+            <div class="policy-item">
+              <span>Last snapshot</span>
+              <strong id="snapshotTimeValue">-</strong>
+            </div>
+            <div class="policy-item">
+              <span>Heartbeat</span>
+              <strong id="heartbeatValue">-</strong>
+            </div>
+          </div>
+          <div class="policy-grid">
+            <div class="policy-item">
+              <span>Market open</span>
+              <strong id="marketOpenValue">-</strong>
+            </div>
+            <div class="policy-item">
+              <span>Scanner last scan</span>
+              <strong id="scannerScanValue">-</strong>
+            </div>
+            <div class="policy-item">
+              <span>Top skip reason</span>
+              <strong id="scannerSkipValue">-</strong>
+            </div>
+            <div class="policy-item">
+              <span>Exit management</span>
+              <strong id="exitManagementValue">-</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel-grid wide">
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Operator timeline</span>
+            <span class="subtle">workflow, scanner, fills</span>
+          </div>
+          <div class="timeline" id="operatorTimeline"></div>
+        </article>
+
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Source health</span>
+            <span class="subtle">read-only inputs</span>
+          </div>
+          <div class="source-grid" id="sourceHealth"></div>
+        </article>
+
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Alerts and warnings</span>
+            <span class="subtle">freshness and reachability</span>
+          </div>
+          <div class="alerts" id="alerts"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/status.js"></script>
+  </body>
+</html>

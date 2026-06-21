@@ -1,0 +1,12 @@
+{
+  "provider": "alpaca",
+  "asset_type": "stock",
+  "symbol": "AAPL",
+  "kind": "quote",
+  "timestamp": "2026-06-14T13:00:00.000Z",
+  "received_at": "2026-06-14T13:00:01.000Z",
+  "price": 200.12,
+  "volume": 152300,
+  "confidence": 92,
+  "reliability": 90
+}

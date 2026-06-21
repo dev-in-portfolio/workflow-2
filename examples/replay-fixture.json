@@ -1,0 +1,40 @@
+[
+  {
+    "market_data": {
+      "provider": "alpaca",
+      "symbol": "AAPL",
+      "asset_type": "stock",
+      "timestamp": "2026-06-14T13:00:00.000Z",
+      "received_at": "2026-06-14T13:00:01.000Z",
+      "price": 200,
+      "volume": 200000
+    },
+    "signal": {
+      "signal_id": "sig-replay",
+      "symbol": "AAPL",
+      "asset_type": "stock",
+      "strategy_name": "breakout",
+      "timeframe": "5m",
+      "direction": "bullish",
+      "stop_loss": 190,
+      "take_profit": 220,
+      "confidence_score": 90,
+      "liquidity_score": 90,
+      "freshness_score": 95,
+      "risk_score": 10,
+      "evidence": [{ "sentiment": "positive" }]
+    },
+    "portfolio": {
+      "trade_count_today": 0,
+      "daily_loss": 0,
+      "position_notional": 0,
+      "available": true
+    },
+    "market_context": {
+      "market_closed": false,
+      "volatility_pct": 2,
+      "spread_slippage_pct": 0.1,
+      "volume": 200000
+    }
+  }
+]

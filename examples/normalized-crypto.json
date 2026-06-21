@@ -1,0 +1,12 @@
+{
+  "provider": "coinbase",
+  "asset_type": "crypto",
+  "symbol": "BTCUSDT",
+  "kind": "quote",
+  "timestamp": "2026-06-14T13:00:00.000Z",
+  "received_at": "2026-06-14T13:00:01.000Z",
+  "price": 69000.12,
+  "volume": 2300,
+  "confidence": 89,
+  "reliability": 86
+}

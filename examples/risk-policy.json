@@ -1,0 +1,11 @@
+{
+  "killSwitch": false,
+  "paperAdapterEnabled": true,
+  "requireHumanApproval": true,
+  "minConfidenceForPaper": 72,
+  "minLiquidityScore": 40,
+  "minProviderConfirmationScore": 70,
+  "minEdgeScore": 60,
+  "blockedCalibrationBuckets": [],
+  "minVolume": 50000
+}

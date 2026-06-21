@@ -1,0 +1,12 @@
+{
+  "date": "2026-06-14",
+  "total_signals": 1,
+  "approved_for_paper": 1,
+  "blocked_by_risk": 0,
+  "alert_only": 0,
+  "paper_orders": 1,
+  "paper_fills": 1,
+  "realized_paper_pnl": 0,
+  "unrealized_paper_pnl": 0,
+  "max_drawdown": 0
+}

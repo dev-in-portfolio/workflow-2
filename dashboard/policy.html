@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Policy</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Local-only dashboard</div>
+          <h1>Policy</h1>
+          <p class="lede">Focused view for the active policy snapshot, exit thresholds, and effectiveness signals. This is read-only and does not change any live behavior.</p>
+        </div>
+        <div class="header-metrics">
+          <div class="metric-chip">
+            <span>Dashboard port</span>
+            <strong id="dashboardPort">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Trader base URL</span>
+            <strong id="traderBaseUrl">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Policy source</span>
+            <strong id="policySourceValue">-</strong>
+          </div>
+        </div>
+        <nav class="page-tabs" aria-label="Dashboard pages">
+          <a class="page-tab" href="/">Home</a>
+          <a class="page-tab" href="/status">Status</a>
+          <a class="page-tab active" href="/policy">Policy</a>
+          <a class="page-tab" href="/exit-rules">Exit Rules</a>
+          <a class="page-tab" href="/alerts">Alerts</a>
+          <a class="page-tab" href="/control">Operator tab</a>
+        </nav>
+      </header>
+
+      <section class="hero-grid">
+        <article class="hero-card">
+          <div class="card-head">
+            <span class="card-title">Current policy</span>
+            <span class="pill warn" id="policyPill">Loading</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <span>Profit exit</span>
+              <strong id="profitExitValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Net floor</span>
+              <strong id="profitFloorValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Loss exit</span>
+              <strong id="lossExitValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Snapshot age</span>
+              <strong id="snapshotAgeValue">-</strong>
+            </div>
+          </div>
+          <div class="policy-grid" id="policyGrid"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid wide">
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Effectiveness</span>
+            <span class="subtle">approved vs blocked</span>
+          </div>
+          <div class="kpi-grid compact">
+            <div class="kpi">
+              <span>Approved</span>
+              <strong id="approvedCountValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Blocked</span>
+              <strong id="blockedCountValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Approval ratio</span>
+              <strong id="approvalRatioValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Today PnL</span>
+              <strong id="pnlValue">-</strong>
+            </div>
+          </div>
+          <div class="progress-stack">
+            <div class="progress-line">
+              <span>Approved</span>
+              <div class="bar"><div class="bar-approved" id="approvedBar"></div></div>
+              <small id="approvedText">-</small>
+            </div>
+            <div class="progress-line">
+              <span>Blocked</span>
+              <div class="bar"><div class="bar-blocked" id="blockedBar"></div></div>
+              <small id="blockedText">-</small>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Alerts and warnings</span>
+            <span class="subtle">policy drift and stale data</span>
+          </div>
+          <div class="alerts" id="alerts"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/policy.js"></script>
+  </body>
+</html>

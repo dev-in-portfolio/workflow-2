@@ -1,0 +1,18 @@
+{
+  "request_id": "req_abc123",
+  "signal_id": "sig_good",
+  "asset_id": "asset_aapl",
+  "symbol": "AAPL",
+  "side": "buy",
+  "order_type": "market",
+  "quantity": 5,
+  "stop_loss": 190,
+  "take_profit": 220,
+  "time_in_force": "day",
+  "strategy_name": "breakout",
+  "confidence_score": 90,
+  "risk_decision_id": "risk_abc123",
+  "human_approval_id": "human_abc123",
+  "created_by": "system",
+  "created_at": "2026-06-14T13:00:00.000Z"
+}

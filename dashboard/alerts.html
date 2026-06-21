@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Alerts</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Local-only dashboard</div>
+          <h1>Alerts</h1>
+          <p class="lede">Focused view for warnings, stale snapshots, and degraded read-only sources. This page is passive and cannot mutate anything.</p>
+        </div>
+        <div class="header-metrics">
+          <div class="metric-chip">
+            <span>Dashboard port</span>
+            <strong id="dashboardPort">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Trader base URL</span>
+            <strong id="traderBaseUrl">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Alert count</span>
+            <strong id="alertCountValue">-</strong>
+          </div>
+        </div>
+        <nav class="page-tabs" aria-label="Dashboard pages">
+          <a class="page-tab" href="/">Home</a>
+          <a class="page-tab" href="/status">Status</a>
+          <a class="page-tab" href="/policy">Policy</a>
+          <a class="page-tab" href="/exit-rules">Exit Rules</a>
+          <a class="page-tab active" href="/alerts">Alerts</a>
+          <a class="page-tab" href="/control">Operator tab</a>
+        </nav>
+      </header>
+
+      <section class="hero-grid">
+        <article class="hero-card">
+          <div class="card-head">
+            <span class="card-title">Warnings</span>
+            <span class="pill warn" id="alertPill">Loading</span>
+          </div>
+          <div class="performance-note" id="alertSummary">-</div>
+          <div class="performance-note" id="runtimeSummary">-</div>
+        </article>
+      </section>
+
+      <section class="panel-grid wide">
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Alerts and warnings</span>
+            <span class="subtle">stale or degraded sources</span>
+          </div>
+          <div class="alerts" id="alerts"></div>
+        </article>
+
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Source health</span>
+            <span class="subtle">read-only inputs</span>
+          </div>
+          <div class="source-grid" id="sourceHealth"></div>
+        </article>
+
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Recent timeline</span>
+            <span class="subtle">latest local events</span>
+          </div>
+          <div class="timeline" id="operatorTimeline"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/alerts.js"></script>
+  </body>
+</html>

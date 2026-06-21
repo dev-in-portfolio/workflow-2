@@ -1,0 +1,208 @@
+const fs = require('fs');
+const path = require('path');
+
+const DEFAULTS = {
+  TRADING_MODE: 'paper',
+  LIVE_TRADING_ENABLED: false,
+  REQUIRE_HUMAN_APPROVAL: true,
+  KILL_SWITCH: true,
+  MAX_DAILY_LOSS: 250,
+  MAX_POSITION_NOTIONAL: 1000,
+  MAX_OPEN_POSITIONS: 12,
+  MAX_TRADES_PER_DAY: 8,
+  AUTO_POLICY_REFRESH: false,
+  AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT: 2,
+  AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE: 50,
+  AUTO_POLICY_REFRESH_MIN_PAPER_OUTCOMES: 1,
+  MIN_CONFIDENCE_FOR_PAPER: 72,
+  MIN_LIQUIDITY_SCORE: 40,
+  MIN_PROVIDER_CONFIRMATION_SCORE: 70,
+  MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE: 35,
+  MIN_SELL_PROVIDER_CONFIRMATION_SCORE: 60,
+  SELL_MAX_PROVIDER_PRICE_DIFF_PCT: 0.75,
+  MIN_EDGE_SCORE: 60,
+  MIN_VOLUME: 1000,
+  BUY_NOTIONAL_TARGET: 200,
+  MIN_BUY_NOTIONAL: 25,
+  VOLATILITY_THRESHOLD_PCT: 6,
+  BLOCKED_BUY_CALIBRATION_BUCKETS: [],
+  BLOCK_BUYS: false,
+  MAX_STALENESS_SECONDS: 60,
+  DATA_PROVIDER_PRIMARY: 'alpaca',
+  DATA_PROVIDER_SECONDARY: 'finnhub',
+  DATA_PROVIDER_FALLBACK: 'fmp',
+  AUDIT_LOG_ENABLED: true,
+  PAPER_ADAPTER_ENABLED: true,
+  REPLAY_MODE: false,
+  ALPACA_EXECUTION_ENABLED: false,
+  ALPACA_API_KEY_ID: '',
+  ALPACA_API_SECRET_KEY: '',
+  ALPACA_API_BASE_URL: '',
+};
+
+function parseBool(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseNumber(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseCsvList(value, fallback = []) {
+  if (value === undefined || value === null || value === '') return Array.isArray(fallback) ? fallback.slice() : [];
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry).trim()).filter(Boolean);
+  }
+  return String(value)
+    .split(',')
+    .map((entry) => String(entry).trim())
+    .filter(Boolean);
+}
+
+function loadConfig(env = process.env) {
+  const config = {
+    TRADING_MODE: String(env.TRADING_MODE || DEFAULTS.TRADING_MODE).toLowerCase(),
+    LIVE_TRADING_ENABLED: parseBool(env.LIVE_TRADING_ENABLED, DEFAULTS.LIVE_TRADING_ENABLED),
+    REQUIRE_HUMAN_APPROVAL: parseBool(env.REQUIRE_HUMAN_APPROVAL, DEFAULTS.REQUIRE_HUMAN_APPROVAL),
+    KILL_SWITCH: parseBool(env.KILL_SWITCH, DEFAULTS.KILL_SWITCH),
+    MAX_DAILY_LOSS: parseNumber(env.MAX_DAILY_LOSS, DEFAULTS.MAX_DAILY_LOSS),
+    MAX_POSITION_NOTIONAL: parseNumber(env.MAX_POSITION_NOTIONAL, DEFAULTS.MAX_POSITION_NOTIONAL),
+    MAX_OPEN_POSITIONS: parseNumber(env.MAX_OPEN_POSITIONS, DEFAULTS.MAX_OPEN_POSITIONS),
+    MAX_TRADES_PER_DAY: parseNumber(env.MAX_TRADES_PER_DAY, DEFAULTS.MAX_TRADES_PER_DAY),
+    AUTO_POLICY_REFRESH: parseBool(env.AUTO_POLICY_REFRESH, DEFAULTS.AUTO_POLICY_REFRESH),
+    AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT: parseNumber(env.AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT, DEFAULTS.AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT),
+    AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE: parseNumber(env.AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE, DEFAULTS.AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE),
+    AUTO_POLICY_REFRESH_MIN_PAPER_OUTCOMES: parseNumber(env.AUTO_POLICY_REFRESH_MIN_PAPER_OUTCOMES, DEFAULTS.AUTO_POLICY_REFRESH_MIN_PAPER_OUTCOMES),
+    MIN_CONFIDENCE_FOR_PAPER: parseNumber(env.MIN_CONFIDENCE_FOR_PAPER, DEFAULTS.MIN_CONFIDENCE_FOR_PAPER),
+    MIN_LIQUIDITY_SCORE: parseNumber(env.MIN_LIQUIDITY_SCORE, DEFAULTS.MIN_LIQUIDITY_SCORE),
+    MIN_PROVIDER_CONFIRMATION_SCORE: parseNumber(env.MIN_PROVIDER_CONFIRMATION_SCORE, DEFAULTS.MIN_PROVIDER_CONFIRMATION_SCORE),
+    MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE: parseNumber(env.MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE, DEFAULTS.MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE),
+    MIN_SELL_PROVIDER_CONFIRMATION_SCORE: parseNumber(env.MIN_SELL_PROVIDER_CONFIRMATION_SCORE, DEFAULTS.MIN_SELL_PROVIDER_CONFIRMATION_SCORE),
+    SELL_MAX_PROVIDER_PRICE_DIFF_PCT: parseNumber(env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, DEFAULTS.SELL_MAX_PROVIDER_PRICE_DIFF_PCT),
+    MIN_EDGE_SCORE: parseNumber(env.MIN_EDGE_SCORE, DEFAULTS.MIN_EDGE_SCORE),
+    MIN_VOLUME: parseNumber(env.MIN_VOLUME, DEFAULTS.MIN_VOLUME),
+    BUY_NOTIONAL_TARGET: parseNumber(env.BUY_NOTIONAL_TARGET, DEFAULTS.BUY_NOTIONAL_TARGET),
+    MIN_BUY_NOTIONAL: parseNumber(env.MIN_BUY_NOTIONAL, DEFAULTS.MIN_BUY_NOTIONAL),
+    VOLATILITY_THRESHOLD_PCT: parseNumber(env.VOLATILITY_THRESHOLD_PCT, DEFAULTS.VOLATILITY_THRESHOLD_PCT),
+    BLOCKED_BUY_CALIBRATION_BUCKETS: parseCsvList(env.BLOCKED_BUY_CALIBRATION_BUCKETS, DEFAULTS.BLOCKED_BUY_CALIBRATION_BUCKETS),
+    BLOCK_BUYS: parseBool(env.BLOCK_BUYS, DEFAULTS.BLOCK_BUYS),
+    MAX_STALENESS_SECONDS: parseNumber(env.MAX_STALENESS_SECONDS, DEFAULTS.MAX_STALENESS_SECONDS),
+    DATA_PROVIDER_PRIMARY: String(env.DATA_PROVIDER_PRIMARY || DEFAULTS.DATA_PROVIDER_PRIMARY),
+    DATA_PROVIDER_SECONDARY: String(env.DATA_PROVIDER_SECONDARY || DEFAULTS.DATA_PROVIDER_SECONDARY),
+    DATA_PROVIDER_FALLBACK: String(env.DATA_PROVIDER_FALLBACK || DEFAULTS.DATA_PROVIDER_FALLBACK),
+    AUDIT_LOG_ENABLED: parseBool(env.AUDIT_LOG_ENABLED, DEFAULTS.AUDIT_LOG_ENABLED),
+    PAPER_ADAPTER_ENABLED: parseBool(env.PAPER_ADAPTER_ENABLED, DEFAULTS.PAPER_ADAPTER_ENABLED),
+    REPLAY_MODE: parseBool(env.REPLAY_MODE, DEFAULTS.REPLAY_MODE),
+    ALPACA_EXECUTION_ENABLED: parseBool(env.ALPACA_EXECUTION_ENABLED, DEFAULTS.ALPACA_EXECUTION_ENABLED),
+    ALPACA_API_KEY_ID: String(env.ALPACA_API_KEY_ID || DEFAULTS.ALPACA_API_KEY_ID),
+    ALPACA_API_SECRET_KEY: String(env.ALPACA_API_SECRET_KEY || DEFAULTS.ALPACA_API_SECRET_KEY),
+    ALPACA_API_BASE_URL: String(env.ALPACA_API_BASE_URL || DEFAULTS.ALPACA_API_BASE_URL),
+    LIVE_TRADING_CONFIRMATION_PHRASE: String(env.LIVE_TRADING_CONFIRMATION_PHRASE || ''),
+    configVersion: '2026-06-14.paper-first.1',
+  };
+  validateStartupConfig(config);
+  return config;
+}
+
+function validateStartupConfig(config) {
+  const issues = [];
+  if (!['paper', 'live', 'replay'].includes(config.TRADING_MODE)) {
+    issues.push('TRADING_MODE_INVALID');
+  }
+  if (config.LIVE_TRADING_ENABLED) {
+    if (config.TRADING_MODE !== 'live') issues.push('LIVE_TRADING_REQUIRES_LIVE_MODE');
+    if (!config.REQUIRE_HUMAN_APPROVAL) issues.push('LIVE_TRADING_REQUIRES_HUMAN_APPROVAL');
+    if (!config.LIVE_TRADING_CONFIRMATION_PHRASE) issues.push('LIVE_TRADING_CONFIRMATION_PHRASE_REQUIRED');
+    if (!config.AUDIT_LOG_ENABLED) issues.push('LIVE_TRADING_REQUIRES_AUDIT_LOG');
+    if (!config.PAPER_ADAPTER_ENABLED) issues.push('LIVE_TRADING_REQUIRES_ADAPTER');
+  }
+  if (config.ALPACA_EXECUTION_ENABLED) {
+    if (!config.ALPACA_API_KEY_ID) issues.push('ALPACA_API_KEY_ID_REQUIRED');
+    if (!config.ALPACA_API_SECRET_KEY) issues.push('ALPACA_API_SECRET_KEY_REQUIRED');
+    if (!config.ALPACA_API_BASE_URL) issues.push('ALPACA_API_BASE_URL_REQUIRED');
+  }
+  if (config.TRADING_MODE === 'live' && !config.LIVE_TRADING_ENABLED) {
+    issues.push('LIVE_MODE_REQUIRES_LIVE_TRADING_ENABLED');
+  }
+  if (config.MIN_CONFIDENCE_FOR_PAPER < 0 || config.MIN_CONFIDENCE_FOR_PAPER > 100) {
+    issues.push('MIN_CONFIDENCE_OUT_OF_RANGE');
+  }
+  if (config.MIN_LIQUIDITY_SCORE < 0 || config.MIN_LIQUIDITY_SCORE > 100) {
+    issues.push('MIN_LIQUIDITY_OUT_OF_RANGE');
+  }
+  if (config.MIN_PROVIDER_CONFIRMATION_SCORE < 0 || config.MIN_PROVIDER_CONFIRMATION_SCORE > 100) {
+    issues.push('MIN_PROVIDER_CONFIRMATION_OUT_OF_RANGE');
+  }
+  if (config.MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE < 0 || config.MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE > 100) {
+    issues.push('MIN_CRYPTO_PROVIDER_CONFIRMATION_OUT_OF_RANGE');
+  }
+  if (config.MIN_SELL_PROVIDER_CONFIRMATION_SCORE < 0 || config.MIN_SELL_PROVIDER_CONFIRMATION_SCORE > 100) {
+    issues.push('MIN_SELL_PROVIDER_CONFIRMATION_OUT_OF_RANGE');
+  }
+  if (config.SELL_MAX_PROVIDER_PRICE_DIFF_PCT < 0 || config.SELL_MAX_PROVIDER_PRICE_DIFF_PCT > 100) {
+    issues.push('SELL_MAX_PROVIDER_PRICE_DIFF_PCT_OUT_OF_RANGE');
+  }
+  if (config.MIN_EDGE_SCORE < 0 || config.MIN_EDGE_SCORE > 100) {
+    issues.push('MIN_EDGE_OUT_OF_RANGE');
+  }
+  if (config.MIN_VOLUME <= 0) {
+    issues.push('MIN_VOLUME_INVALID');
+  }
+  if (config.BUY_NOTIONAL_TARGET <= 0) {
+    issues.push('BUY_NOTIONAL_TARGET_INVALID');
+  }
+  if (config.MIN_BUY_NOTIONAL <= 0) {
+    issues.push('MIN_BUY_NOTIONAL_INVALID');
+  }
+  if (config.VOLATILITY_THRESHOLD_PCT <= 0) {
+    issues.push('VOLATILITY_THRESHOLD_PCT_INVALID');
+  }
+  if (!Array.isArray(config.BLOCKED_BUY_CALIBRATION_BUCKETS)) {
+    issues.push('BLOCKED_BUY_CALIBRATION_BUCKETS_INVALID');
+  }
+  if (typeof config.BLOCK_BUYS !== 'boolean') {
+    issues.push('BLOCK_BUYS_INVALID');
+  }
+  if (config.MAX_STALENESS_SECONDS <= 0) {
+    issues.push('MAX_STALENESS_SECONDS_INVALID');
+  }
+  if (config.MAX_OPEN_POSITIONS <= 0) {
+    issues.push('MAX_OPEN_POSITIONS_INVALID');
+  }
+  if (config.AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT <= 0) {
+    issues.push('AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT_INVALID');
+  }
+  if (config.AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE < 0 || config.AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE > 100) {
+    issues.push('AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE_INVALID');
+  }
+  if (config.AUTO_POLICY_REFRESH_MIN_PAPER_OUTCOMES <= 0) {
+    issues.push('AUTO_POLICY_REFRESH_MIN_PAPER_OUTCOMES_INVALID');
+  }
+  if (issues.length) {
+    const error = new Error(`Unsafe or invalid startup config: ${issues.join(', ')}`);
+    error.issues = issues;
+    throw error;
+  }
+}
+
+function loadJsonConfig(relativePath) {
+  const absolutePath = path.resolve(relativePath);
+  return JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
+}
+
+module.exports = {
+  DEFAULTS,
+  loadConfig,
+  loadJsonConfig,
+  parseBool,
+  parseNumber,
+  parseCsvList,
+  validateStartupConfig,
+};

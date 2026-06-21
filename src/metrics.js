@@ -1,0 +1,401 @@
+const { clamp, nowIso, safeNumber } = require('./util');
+
+function generateDailySummary({ date, signals = [], riskDecisions = [], orders = [], events = [], policySnapshot = null }) {
+  return generateDailyLiveResultsReport({ date, signals, riskDecisions, paperOutcomes: orders, events, policySnapshot });
+}
+
+function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = [], paperOutcomes = [], events = [], policySnapshot = null }) {
+  const summaryDate = date || nowIso().slice(0, 10);
+  const blockedCount = riskDecisions.filter((decision) => decision.decision === 'BLOCKED').length;
+  const approvedCount = riskDecisions.filter((decision) => decision.decision === 'APPROVED_FOR_PAPER').length;
+  const alertOnlyCount = riskDecisions.filter((decision) => decision.decision === 'ALERT_ONLY').length;
+  const paperPnl = paperOutcomes.reduce((sum, outcome) => sum + safeNumber(outcome.pnl, 0), 0);
+  const drawdown = calculateDrawdown(paperOutcomes);
+  const executionDrag = paperOutcomes.reduce((sum, outcome) => sum + safeNumber(outcome.execution_drag, 0), 0);
+  const executionDragRatio = paperOutcomes.length
+    ? paperOutcomes.reduce((sum, outcome) => {
+      const drag = safeNumber(outcome.execution_drag, 0);
+      const pnl = Math.abs(safeNumber(outcome.pnl, 0));
+      const fallbackRatio = drag > 0 ? drag / Math.max(1, pnl + drag) : 0;
+      return sum + safeNumber(outcome.execution_drag_ratio, fallbackRatio);
+    }, 0) / paperOutcomes.length
+    : 0;
+  const fillQualitySummary = summarizeFillQuality(paperOutcomes);
+  const falsePositives = paperOutcomes.filter((outcome) => outcome.false_positive || outcome.win_loss === 'loss' && outcome.calibration_bucket === '90-100').length;
+  const calibrationBuckets = summarizeCalibrationBuckets(paperOutcomes);
+  const falsePositiveBuckets = summarizeFalsePositiveBuckets(paperOutcomes);
+  const signalQualitySummary = summarizeSignalQuality(signals);
+  const signalQualityOutliers = summarizeSignalQualityOutliers(signals);
+  const blockReasons = countReasons(riskDecisions);
+  const blockedReasonCounts = blockReasons.reduce((map, item) => {
+    map[item.reason] = item.count;
+    return map;
+  }, {});
+  const dominantBlockReason = blockReasons[0] || null;
+  const bestSignal = chooseBestSignal(signals, paperOutcomes);
+  const worstSignal = chooseWorstSignal(signals, paperOutcomes);
+  const bestCalibrationBucket = calibrationBuckets.slice().sort((a, b) => b.average_pnl - a.average_pnl || b.win_rate - a.win_rate)[0] || null;
+  const worstCalibrationBucket = calibrationBuckets.slice().sort((a, b) => a.average_pnl - b.average_pnl || a.win_rate - b.win_rate)[0] || null;
+  const rejectionRate = riskDecisions.length ? blockedCount / riskDecisions.length : 0;
+  const rejectionPressureScore = clamp((rejectionRate * 100) + Math.min(25, blockReasons.length * 3), 0, 100);
+  const recommendedMaxOpenPositions = recommendOpenPositionCapFromReport({
+    currentMaxOpenPositions: safeNumber(policySnapshot?.policy?.maxOpenPositions, 12),
+    paperPnl,
+    winRate: paperOutcomes.length ? paperOutcomes.filter((outcome) => outcome.win_loss === 'win').length / paperOutcomes.length : 0,
+    blockedRate: rejectionRate,
+    falsePositives,
+    drawdown,
+    executionDrag,
+    fillRate: fillQualitySummary.fill_rate,
+    partialFillRate: fillQualitySummary.partial_fill_rate,
+    rejectionRate,
+  });
+
+  return {
+    date: summaryDate,
+    signal_count: signals.length,
+    blocked_count: blockedCount,
+    approved_count: approvedCount,
+    alert_only_count: alertOnlyCount,
+    paper_orders: paperOutcomes.length,
+    paper_fills: paperOutcomes.filter((outcome) => outcome.win_loss !== 'unknown' || outcome.paper_result).length,
+    paper_pnl: paperPnl,
+    drawdown,
+    execution_drag: executionDrag,
+    execution_drag_ratio: executionDragRatio,
+    fill_quality_summary: fillQualitySummary,
+    false_positives: falsePositives,
+    false_positive_buckets: falsePositiveBuckets,
+    signal_quality_summary: signalQualitySummary,
+    signal_quality_outliers: signalQualityOutliers,
+    best_signal: bestSignal,
+    worst_signal: worstSignal,
+    calibration_buckets: calibrationBuckets,
+    best_calibration_bucket: bestCalibrationBucket,
+    worst_calibration_bucket: worstCalibrationBucket,
+    top_block_reasons: blockReasons.slice(0, 5),
+    blocked_reason_counts: blockedReasonCounts,
+    dominant_block_reason: dominantBlockReason,
+    rejection_rate: rejectionRate,
+    rejection_pressure_score: rejectionPressureScore,
+    recommended_max_open_positions: recommendedMaxOpenPositions,
+    data_quality_issues: events.filter((event) => String(event.event_type || '').includes('data')).length,
+    recommended_tuning_notes: buildTuningNotes({ signals, riskDecisions, orders: paperOutcomes }),
+    paper_outcomes: paperOutcomes,
+    paper_outcome_count: paperOutcomes.length,
+    realized_paper_pnl: paperPnl,
+    unrealized_paper_pnl: 0,
+    max_drawdown: drawdown,
+    approved_for_paper: approvedCount,
+    blocked_by_risk: blockedCount,
+    alert_only: alertOnlyCount,
+    total_signals: signals.length,
+  };
+}
+
+function countReasons(riskDecisions) {
+  const counts = new Map();
+  for (const decision of riskDecisions) {
+    for (const reason of decision.reason_codes || []) {
+      counts.set(reason, (counts.get(reason) || 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([reason, count]) => ({ reason, count }));
+}
+
+function summarizeCalibrationBuckets(paperOutcomes = []) {
+  const buckets = new Map();
+  for (const outcome of paperOutcomes) {
+    const bucket = outcome.calibration_bucket || 'unknown';
+    const current = buckets.get(bucket) || {
+      bucket,
+      count: 0,
+      wins: 0,
+      losses: 0,
+      false_positives: 0,
+      total_pnl: 0,
+    };
+    current.count += 1;
+    current.total_pnl += safeNumber(outcome.pnl, 0);
+    if (outcome.win_loss === 'win') current.wins += 1;
+    if (outcome.win_loss === 'loss') current.losses += 1;
+    if (outcome.false_positive) current.false_positives += 1;
+    buckets.set(bucket, current);
+  }
+  return [...buckets.values()].map((bucket) => ({
+    ...bucket,
+    win_rate: bucket.count ? bucket.wins / bucket.count : 0,
+    average_pnl: bucket.count ? bucket.total_pnl / bucket.count : 0,
+  }));
+}
+
+function summarizeSignalQuality(signals = []) {
+  const stats = {
+    count: signals.length,
+    average_confidence: 0,
+    average_freshness: 0,
+    average_source_quality: 0,
+    average_contradiction: 0,
+    average_risk: 0,
+    average_provider_confirmation: 0,
+    average_edge: 0,
+  };
+
+  if (!signals.length) return stats;
+
+  for (const signal of signals) {
+    stats.average_confidence += safeNumber(signal.confidence_score, 0);
+    stats.average_freshness += safeNumber(signal.freshness_score, 0);
+    stats.average_source_quality += safeNumber(signal.source_quality_score, 0);
+    stats.average_contradiction += safeNumber(signal.contradiction_score, 0);
+    stats.average_risk += safeNumber(signal.risk_score, 0);
+    stats.average_provider_confirmation += safeNumber(signal.provider_confirmation_score, 0);
+    stats.average_edge += safeNumber(signal.edge_score, safeNumber(signal.confidence_score, 0));
+  }
+
+  stats.average_confidence /= signals.length;
+  stats.average_freshness /= signals.length;
+  stats.average_source_quality /= signals.length;
+  stats.average_contradiction /= signals.length;
+  stats.average_risk /= signals.length;
+  stats.average_provider_confirmation /= signals.length;
+  stats.average_edge /= signals.length;
+  return stats;
+}
+
+function summarizeFalsePositiveBuckets(paperOutcomes = []) {
+  const buckets = new Map();
+  for (const outcome of paperOutcomes) {
+    const bucket = outcome.calibration_bucket || 'unknown';
+    const current = buckets.get(bucket) || {
+      bucket,
+      count: 0,
+      false_positives: 0,
+      false_positive_rate: 0,
+      total_pnl: 0,
+    };
+    current.count += 1;
+    current.total_pnl += safeNumber(outcome.pnl, 0);
+    if (outcome.false_positive) current.false_positives += 1;
+    buckets.set(bucket, current);
+  }
+  return [...buckets.values()].map((bucket) => ({
+    ...bucket,
+    false_positive_rate: bucket.count ? bucket.false_positives / bucket.count : 0,
+    average_pnl: bucket.count ? bucket.total_pnl / bucket.count : 0,
+  })).filter((bucket) => bucket.false_positives > 0)
+    .sort((a, b) => b.false_positive_rate - a.false_positive_rate || b.false_positives - a.false_positives);
+}
+
+function summarizeSignalQualityOutliers(signals = []) {
+  return signals
+    .map((signal) => {
+      const confidence = safeNumber(signal.confidence_score, 0);
+      const freshness = safeNumber(signal.freshness_score, 0);
+      const sourceQuality = safeNumber(signal.source_quality_score, 0);
+      const providerConfirmation = safeNumber(signal.provider_confirmation_score, 0);
+      const edge = safeNumber(signal.edge_score, confidence);
+      const risk = safeNumber(signal.risk_score, 0);
+      const outlierScore = (
+        (100 - confidence) * 0.22
+        + (100 - freshness) * 0.18
+        + (100 - sourceQuality) * 0.18
+        + (100 - providerConfirmation) * 0.16
+        + (100 - edge) * 0.18
+        + risk * 0.08
+      );
+      return {
+        signal_id: signal.signal_id || null,
+        symbol: signal.symbol || null,
+        confidence_score: confidence,
+        freshness_score: freshness,
+        source_quality_score: sourceQuality,
+        provider_confirmation_score: providerConfirmation,
+        edge_score: edge,
+        risk_score: risk,
+        outlier_score: Number(outlierScore.toFixed(2)),
+      };
+    })
+    .sort((a, b) => b.outlier_score - a.outlier_score || a.confidence_score - b.confidence_score)
+    .slice(0, 3);
+}
+
+function summarizeFillQuality(paperOutcomes = []) {
+  const summary = {
+    count: paperOutcomes.length,
+    filled_count: 0,
+    partially_filled_count: 0,
+    rejected_count: 0,
+    canceled_count: 0,
+    other_count: 0,
+  };
+
+  for (const outcome of paperOutcomes) {
+    const status = String(outcome.status || outcome.paper_result?.status || outcome.paper_result?.order_status || '').toLowerCase();
+    if (['filled', 'closed'].includes(status)) {
+      summary.filled_count += 1;
+    } else if (status === 'partially_filled') {
+      summary.partially_filled_count += 1;
+    } else if (status === 'rejected') {
+      summary.rejected_count += 1;
+    } else if (status === 'cancelled' || status === 'canceled') {
+      summary.canceled_count += 1;
+    } else if (status) {
+      summary.other_count += 1;
+    }
+  }
+
+  const total = Math.max(1, summary.count);
+  summary.fill_rate = summary.filled_count / total;
+  summary.partial_fill_rate = summary.partially_filled_count / total;
+  summary.rejection_rate = summary.rejected_count / total;
+  summary.cancel_rate = summary.canceled_count / total;
+  return summary;
+}
+
+function recommendOpenPositionCapFromReport({
+  currentMaxOpenPositions = 12,
+  paperPnl = 0,
+  winRate = 0,
+  blockedRate = 0,
+  falsePositives = 0,
+  drawdown = 0,
+  executionDrag = 0,
+  fillRate = 0,
+  partialFillRate = 0,
+  rejectionRate = 0,
+} = {}) {
+  let cap = Math.max(1, Math.round(safeNumber(currentMaxOpenPositions, 12)));
+  const healthyRun = paperPnl > 0 && winRate >= 0.6 && drawdown <= Math.max(5, Math.abs(paperPnl) * 0.4) && falsePositives === 0;
+  const excellentRun = healthyRun && paperPnl > 25 && winRate >= 0.7 && fillRate >= 0.9 && partialFillRate <= 0.03 && rejectionRate <= 0.03;
+  if (healthyRun) cap += 1;
+  if (excellentRun) cap += 1;
+  if (blockedRate > 0.6 || falsePositives > 0 || drawdown > Math.max(10, Math.abs(paperPnl) * 0.5)) cap -= 1;
+  if (executionDrag > Math.max(10, Math.abs(paperPnl) * 0.5)) cap -= 1;
+  if (fillRate > 0 && fillRate < 0.8) cap -= 1;
+  if (partialFillRate > 0.1 || rejectionRate > 0.1) cap -= 1;
+  return clamp(cap, 1, 15);
+}
+
+function aggregateBy(items, key) {
+  const buckets = new Map();
+  for (const item of items) {
+    const bucketKey = item?.[key] || 'unknown';
+    const bucket = buckets.get(bucketKey) || { key: bucketKey, count: 0, average_confidence: 0 };
+    bucket.count += 1;
+    bucket.average_confidence += safeNumber(item.confidence_score, 0);
+    buckets.set(bucketKey, bucket);
+  }
+  return [...buckets.values()].map((bucket) => ({
+    ...bucket,
+    average_confidence: bucket.count ? bucket.average_confidence / bucket.count : 0,
+  }));
+}
+
+function buildTuningNotes({ signals, riskDecisions, orders }) {
+  const avgConfidence = signals.length ? signals.reduce((sum, signal) => sum + safeNumber(signal.confidence_score, 0), 0) / signals.length : 0;
+  const avgFreshness = signals.length ? signals.reduce((sum, signal) => sum + safeNumber(signal.freshness_score, 0), 0) / signals.length : 0;
+  const avgSourceQuality = signals.length ? signals.reduce((sum, signal) => sum + safeNumber(signal.source_quality_score, 0), 0) / signals.length : 0;
+  const avgEdge = signals.length ? signals.reduce((sum, signal) => sum + safeNumber(signal.edge_score, safeNumber(signal.confidence_score, 0)), 0) / signals.length : 0;
+  const avgProviderConfirmation = signals.length ? signals.reduce((sum, signal) => sum + safeNumber(signal.provider_confirmation_score, 0), 0) / signals.length : 0;
+  const blockRate = riskDecisions.length ? riskDecisions.filter((decision) => decision.decision === 'BLOCKED').length / riskDecisions.length : 0;
+  const reasonCounts = countReasons(riskDecisions);
+  const falsePositiveBuckets = summarizeFalsePositiveBuckets(orders);
+  const executionDrag = orders.reduce((sum, order) => sum + safeNumber(order.execution_drag, 0), 0);
+  const executionDragRatio = orders.length
+    ? orders.reduce((sum, order) => {
+      const drag = safeNumber(order.execution_drag, 0);
+      const pnl = Math.abs(safeNumber(order.pnl, 0));
+      const fallbackRatio = drag > 0 ? drag / Math.max(1, pnl + drag) : 0;
+      return sum + safeNumber(order.execution_drag_ratio, fallbackRatio);
+    }, 0) / orders.length
+    : 0;
+  const fillQualitySummary = summarizeFillQuality(orders);
+  const fillRate = orders.length
+    ? orders.filter((order) => ['filled', 'partially_filled', 'reconciled'].includes(order.status) || order.win_loss).length / orders.length
+    : 0;
+  const notes = [];
+  if (avgConfidence < 70) notes.push('Raise evidence quality or lower noise sources before widening approvals.');
+  if (avgFreshness < 60) notes.push('Average freshness is weak; stale data is still leaking into the decision loop.');
+  if (avgSourceQuality < 60) notes.push('Average source quality is weak; tighten provider agreement and source vetting before expanding activity.');
+  if (avgEdge < 60) notes.push('Average edge is weak; require stronger combined confirmation before letting more setups through.');
+  if (avgProviderConfirmation < 70) notes.push('Provider agreement is weak; tighten Alpaca and Twelve Data confirmation before expanding size.');
+  if (blockRate > 0.5) notes.push('Too many candidates are failing the risk gate; review thresholds and stale-data policies.');
+  if (reasonCounts.some((item) => item.reason === 'STALE_DATA' || item.reason === 'INVALID_TIMESTAMP')) {
+    notes.push('A material share of rejections comes from stale or invalid provider timestamps; tighten freshness checks or provider latency.');
+  }
+  if (reasonCounts.some((item) => item.reason === 'MULTI_SOURCE_CONFIRMATION_FAILED')) {
+    notes.push('Multi-source disagreement is suppressing approvals; require stronger Alpaca and Twelve Data agreement before expanding size.');
+  }
+  if (reasonCounts.some((item) => item.reason === 'MAX_OPEN_POSITIONS_EXCEEDED')) {
+    notes.push('Open-position demand is running into the cap; consider widening maxOpenPositions if outcomes remain healthy.');
+  }
+  if (falsePositiveBuckets.length) {
+    const worstBucket = falsePositiveBuckets[0];
+    notes.push(`False positives are clustering in calibration bucket ${worstBucket.bucket} (${Math.round(worstBucket.false_positive_rate * 100)}% false-positive rate); tighten filters there first.`);
+  }
+  if (executionDrag > 0) {
+    notes.push(`Execution drag totaled ${executionDrag.toFixed(2)}; review slippage, fees, and fill quality before scaling further.`);
+  }
+  if (executionDragRatio > 0.03) {
+    notes.push(`Execution drag is absorbing ${Math.round(executionDragRatio * 100)}% of trade quality on average; reduce slippage or size before adding more activity.`);
+  }
+  if (fillQualitySummary.partial_fill_rate > 0.1) {
+    notes.push(`Partial fills are running at ${Math.round(fillQualitySummary.partial_fill_rate * 100)}%; tighten order sizing or liquidity checks.`);
+  }
+  if (fillQualitySummary.rejection_rate > 0.05) {
+    notes.push(`Rejected fills are running at ${Math.round(fillQualitySummary.rejection_rate * 100)}%; review order routing and execution constraints.`);
+  }
+  if (signals.length) {
+    const weakestSignal = summarizeSignalQualityOutliers(signals)[0];
+    if (weakestSignal) {
+      notes.push(`Weakest signal today: ${weakestSignal.signal_id || 'unknown'} (${weakestSignal.symbol || 'unknown'}) with confidence ${Math.round(weakestSignal.confidence_score)}/100 and source quality ${Math.round(weakestSignal.source_quality_score)}/100.`);
+    }
+  }
+  if (fillRate < 0.6) notes.push('Paper execution is weak; inspect slippage assumptions and order sizing.');
+  if (!notes.length) notes.push('Current controls look balanced; preserve the paper-first gating model.');
+  return notes;
+}
+
+function calculateDrawdown(paperOutcomes) {
+  let peak = 0;
+  let equity = 0;
+  let maxDrawdown = 0;
+  for (const outcome of paperOutcomes) {
+    equity += safeNumber(outcome.pnl, 0);
+    if (equity > peak) peak = equity;
+    const currentDrawdown = peak - equity;
+    if (currentDrawdown > maxDrawdown) maxDrawdown = currentDrawdown;
+  }
+  return maxDrawdown;
+}
+
+function chooseBestSignal(signals, paperOutcomes) {
+  if (paperOutcomes.length) {
+    return paperOutcomes.slice().sort((a, b) => safeNumber(b.pnl, -Infinity) - safeNumber(a.pnl, -Infinity))[0] || null;
+  }
+  return signals.slice().sort((a, b) => (b.confidence_score || 0) - (a.confidence_score || 0))[0] || null;
+}
+
+function chooseWorstSignal(signals, paperOutcomes) {
+  if (paperOutcomes.length) {
+    return paperOutcomes.slice().sort((a, b) => safeNumber(a.pnl, Infinity) - safeNumber(b.pnl, Infinity))[0] || null;
+  }
+  return signals.slice().sort((a, b) => (a.confidence_score || 0) - (b.confidence_score || 0))[0] || null;
+}
+
+module.exports = {
+  aggregateBy,
+  buildTuningNotes,
+  calculateDrawdown,
+  chooseBestSignal,
+  chooseWorstSignal,
+  generateDailySummary,
+  generateDailyLiveResultsReport,
+  summarizeCalibrationBuckets,
+  summarizeFalsePositiveBuckets,
+  summarizeSignalQualityOutliers,
+  summarizeFillQuality,
+  recommendOpenPositionCapFromReport,
+  summarizeSignalQuality,
+};

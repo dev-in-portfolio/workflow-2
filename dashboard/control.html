@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Operator Control Tab</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Local operator tab</div>
+          <h1>Process Controls</h1>
+          <p class="lede">Buttons here only talk to the local trader and scanner processes. They do not touch Alpaca directly or change the trading logic itself.</p>
+        </div>
+        <div class="header-metrics">
+          <div class="metric-chip">
+            <span>Dashboard port</span>
+            <strong id="dashboardPort">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Trader base URL</span>
+            <strong id="traderBaseUrl">-</strong>
+          </div>
+          <a class="metric-chip metric-link" href="/">
+            <span>Main view</span>
+            <strong>Open dashboard</strong>
+          </a>
+        </div>
+        <nav class="page-tabs" aria-label="Dashboard pages">
+          <a class="page-tab" href="/">Home</a>
+          <a class="page-tab" href="/status">Status</a>
+          <a class="page-tab" href="/policy">Policy</a>
+          <a class="page-tab" href="/exit-rules">Exit Rules</a>
+          <a class="page-tab" href="/alerts">Alerts</a>
+          <a class="page-tab active" href="/control">Operator tab</a>
+        </nav>
+      </header>
+
+      <section class="panel-grid control-layout">
+        <article class="panel control-panel">
+          <div class="card-head">
+            <span class="card-title">Workflow controls</span>
+            <span class="pill" id="traderStatusPill">Loading</span>
+          </div>
+          <div class="button-grid">
+            <button class="control-button primary" data-action="start-workflow">Start workflow</button>
+            <button class="control-button" data-action="stop-workflow">Stop workflow</button>
+            <button class="control-button" data-action="restart-workflow">Restart all</button>
+            <button class="control-button ghost" data-action="restart-dashboard">Launch replacement dashboard</button>
+            <button class="control-button ghost" data-action="refresh">Refresh</button>
+          </div>
+          <div class="state-grid" id="traderState"></div>
+        </article>
+
+        <article class="panel control-panel">
+          <div class="card-head">
+            <span class="card-title">Scanner controls</span>
+            <span class="subtle" id="scannerProfile">-</span>
+          </div>
+          <div class="button-grid">
+            <button class="control-button primary" data-action="start-scanner" data-profile="live-market">Start live market</button>
+            <button class="control-button" data-action="stop-scanner">Stop</button>
+            <button class="control-button" data-action="restart-scanner">Restart scanner</button>
+            <button class="control-button ghost" data-action="switch-scanner" data-profile="live-market">Switch to live market</button>
+            <button class="control-button ghost" data-action="switch-scanner" data-profile="market-aware-auto">Switch to market-aware auto</button>
+            <button class="control-button ghost" data-action="switch-scanner" data-profile="crypto-only">Switch to crypto only</button>
+          </div>
+          <div class="state-grid" id="scannerState"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid wide">
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">System snapshot</span>
+            <span class="subtle" id="snapshotStamp">-</span>
+          </div>
+          <div class="kpi-grid compact">
+            <div class="kpi">
+              <span>Mode</span>
+              <strong id="modeValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Regime</span>
+              <strong id="regimeValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Today PnL</span>
+              <strong id="pnlValue">-</strong>
+            </div>
+            <div class="kpi">
+              <span>Profit exit</span>
+              <strong id="profitExitValue">-</strong>
+            </div>
+          </div>
+          <div class="state-grid" id="policyState"></div>
+        </article>
+
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Last action</span>
+            <span class="subtle">local process manager</span>
+          </div>
+          <div class="action-status" id="actionStatus">No action yet.</div>
+          <div class="alerts" id="warnings"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/control.js"></script>
+  </body>
+</html>
