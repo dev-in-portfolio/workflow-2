@@ -555,37 +555,31 @@ async function handleControlAction(controlManager, body = {}, context = {}) {
     case 'restart-workflow':
       return await controlManager.restartWorkflow(profile);
     case 'start-scanner':
-      return await controlManager.startScanner(profile || 'live-market');
+      return await controlManager.startScanner('live-market');
     case 'start-live-market':
       return await controlManager.startScanner('live-market');
     case 'start-overnight-crypto':
-      return await controlManager.startScanner('crypto-only');
     case 'start-crypto-only':
-      return await controlManager.startScanner('crypto-only');
     case 'start-market-aware-auto':
-      return await controlManager.startScanner('market-aware-auto');
+      return unsupportedLegacyScannerAction(action);
     case 'stop-scanner':
       return await controlManager.stopScanner();
     case 'restart-scanner':
-      return await controlManager.restartScanner(profile || 'live-market');
+      return await controlManager.restartScanner('live-market');
     case 'restart-live-market':
       return await controlManager.restartScanner('live-market');
     case 'restart-overnight-crypto':
-      return await controlManager.restartScanner('crypto-only');
     case 'restart-crypto-only':
-      return await controlManager.restartScanner('crypto-only');
     case 'restart-market-aware-auto':
-      return await controlManager.restartScanner('market-aware-auto');
+      return unsupportedLegacyScannerAction(action);
     case 'switch-scanner':
-      return await controlManager.switchScannerProfile(profile || 'live-market');
+      return await controlManager.switchScannerProfile('live-market');
     case 'switch-live-market':
       return await controlManager.switchScannerProfile('live-market');
     case 'switch-overnight-crypto':
-      return await controlManager.switchScannerProfile('crypto-only');
     case 'switch-crypto-only':
-      return await controlManager.switchScannerProfile('crypto-only');
     case 'switch-market-aware-auto':
-      return await controlManager.switchScannerProfile('market-aware-auto');
+      return unsupportedLegacyScannerAction(action);
     default:
       return {
         ok: false,
@@ -594,6 +588,15 @@ async function handleControlAction(controlManager, body = {}, context = {}) {
         message: `Unsupported control action: ${action || '(missing)'}`,
       };
   }
+}
+
+function unsupportedLegacyScannerAction(action) {
+  return {
+    ok: false,
+    action,
+    error: 'legacy_scanner_profile_hidden',
+    message: 'Only the Live Market stock workflow is operator-facing now.',
+  };
 }
 
 async function launchReplacementDashboard(context = {}) {
@@ -1185,7 +1188,7 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     workflow_state: control?.workflow?.status || 'unknown',
     scanner_profile: control?.scanner?.profile || control?.workflow?.desired_scanner_profile || null,
     trader_mode: status?.mode || null,
-    regime,
+    regime: liveMarketRules?.workflow || 'Live Market',
     uptime_minutes: safeNumber(status?.uptime_minutes, null),
     paper_pnl: safeNumber(report?.paper_pnl, null),
     blocked_count: safeNumber(report?.blocked_count, null),

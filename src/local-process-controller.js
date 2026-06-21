@@ -32,8 +32,12 @@ function createLocalProcessController(options = {}) {
   const traderPort = Number.isFinite(Number(options.traderPort)) ? Number(options.traderPort) : 3001;
   const runtimeEnv = options.runtimeEnv || loadRuntimeEnv(env, repoRoot);
   const workflowStatePath = options.workflowStatePath || path.join(repoRoot, 'data', 'workflow-state.json');
+  const legacyScannerProfilesAllowed = options.allowLegacyScannerProfiles === true;
   const persisted = readPersistedWorkflowState();
-  const desiredProfile = normalizeScannerProfile(persisted.desired_scanner_profile || persisted.scanner_profile || 'live-market') || 'live-market';
+  const desiredProfile = normalizeOperatorScannerProfile(
+    persisted.desired_scanner_profile || persisted.scanner_profile || 'live-market',
+    legacyScannerProfilesAllowed,
+  ) || 'live-market';
   const state = {
     workflow: {
       status: 'stopped',
@@ -553,7 +557,7 @@ function createLocalProcessController(options = {}) {
   }
 
   function setDesiredScannerProfile(profile) {
-    const normalized = normalizeScannerProfile(profile);
+    const normalized = normalizeOperatorScannerProfile(profile, legacyScannerProfilesAllowed);
     if (!normalized) return null;
     state.workflow.desired_scanner_profile = normalized;
     state.scanner.desired_profile = normalized;
@@ -608,6 +612,12 @@ function normalizeScannerProfile(profile) {
   return null;
 }
 
+function normalizeOperatorScannerProfile(profile, allowLegacy = false) {
+  const normalized = normalizeScannerProfile(profile);
+  if (!normalized) return null;
+  return allowLegacy ? normalized : 'live-market';
+}
+
 function displayScannerProfile(profile) {
   return SCANNER_PROFILES[normalizeScannerProfile(profile)]?.label || 'Unknown';
 }
@@ -632,5 +642,6 @@ function uniqueNumbers(values = []) {
 module.exports = {
   createLocalProcessController,
   normalizeScannerProfile,
+  normalizeOperatorScannerProfile,
   displayScannerProfile,
 };

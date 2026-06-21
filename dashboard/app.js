@@ -69,12 +69,12 @@ function render(snapshot) {
     : 'No data';
   $('profitStatusPill').className = `pill ${Number.isFinite(dailyChange) ? (dailyChange >= 0 ? 'ok' : 'warn') : 'warn'}`;
   const statusCopy = Number.isFinite(dailyChange)
-    ? `Daily Change is ${formatSignedCurrency(dailyChange)} from ${summary.daily_change_source || 'snapshot'}. Local paper PnL is ${formatSignedCurrency(summary.paper_pnl)}.`
+    ? `Daily Change is ${formatSignedCurrency(dailyChange)} from ${summary.daily_change_source || 'snapshot'}. Local history PnL is ${formatSignedCurrency(summary.paper_pnl)}.`
     : 'Waiting for live performance data.';
   const versionWarning = dashboardVersionWarning(snapshot);
   $('profitStatusCopy').textContent = versionWarning || statusCopy;
   $('profitStatusCopyAlt').textContent = versionWarning || statusCopy;
-  $('reportDate').textContent = snapshot?.live?.overnight_status?.report_date || snapshot?.live?.status?.started_at || missingText;
+  $('reportDate').textContent = snapshot?.live?.report?.date || snapshot?.live?.status?.started_at || missingText;
   renderPositionCard($('positionOne'), exitPositions[0], snapshot);
   renderPositionCard($('positionTwo'), exitPositions[1], snapshot);
   renderRecentTrades(recentTrades, summary.last_trade_at);

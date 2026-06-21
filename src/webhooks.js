@@ -2,7 +2,7 @@ const { safeNumber } = require('./util');
 
 const TRADE_ACTIONS = new Set(['paper_buy', 'paper_sell', 'buy', 'sell']);
 const NON_TRADE_ACTIONS = new Set(['hold', 'no_signal', 'no-signal', 'neutral', 'watch', 'alert', 'ignore']);
-const DEFAULT_BUY_NOTIONAL_TARGET = 200;
+const DEFAULT_BUY_NOTIONAL_TARGET = 150;
 
 function normalizeTradeSide(value) {
   if (!value) return null;

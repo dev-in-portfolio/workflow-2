@@ -26,12 +26,12 @@ async function refreshSnapshot() {
 function render(snapshot) {
   const summary = snapshot?.summary || {};
   const live = snapshot?.live || {};
-  const policy = live?.policy?.policy || live?.policy || live?.overnight_status?.policy_snapshot?.policy || {};
+  const policy = live?.policy?.policy || live?.policy || {};
   const configDrift = live?.config_drift || {};
   const effectiveness = live?.policy_effectiveness || {};
   const totalDecisions = Number(summary.approved_count || 0) + Number(summary.blocked_count || 0);
   const approvalRatio = totalDecisions > 0 ? Number(summary.approved_count || 0) / totalDecisions : NaN;
-  const policySource = live?.policy?.source || live?.overnight_status?.policy_snapshot?.source || snapshot?.file_snapshots?.live_policy?.payload_type || '-';
+  const policySource = live?.policy?.source || snapshot?.file_snapshots?.live_policy?.payload_type || '-';
   const freshness = msAgo(snapshot?.timestamp);
 
   $('dashboardPort').textContent = snapshot?.dashboard?.port ? String(snapshot.dashboard.port) : '-';
@@ -60,7 +60,7 @@ function renderPolicyGrid(policy, configDrift = {}) {
   const target = $('policyGrid');
   const rows = [
     ['Mode', 'Live Market'],
-    ['Max open positions', formatCount(policy?.maxOpenPositions ?? state.snapshot?.regime?.max_open_positions)],
+    ['Max open positions', formatCount(state.snapshot?.regime?.max_open_positions ?? policy?.maxOpenPositions)],
     ['Approved symbols', formatList(state.snapshot?.regime?.approved_symbols)],
     ['Buy cap', formatCurrency(state.snapshot?.regime?.buy_notional_target)],
     ['Min buy guard', formatCurrency(state.snapshot?.regime?.min_buy_notional)],

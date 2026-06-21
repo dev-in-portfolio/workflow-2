@@ -1,7 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { createDashboardServer } = require('../src/dashboard-server');
+const { createLocalProcessController, normalizeOperatorScannerProfile } = require('../src/local-process-controller');
 
 test('dashboard control routes serve the operator tab and route actions locally', async () => {
   const calls = [];
@@ -77,7 +80,37 @@ test('dashboard control routes serve the operator tab and route actions locally'
     }).then((response) => response.json());
     assert.equal(refreshAction.ok, true);
     assert.deepEqual(calls.shift(), ['refresh']);
+
+    const cryptoAction = await fetch(`http://127.0.0.1:${port}/api/control/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start-crypto-only' }),
+    }).then((response) => response.json());
+    assert.equal(cryptoAction.ok, false);
+    assert.equal(cryptoAction.error, 'legacy_scanner_profile_hidden');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('operator workflow normalizes stale scanner profiles back to live market', async () => {
+  assert.equal(normalizeOperatorScannerProfile('crypto-only'), 'live-market');
+  assert.equal(normalizeOperatorScannerProfile('market-aware-auto'), 'live-market');
+  assert.equal(normalizeOperatorScannerProfile('crypto-only', true), 'crypto-only');
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-state-test-'));
+  const workflowStatePath = path.join(tempDir, 'workflow-state.json');
+  fs.writeFileSync(workflowStatePath, JSON.stringify({ desired_scanner_profile: 'crypto-only' }));
+
+  const controller = createLocalProcessController({
+    repoRoot: process.cwd(),
+    workflowStatePath,
+    runtimeEnv: {},
+    fetchImpl: async () => { throw new Error('not running'); },
+    execFileAsync: async () => ({ stdout: '', stderr: '' }),
+  });
+
+  const state = controller.getState();
+  assert.equal(state.workflow.desired_scanner_profile, 'live-market');
+  assert.equal(state.scanner.desired_profile, 'live-market');
 });

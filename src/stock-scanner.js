@@ -6,6 +6,7 @@ const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-all
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
 const { loadRecentSymbolMap, saveRecentSymbolMap } = require('./scanner-recent-symbols');
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
+const { isRegularUsMarketHours } = require('./market-hours');
 
 function createStockScanner(options = {}) {
   const env = options.env || process.env;
@@ -42,6 +43,7 @@ function createStockScanner(options = {}) {
   const keepAlive = options.keepAlive ?? true;
   const runtimeStateEnabled = options.runtimeStateEnabled ?? parseBool(env.SCANNER_RUNTIME_STATE_ENABLED, false);
   const recentSymbolsEnabled = options.recentSymbolsEnabled ?? parseBool(env.SCANNER_RECENT_SYMBOLS_ENABLED, false);
+  const requireMarketOpen = options.requireMarketOpen ?? parseBool(env.STOCK_SCANNER_REQUIRE_MARKET_OPEN, true);
 
   const state = {
     lastSentAtBySymbol: recentSymbolsEnabled
@@ -94,9 +96,13 @@ function createStockScanner(options = {}) {
         baseUrl: options.accountBaseUrl || options.tradingBaseUrl || options.accountUrl || trimTrailingSlash(env.ALPACA_API_BASE_URL || 'https://paper-api.alpaca.markets'),
       });
       const approvedPositions = filterApprovedPositions(positions, symbols);
-      const portfolio = buildPortfolioSnapshot({ positions: approvedPositions, openOrders, account, maxOpenPositions });
+      const portfolio = buildPortfolioSnapshot({ positions, openOrders, account, maxOpenPositions });
       const allocation = allocateBuyNotional({ targetNotional: notional, minBuyNotional, portfolio });
       const skipTracker = createSkipTracker();
+      const marketOpen = options.marketOpen ?? isRegularUsMarketHours(new Date());
+      if (requireMarketOpen && !marketOpen) {
+        skipTracker.record('MARKET_CLOSED_FOR_STOCKS', { symbol: '*', market_open: false });
+      }
       if (!allocation.accepted) {
         skipTracker.record(allocation.reason || 'ALLOCATION_BLOCK', {
           symbol: '*',
@@ -122,6 +128,8 @@ function createStockScanner(options = {}) {
         maxBuyCandidates: Math.min(maxCandidatesPerRun, Math.max(0, portfolio.remaining_position_slots ?? maxOpenPositions)),
         notional: allocation.accepted ? allocation.notional : notional,
         allocation,
+        marketOpen,
+        requireMarketOpen,
         stopLossDollars,
         trailingProfitStartDollars,
         trailingProfitGivebackDollars,
@@ -189,7 +197,15 @@ function createStockScanner(options = {}) {
         candidates,
         results,
       });
-      return { accepted: true, candidates: results, received_at: receivedAt };
+      return {
+        accepted: true,
+        candidates: results,
+        received_at: receivedAt,
+        portfolio,
+        allocation,
+        skip_summary: skipTracker.summary(),
+        recent_skips: skipTracker.recent(),
+      };
     } catch (error) {
       state.lastRunAt = receivedAt;
       state.lastScanError = error.message;
@@ -253,6 +269,7 @@ function createStockScanner(options = {}) {
       twelveDataApiKey,
       twelveDataBaseUrl,
       requireMultiSourceConfirmation,
+      requireMarketOpen,
       keepAlive,
       sellMaxPriceDiffPct,
     },
@@ -488,6 +505,8 @@ function buildCandidates(bundle, options = {}) {
       requireMultiSourceConfirmation: options.requireMultiSourceConfirmation,
       allowContrarianEntries: options.allowContrarianEntries,
       blockBuys: options.blockBuys,
+      marketOpen: options.marketOpen,
+      requireMarketOpen: options.requireMarketOpen,
       sellMaxPriceDiffPct: options.sellMaxPriceDiffPct,
       assetType: 'stock',
       position_avg_entry_price: safeNumber(positionsBySymbol.get(symbol)?.avg_entry_price ?? positionsBySymbol.get(symbol)?.avgEntryPrice ?? null),
@@ -544,6 +563,7 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
 
   if (openBuyOrders.length) return skip('OPEN_BUY_ORDER_EXISTS');
   if (options.blockBuys) return skip('BUY_SIDE_BLOCKED');
+  if (options.requireMarketOpen && options.marketOpen === false) return skip('MARKET_CLOSED_FOR_STOCKS');
   if (options.allocation && options.allocation.accepted === false) {
     return skip(options.allocation.reason || 'ALLOCATION_BLOCKED');
   }
@@ -689,6 +709,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     high_price: safeNumber(snapshot.minuteBar?.h ?? snapshot.latestTrade?.p ?? currentPrice, currentPrice),
     low_price: safeNumber(snapshot.minuteBar?.l ?? snapshot.latestTrade?.p ?? currentPrice, currentPrice),
     exit_state: exitState,
+    market_closed: options.requireMarketOpen && options.marketOpen === false,
   };
   const providerConfirmation = buildProviderConfirmationFromContext(marketContext, {
     confirmation_options: {
@@ -712,6 +733,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     symbol,
     asset_type: 'stock',
     strategy_name: 'live-market-stock-rotation',
+    strategy_requires_open_market: true,
     timeframe: 'intraday',
     direction: side === 'sell' ? 'bearish' : 'bullish',
     action_candidate: side === 'sell' ? 'paper_sell' : 'paper_buy',

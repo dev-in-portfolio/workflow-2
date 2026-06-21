@@ -91,6 +91,7 @@ test('stock scanner posts candidates to the local paper order endpoint', async (
     cooldownMs: 60_000,
     minMovePct: 0.25,
     maxSpreadPct: 0.8,
+    marketOpen: true,
     marketFetch: async (url) => {
       if (url.includes('/v2/positions')) {
         return buildResponse([]);
@@ -239,6 +240,7 @@ test('stock scanner batches large stock universes into multiple market-data requ
     },
     localFetch: async () => buildResponse({ accepted: true, final_decision: 'blocked' }),
     minMovePct: 999,
+    marketOpen: true,
   });
 
   const result = await scanner.runOnce({ runId: 'batch-test' });
@@ -277,6 +279,7 @@ test('stock scanner skips buy candidates when buys are blocked', async () => {
     minMovePct: 0.25,
     maxSpreadPct: 0.8,
     blockBuys: true,
+    marketOpen: true,
     marketFetch: async (url) => {
       if (url.includes('/v2/positions')) {
         return buildResponse([]);
@@ -319,6 +322,108 @@ test('stock scanner skips buy candidates when buys are blocked', async () => {
 
   assert.equal(result.accepted, true);
   assert.equal(requests.length, 0);
+});
+
+test('stock scanner blocks stock buys while the US market is closed', async () => {
+  const requests = [];
+  const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
+  const scanner = createStockScanner({
+    enabled: true,
+    baseUrl: 'https://data.alpaca.markets',
+    localBaseUrl: 'http://127.0.0.1:65535',
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    symbols: ['NVDA'],
+    intervalMs: 60_000,
+    cooldownMs: 60_000,
+    minMovePct: 0.25,
+    maxSpreadPct: 0.8,
+    marketOpen: false,
+    requireMarketOpen: true,
+    marketFetch: async (url) => {
+      if (url.includes('/v2/positions')) return buildResponse([]);
+      if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+      if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+      if (url.includes('/v2/stocks/snapshots?')) {
+        return buildResponse({
+          snapshots: {
+            NVDA: {
+              latestQuote: { bp: 17.60, ap: 17.66, t: alpacaTimestamp },
+              latestTrade: { p: 17.63, t: alpacaTimestamp },
+              minuteBar: { v: 50, h: 17.72, l: 17.55, t: alpacaTimestamp },
+              prevDailyBar: { c: 17.40, v: 100000 },
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    localFetch: async (...args) => {
+      requests.push(args);
+      return buildResponse({ accepted: true, final_decision: 'approved_for_paper' });
+    },
+  });
+
+  const result = await scanner.runOnce({ runId: 'stock-market-closed-test' });
+  scanner.stop();
+
+  assert.equal(result.accepted, true);
+  assert.equal(requests.length, 0);
+  assert.equal(result.skip_summary.MARKET_CLOSED_FOR_STOCKS, 2);
+});
+
+test('stock scanner counts all live Alpaca positions against the max-position cap', async () => {
+  const requests = [];
+  const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
+  const scanner = createStockScanner({
+    enabled: true,
+    baseUrl: 'https://data.alpaca.markets',
+    localBaseUrl: 'http://127.0.0.1:65535',
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    symbols: ['NVDA'],
+    intervalMs: 60_000,
+    cooldownMs: 60_000,
+    minMovePct: 0.25,
+    maxSpreadPct: 0.8,
+    maxOpenPositions: 2,
+    marketOpen: true,
+    marketFetch: async (url) => {
+      if (url.includes('/v2/positions')) {
+        return buildResponse([
+          { symbol: 'AAPL', qty: '1' },
+          { symbol: 'MSFT', qty: '1' },
+        ]);
+      }
+      if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+      if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+      if (url.includes('/v2/stocks/snapshots?')) {
+        return buildResponse({
+          snapshots: {
+            NVDA: {
+              latestQuote: { bp: 17.60, ap: 17.66, t: alpacaTimestamp },
+              latestTrade: { p: 17.63, t: alpacaTimestamp },
+              minuteBar: { v: 50, h: 17.72, l: 17.55, t: alpacaTimestamp },
+              prevDailyBar: { c: 17.40, v: 100000 },
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    localFetch: async (...args) => {
+      requests.push(args);
+      return buildResponse({ accepted: true, final_decision: 'approved_for_paper' });
+    },
+  });
+
+  const result = await scanner.runOnce({ runId: 'stock-max-live-positions-test' });
+  scanner.stop();
+
+  assert.equal(result.accepted, true);
+  assert.equal(requests.length, 0);
+  assert.equal(result.portfolio.open_positions_count, 2);
+  assert.equal(result.skip_summary.MAX_POSITION_SLOTS_FILLED, 2);
 });
 
 function stockSnapshot() {

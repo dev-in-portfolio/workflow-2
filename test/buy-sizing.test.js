@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { loadConfig } = require('../src/config');
 const { buildPaperOrderRequestFromSignal, resolveBuyOrderSizing } = require('../src/webhooks');
 
-test('buy sizing targets about $200 for crypto and stays within budget', () => {
+test('buy sizing targets about $150 for crypto and stays within budget', () => {
   const sizing = resolveBuyOrderSizing({
     signal_id: 'sig-fractional',
     action_candidate: 'paper_buy',
@@ -17,8 +17,8 @@ test('buy sizing targets about $200 for crypto and stays within budget', () => {
   assert.equal(sizing.supports_fractional_shares, true);
   assert.equal(sizing.sizing_mode, 'fractional_qty');
   assert(sizing.quantity > 0);
-  assert.equal(sizing.notional <= 200, true);
-  assert.equal(sizing.quantity * sizing.price <= 200, true);
+  assert.equal(sizing.notional <= 150, true);
+  assert.equal(sizing.quantity * sizing.price <= 150, true);
 });
 
 test('buy sizing floors whole-share stock orders and never exceeds the budget', () => {
@@ -33,8 +33,8 @@ test('buy sizing floors whole-share stock orders and never exceeds the budget', 
   assert.equal(sizing.pass, true);
   assert.equal(sizing.supports_fractional_shares, false);
   assert.equal(sizing.sizing_mode, 'whole_share_qty');
-  assert.equal(sizing.quantity, 4);
-  assert.equal(sizing.notional, 193);
+  assert.equal(sizing.quantity, 3);
+  assert.equal(sizing.notional, 144.75);
 
   const order = buildPaperOrderRequestFromSignal({
     signal_id: 'sig-size',
@@ -44,8 +44,8 @@ test('buy sizing floors whole-share stock orders and never exceeds the budget', 
     price: 48.25,
   });
 
-  assert.equal(order.quantity, 4);
-  assert.equal(order.notional, 193);
+  assert.equal(order.quantity, 3);
+  assert.equal(order.notional, 144.75);
   assert.equal(order.time_in_force, 'day');
 });
 
