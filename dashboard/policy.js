@@ -39,11 +39,11 @@ function render(snapshot) {
   $('policySourceValue').textContent = String(policySource || '-');
   $('policyPill').textContent = effectLabel(effectiveness);
   $('policyPill').className = `pill ${snapshot?.alerts?.some((item) => /policy/i.test(item?.title || '')) ? 'warn' : 'ok'}`;
-  $('profitExitValue').textContent = formatPercent(summary.profit_exit_threshold_pct, 1);
-  $('profitFloorValue').textContent = formatCurrency(snapshot?.regime?.profit_exit_floor_dollars ?? summary?.profit_exit_floor_dollars ?? 1);
-  $('lossExitValue').textContent = formatPercent(snapshot?.regime?.loss_exit_threshold_pct, 2);
+  $('profitExitValue').textContent = 'Live Market';
+  $('profitFloorValue').textContent = formatCurrency(snapshot?.regime?.buy_notional_target ?? summary?.buy_notional_target ?? 150);
+  $('lossExitValue').textContent = formatCurrency(snapshot?.regime?.stop_loss_dollars ?? summary?.stop_loss_dollars ?? 10);
   $('snapshotAgeValue').textContent = freshness || 'stale';
-  $('pnlValue').textContent = formatSignedCurrency(summary.paper_pnl);
+  $('pnlValue').textContent = formatSignedCurrency(summary.daily_change);
   $('approvedCountValue').textContent = formatCount(summary.approved_count);
   $('blockedCountValue').textContent = formatCount(summary.blocked_count);
   $('approvalRatioValue').textContent = Number.isFinite(approvalRatio) ? `${formatNumber(approvalRatio * 100, 1)}%` : '-';
@@ -59,13 +59,14 @@ function render(snapshot) {
 function renderPolicyGrid(policy, configDrift = {}) {
   const target = $('policyGrid');
   const rows = [
-    ['Max open positions', formatCount(policy?.maxOpenPositions)],
-    ['Buy notional target', formatCurrency(policy?.buyNotionalTarget)],
-    ['Min buy notional', formatCurrency(policy?.minBuyNotional)],
-    ['Position size multiplier', formatNumber(policy?.positionSizeMultiplier, 2)],
-    ['Blocked buy buckets', formatList(policy?.blockedBuyCalibrationBuckets)],
-    ['Min confidence', formatPercent(policy?.minConfidenceForPaper, 1)],
-    ['Min provider confirmation', formatPercent(policy?.minProviderConfirmationScore, 1)],
+    ['Mode', 'Live Market'],
+    ['Max open positions', formatCount(policy?.maxOpenPositions ?? state.snapshot?.regime?.max_open_positions)],
+    ['Approved symbols', formatList(state.snapshot?.regime?.approved_symbols)],
+    ['Buy cap', formatCurrency(state.snapshot?.regime?.buy_notional_target)],
+    ['Min buy guard', formatCurrency(state.snapshot?.regime?.min_buy_notional)],
+    ['Position stop', formatCurrency(state.snapshot?.regime?.stop_loss_dollars)],
+    ['Trailing starts', formatCurrency(state.snapshot?.regime?.trailing_profit_start_dollars)],
+    ['Trailing giveback', formatCurrency(state.snapshot?.regime?.trailing_profit_giveback_dollars)],
   ];
   const driftRows = Array.isArray(configDrift.items) && configDrift.items.length
     ? configDrift.items.map((item) => `

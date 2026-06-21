@@ -9,6 +9,7 @@ module.exports = {
   ...require('./paper-outcomes'),
   ...require('./overnight-scanner'),
   ...require('./stock-scanner'),
+  ...require('./position-trailing-state'),
   ...require('./feedback-loop'),
   ...require('./performance-tuning'),
   ...require('./dashboard-server'),

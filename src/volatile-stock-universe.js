@@ -101,6 +101,8 @@ const VOLATILE_STOCK_SYMBOLS = [
   'NXTS',
 ];
 
+const APPROVED_LIVE_MARKET_SYMBOLS = ['NVDA', 'TSLA', 'IREN', 'MRVL', 'INTC', 'MARA'];
+
 function parseSymbolList(value, fallback = VOLATILE_STOCK_SYMBOLS) {
   if (!value) return fallback.slice();
   const parsed = String(value)
@@ -125,6 +127,7 @@ function resolveRotatingStockSymbols(value, minimumPreferredCount = 20) {
 }
 
 module.exports = {
+  APPROVED_LIVE_MARKET_SYMBOLS,
   VOLATILE_STOCK_SYMBOLS,
   parseSymbolList,
   resolveRotatingStockSymbols,

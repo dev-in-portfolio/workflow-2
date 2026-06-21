@@ -1,12 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
-const { buildCandidateForSymbol } = require('../src/overnight-scanner');
-const { createStockScanner } = require('../src');
-const { VOLATILE_STOCK_SYMBOLS } = require('../src/volatile-stock-universe');
+const { buildStockCandidateForSymbol, createStockScanner } = require('../src');
+const { APPROVED_LIVE_MARKET_SYMBOLS } = require('../src/volatile-stock-universe');
 
 test('stock scanner builds real buy candidates from fresh bullish Alpaca data', () => {
-  const candidate = buildCandidateForSymbol('SOFI', {
+  const candidate = buildStockCandidateForSymbol('NVDA', {
     latestQuote: {
       bp: 17.60,
       ap: 17.66,
@@ -34,7 +33,7 @@ test('stock scanner builds real buy candidates from fresh bullish Alpaca data', 
     receivedAt: '2026-06-16T20:00:01.000Z',
     minMovePct: 0.25,
     maxSpreadPct: 0.8,
-    notional: 200,
+    notional: 150,
     runId: 'stock-test-run',
     assetType: 'stock',
   });
@@ -42,11 +41,11 @@ test('stock scanner builds real buy candidates from fresh bullish Alpaca data', 
   assert(candidate);
   assert.equal(candidate.payload.action_candidate, 'paper_buy');
   assert.equal(candidate.payload.market_context.scanner.run_id, 'stock-test-run');
-  assert.equal(candidate.payload.market_data.symbol, 'SOFI');
-  assert.equal(candidate.payload.market_data.asset_type, 'stock');
+  assert.equal(candidate.payload.symbol, 'NVDA');
+  assert.equal(candidate.payload.asset_type, 'stock');
 });
 
-test('stock scanner defaults to a profit exit floor that leaves room for execution drag', () => {
+test('stock scanner defaults to simplified live-market rules', () => {
   const scanner = createStockScanner({
     enabled: true,
     env: {},
@@ -55,7 +54,12 @@ test('stock scanner defaults to a profit exit floor that leaves room for executi
     localFetch: async () => buildResponse({}),
   });
 
-  assert.equal(scanner.config.sellProfitThresholdPct, 5.0);
+  assert.deepEqual(scanner.config.symbols, APPROVED_LIVE_MARKET_SYMBOLS);
+  assert.equal(scanner.config.notional, 150);
+  assert.equal(scanner.config.maxOpenPositions, 2);
+  assert.equal(scanner.config.stopLossDollars, 10);
+  assert.equal(scanner.config.trailingProfitStartDollars, 5);
+  assert.equal(scanner.config.trailingProfitGivebackDollars, 3);
   scanner.stop();
 });
 
@@ -135,7 +139,7 @@ test('stock scanner posts candidates to the local paper order endpoint', async (
   assert.equal(requests[0].body.market_context.scanner.run_id, 'stock-test-scan');
 });
 
-test('stock scanner falls back to the 100-symbol volatile universe when the configured list is too small', () => {
+test('stock scanner honors the configured approved rotation without fallback expansion', () => {
   const scanner = createStockScanner({
     enabled: false,
     env: {
@@ -145,10 +149,62 @@ test('stock scanner falls back to the 100-symbol volatile universe when the conf
     localFetch: async () => buildResponse({}),
   });
 
-  assert.equal(scanner.config.symbols.length, VOLATILE_STOCK_SYMBOLS.length);
-  assert.equal(scanner.config.symbols[0], 'ICCM');
-  assert.equal(scanner.config.symbols.at(-1), 'NXTS');
+  assert.deepEqual(scanner.config.symbols, ['SOFI', 'AAPL', 'AMD', 'INTC', 'MSFT', 'NVDA', 'AMZN', 'META', 'TSLA', 'GOOGL', 'PLTR', 'CRM']);
   scanner.stop();
+});
+
+test('stock scanner creates a full-position sell at the dollar stop', () => {
+  const candidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80', unrealized_pl: '-10.25' },
+    stopLossDollars: 10,
+    trailingProfitStartDollars: 5,
+    trailingProfitGivebackDollars: 3,
+    trailingState: { positions: {} },
+  });
+
+  assert(candidate);
+  assert.equal(candidate.payload.side, 'sell');
+  assert.equal(candidate.payload.quantity, 2);
+  assert.equal(candidate.exitState.exit_reason, 'STOP_LOSS_DOLLARS');
+});
+
+test('stock scanner trails winners after peak profit and sell on giveback', () => {
+  const beforeStart = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80', unrealized_pl: '4.50' },
+    stopLossDollars: 10,
+    trailingProfitStartDollars: 5,
+    trailingProfitGivebackDollars: 3,
+    trailingState: { positions: { NVDA: { peak_unrealized_pl: 4.5 } } },
+  });
+  assert.equal(beforeStart, null);
+
+  const risingWinner = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80', unrealized_pl: '12' },
+    stopLossDollars: 10,
+    trailingProfitStartDollars: 5,
+    trailingProfitGivebackDollars: 3,
+    trailingState: { positions: { NVDA: { peak_unrealized_pl: 12 } } },
+  });
+  assert.equal(risingWinner, null);
+
+  const giveback = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80', unrealized_pl: '8.90' },
+    stopLossDollars: 10,
+    trailingProfitStartDollars: 5,
+    trailingProfitGivebackDollars: 3,
+    trailingState: { positions: { NVDA: { peak_unrealized_pl: 12 } } },
+  });
+  assert(giveback);
+  assert.equal(giveback.payload.side, 'sell');
+  assert.equal(giveback.exitState.exit_reason, 'TRAILING_PROFIT_GIVEBACK');
 });
 
 test('stock scanner batches large stock universes into multiple market-data requests', async () => {
@@ -264,6 +320,19 @@ test('stock scanner skips buy candidates when buys are blocked', async () => {
   assert.equal(result.accepted, true);
   assert.equal(requests.length, 0);
 });
+
+function stockSnapshot() {
+  return {
+    latestQuote: { bp: 79.95, ap: 80.05, t: '2026-06-16T20:00:00.000Z' },
+    latestTrade: { p: 80, t: '2026-06-16T20:00:00.000Z' },
+    minuteBar: { v: 50, h: 80.5, l: 79.5, t: '2026-06-16T20:00:00.000Z' },
+    prevDailyBar: { c: 79, v: 100000 },
+  };
+}
+
+function stockQuote() {
+  return { bp: 79.95, ap: 80.05, t: '2026-06-16T20:00:00.000Z' };
+}
 
 function buildResponse(payload) {
   return {

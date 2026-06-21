@@ -74,7 +74,7 @@ test('buy sizing blocks stock orders that cannot fit a single share inside the b
 
 test('buy notional target is configurable with a sane default', () => {
   const defaultConfig = loadConfig({});
-  assert.equal(defaultConfig.BUY_NOTIONAL_TARGET, 200);
+  assert.equal(defaultConfig.BUY_NOTIONAL_TARGET, 150);
   assert.equal(defaultConfig.MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE, 35);
 
   const customConfig = loadConfig({

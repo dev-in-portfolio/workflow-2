@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Local Trading Control Room</title>
+    <title>Live Market Cockpit</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -12,9 +12,9 @@
     <main class="shell">
       <header class="masthead">
         <div>
-          <div class="eyebrow">Local-only dashboard</div>
-          <h1>Trading Control Room</h1>
-          <p class="lede">Read-only state from the trader, scanners, policies, and history files. Nothing here can place, edit, or cancel a trade.</p>
+          <div class="eyebrow">Live Alpaca cockpit</div>
+          <h1>Live Market</h1>
+          <p class="lede">One workflow: approved stocks only, two positions max, dollar stop, trailing winners.</p>
         </div>
         <nav class="page-tabs" aria-label="Dashboard pages">
           <a class="page-tab active" href="/">Home</a>
@@ -29,30 +29,35 @@
       <section class="hero-grid focus-grid">
         <article class="hero-card focus-shell">
           <div class="card-head">
-            <span class="card-title">Four things</span>
+            <span class="card-title">What matters now</span>
             <span class="subtle" id="reportDate">-</span>
           </div>
           <div class="focus-summary" id="profitSummary">-</div>
           <div class="focus-grid-4">
             <div class="focus-card">
-              <span>Live open positions</span>
+              <span>Daily Change</span>
+              <strong id="todayPnl">-</strong>
+              <small id="profitStatusCopy">Alpaca account source</small>
+            </div>
+            <div class="focus-card">
+              <span>Open Positions</span>
               <strong id="openPositions">-</strong>
               <small id="openPositionsHint">Live broker count</small>
             </div>
             <div class="focus-card">
-              <span>Last trade</span>
+              <span>Buying Power</span>
+              <strong id="buyingPower">-</strong>
+              <small id="buyingPowerHint">Cash available</small>
+            </div>
+            <div class="focus-card">
+              <span>Last Trade</span>
               <strong id="lastTradeAge">-</strong>
-              <small id="lastTradeHint">Most recent local fill</small>
+              <small id="lastTradeHint">Recent local fill</small>
             </div>
             <div class="focus-card">
               <span>Workflow</span>
               <strong id="workflowState">-</strong>
               <small id="workflowHint">Local process state</small>
-            </div>
-            <div class="focus-card">
-              <span>Daily Change</span>
-              <strong id="todayPnl">-</strong>
-              <small id="profitStatusCopy">Waiting for live performance data.</small>
             </div>
           </div>
           <div class="profit-status-row">
@@ -63,6 +68,20 @@
       </section>
 
       <section class="panel-grid">
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Position 1</span>
+            <span class="subtle">Live Alpaca</span>
+          </div>
+          <div id="positionOne" class="position-card-large"></div>
+        </article>
+        <article class="panel">
+          <div class="card-head">
+            <span class="card-title">Position 2</span>
+            <span class="subtle">Live Alpaca</span>
+          </div>
+          <div id="positionTwo" class="position-card-large"></div>
+        </article>
         <article class="panel">
           <div class="card-head">
             <span class="card-title">Last 5 trades</span>

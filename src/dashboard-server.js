@@ -16,7 +16,7 @@ const DEFAULT_TRADER_PORTS = [3001, 3000, 3002, 3003, 3004, 3005, 3006, 3007, 30
 const DEFAULT_REFRESH_MAX_AGE_MS = 2_000;
 const DEFAULT_RECENT_ENTRY_LIMIT = 12;
 const DEFAULT_LOG_LINE_LIMIT = 20;
-const DASHBOARD_RUNTIME_VERSION = '2026-06-20.reliability-complete.1';
+const DASHBOARD_RUNTIME_VERSION = '2026-06-21.live-market-simplified.1';
 const execFileAsync = promisify(execFile);
 
 function createDashboardServer(options = {}) {
@@ -207,11 +207,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
 
   const regime = resolveMarketRegime(new Date());
   const activePolicySnapshot = unwrapPolicySnapshot(riskPolicy.data) || unwrapPolicySnapshot(overnightStatus.data?.policy_snapshot) || livePolicyFile || null;
-  const profitExitThresholdPct = resolveProfitExitThresholdPct({
-    ...runtimeEnv,
-    ACTIVE_POLICY_SELL_PROFIT_THRESHOLD_PCT: activePolicySnapshot?.policy?.sellProfitThresholdPct,
-  }, regime);
-  const profitExitFloorDollars = resolveProfitExitFloorDollars(activePolicySnapshot, runtimeEnv);
+  const liveMarketRules = resolveLiveMarketRules(runtimeEnv);
   const configDrift = buildConfigDrift(activePolicySnapshot, runtimeEnv);
   const report = unwrapReport(dailyLiveResults.data) || unwrapReport(overnightStatus.data) || unwrapReport(overnightStatusFile) || null;
   const status = unwrapStatus(liveStatus.data) || unwrapStatus(overnightStatus.data) || unwrapStatus(overnightStatusFile) || null;
@@ -226,6 +222,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     control: controlState,
     livePositionSummary,
     runtimeEnv,
+    liveMarketRules,
   });
   const sourceHealth = buildSourceHealth([
     liveStatus,
@@ -275,9 +272,14 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     regime: {
       active: regime,
       market_open: isRegularUsMarketHours(new Date()),
-      profit_exit_threshold_pct: profitExitThresholdPct,
-      profit_exit_floor_dollars: profitExitFloorDollars,
-      loss_exit_threshold_pct: resolveLossExitThresholdPct(runtimeEnv, regime),
+      workflow: 'Live Market',
+      approved_symbols: liveMarketRules.approved_symbols,
+      max_open_positions: liveMarketRules.max_open_positions,
+      buy_notional_target: liveMarketRules.buy_notional_target,
+      min_buy_notional: liveMarketRules.min_buy_notional,
+      stop_loss_dollars: liveMarketRules.stop_loss_dollars,
+      trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
+      trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
     },
     live: {
       status,
@@ -325,10 +327,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       report,
       activePolicySnapshot,
       regime,
-      profitExitThresholdPct,
-      profitExitFloorDollars,
+      liveMarketRules,
       recentEntries,
-      livePositions,
+      livePositions: livePositionSummary,
       liveAccount,
       control: controlState,
     }),
@@ -952,7 +953,7 @@ function buildOperatorTimeline(operatorEvents = [], recentEntries = {}, scannerR
 
 function normalizeLivePositions(livePositions = {}) {
   const positions = Array.isArray(livePositions?.positions) ? livePositions.positions : [];
-  const liveCount = Number(livePositions?.count);
+  const liveCount = safeNumber(livePositions?.count, null);
   if (!Number.isFinite(liveCount) && !positions.length) {
     return {
       available: false,
@@ -969,10 +970,16 @@ function normalizeLivePositions(livePositions = {}) {
       return {
         symbol: position.symbol || null,
         net_quantity: signedQty,
+        qty: rawQty,
         direction: signedQty > 0 ? 'long' : signedQty < 0 ? 'short' : 'flat',
         last_trade_at: position.updated_at || position.created_at || null,
         last_side: side || null,
-        last_price: safeNumber(position.avg_entry_price ?? position.market_value ?? position.current_price ?? null, null),
+        avg_entry_price: safeNumber(position.avg_entry_price ?? position.avgEntryPrice ?? null, null),
+        current_price: safeNumber(position.current_price ?? position.currentPrice ?? null, null),
+        market_value: safeNumber(position.market_value ?? position.marketValue ?? null, null),
+        cost_basis: safeNumber(position.cost_basis ?? position.costBasis ?? null, null),
+        unrealized_pl: safeNumber(position.unrealized_pl ?? position.unrealizedPnl ?? position.unrealized_intraday_pl ?? null, null),
+        last_price: safeNumber(position.current_price ?? position.avg_entry_price ?? position.market_value ?? null, null),
       };
     })
     .filter((position) => position.symbol && Math.abs(position.net_quantity) > 0);
@@ -1125,7 +1132,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   if (report && Number.isFinite(report.paper_pnl) && report.paper_pnl < 0) {
     alerts.push({
       kind: 'critical',
-      title: 'Daily PnL is negative',
+      title: 'Local history PnL is negative',
       message: `Today’s paper PnL is ${formatSignedNumber(report.paper_pnl)}.`,
     });
   }
@@ -1139,8 +1146,8 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   if (overnightStatusFile && isSnapshotStale(overnightStatusFile.timestamp || overnightStatusFile.payload?.timestamp || overnightStatusFile.started_at, 20)) {
     alerts.push({
       kind: 'warning',
-      title: 'Overnight snapshot looks stale',
-      message: 'The durable overnight snapshot has not been refreshed recently.',
+      title: 'Legacy snapshot looks stale',
+      message: 'A legacy snapshot has not been refreshed recently.',
     });
   }
   if (scannerRuntimeFile && isSnapshotStale(scannerRuntimeFile.last_scan_time || scannerRuntimeFile.updated_at, 5)) {
@@ -1160,7 +1167,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, profitExitThresholdPct, profitExitFloorDollars, recentEntries, livePositions, liveAccount, control }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1184,8 +1191,14 @@ function buildSummary({ status, report, activePolicySnapshot, regime, profitExit
     blocked_count: safeNumber(report?.blocked_count, null),
     approved_count: safeNumber(report?.approved_count, null),
     false_positives: safeNumber(report?.false_positives, null),
-    profit_exit_threshold_pct: profitExitThresholdPct,
     max_open_positions: safeNumber(activePolicySnapshot?.policy?.maxOpenPositions, null),
+    live_market_max_positions: liveMarketRules.max_open_positions,
+    buy_notional_target: liveMarketRules.buy_notional_target,
+    min_buy_notional: liveMarketRules.min_buy_notional,
+    stop_loss_dollars: liveMarketRules.stop_loss_dollars,
+    trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
+    trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
+    approved_symbols: liveMarketRules.approved_symbols,
     position_size_multiplier: safeNumber(activePolicySnapshot?.policy?.positionSizeMultiplier, null),
     recent_activity_count: recentEntries.paperOutcomes.length + recentEntries.riskDecisions.length + recentEntries.signals.length,
     total_trades_today: totalTradesToday,
@@ -1199,7 +1212,7 @@ function buildSummary({ status, report, activePolicySnapshot, regime, profitExit
     account_equity: accountEquity,
     account_last_equity: accountLastEquity,
     account_cash: accountCash,
-    profit_exit_floor_dollars: profitExitFloorDollars,
+    account_buying_power: safeNumber(liveAccount?.data?.buying_power ?? null, null),
     last_trade_at: recentEntries.lastTradeAt || recentEntries.lastSellAt || recentEntries.lastBuyAt || null,
     last_buy_at: recentEntries.lastBuyAt || null,
     last_sell_at: recentEntries.lastSellAt || null,
@@ -1212,8 +1225,10 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
     minBuyNotional: safeNumber(runtimeEnv.MIN_BUY_NOTIONAL, null),
-    sellProfitThresholdPct: safeNumber(runtimeEnv.OVERNIGHT_SCANNER_SELL_PROFIT_THRESHOLD_PCT || runtimeEnv.STOCK_SCANNER_SELL_PROFIT_THRESHOLD_PCT, null),
-    sellNetProfitFloorDollars: safeNumber(runtimeEnv.SELL_NET_PROFIT_FLOOR_DOLLARS || runtimeEnv.OVERNIGHT_SCANNER_SELL_NET_PROFIT_FLOOR_DOLLARS, null),
+    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'NVDA,TSLA,IREN,MRVL,INTC,MARA'),
+    positionStopLossDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_DOLLARS, null),
+    trailingProfitStartDollars: safeNumber(runtimeEnv.TRAILING_PROFIT_START_DOLLARS, null),
+    trailingProfitGivebackDollars: safeNumber(runtimeEnv.TRAILING_PROFIT_GIVEBACK_DOLLARS, null),
     volatilityThresholdPct: safeNumber(runtimeEnv.VOLATILITY_THRESHOLD_PCT, null),
     blockedBuyCalibrationBuckets: parseCsvForDrift(runtimeEnv.BLOCKED_BUY_CALIBRATION_BUCKETS),
     blockBuys: parseBoolForDrift(runtimeEnv.BLOCK_BUYS),
@@ -1222,8 +1237,10 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     ['maxOpenPositions', policy.maxOpenPositions, expected.maxOpenPositions],
     ['buyNotionalTarget', policy.buyNotionalTarget, expected.buyNotionalTarget],
     ['minBuyNotional', policy.minBuyNotional, expected.minBuyNotional],
-    ['sellProfitThresholdPct', policy.sellProfitThresholdPct, expected.sellProfitThresholdPct],
-    ['sellNetProfitFloorDollars', policy.sellNetProfitFloorDollars, expected.sellNetProfitFloorDollars],
+    ['approvedSymbols', policy.approvedSymbols, expected.approvedSymbols],
+    ['positionStopLossDollars', policy.positionStopLossDollars, expected.positionStopLossDollars],
+    ['trailingProfitStartDollars', policy.trailingProfitStartDollars, expected.trailingProfitStartDollars],
+    ['trailingProfitGivebackDollars', policy.trailingProfitGivebackDollars, expected.trailingProfitGivebackDollars],
     ['volatilityThresholdPct', policy.volatilityThresholdPct, expected.volatilityThresholdPct],
     ['blockedBuyCalibrationBuckets', policy.blockedBuyCalibrationBuckets, expected.blockedBuyCalibrationBuckets],
     ['blockBuys', policy.blockBuys, expected.blockBuys],
@@ -1246,15 +1263,16 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
   };
 }
 
-function buildExitManagementState({ scannerRuntime, control, livePositionSummary, runtimeEnv = {} }) {
+function buildExitManagementState({ scannerRuntime, control, livePositionSummary, runtimeEnv = {}, liveMarketRules = null }) {
   const scannerStatus = control?.scanner?.status || 'unknown';
   const scannerProfile = control?.scanner?.profile || control?.workflow?.desired_scanner_profile || null;
   const lastScanAt = scannerRuntime?.last_scan_time || null;
   const stale = !lastScanAt || isSnapshotStale(lastScanAt, 5);
   const positionsAvailable = Boolean(livePositionSummary?.available);
   const positions = Array.isArray(livePositionSummary?.positions) ? livePositionSummary.positions : [];
-  const floorPct = safeNumber(runtimeEnv.OVERNIGHT_SCANNER_SELL_PROFIT_THRESHOLD_PCT || runtimeEnv.STOCK_SCANNER_SELL_PROFIT_THRESHOLD_PCT, 40);
-  const floorDollars = safeNumber(runtimeEnv.SELL_NET_PROFIT_FLOOR_DOLLARS || runtimeEnv.OVERNIGHT_SCANNER_SELL_NET_PROFIT_FLOOR_DOLLARS, 5);
+  const rules = liveMarketRules || resolveLiveMarketRules(runtimeEnv);
+  const runtimeExitStates = Array.isArray(scannerRuntime?.position_exit_state) ? scannerRuntime.position_exit_state : [];
+  const runtimeBySymbol = new Map(runtimeExitStates.map((item) => [String(item.symbol || '').toUpperCase(), item]));
   const reasons = [];
   if (scannerStatus !== 'running') reasons.push('SCANNER_NOT_RUNNING');
   if (stale) reasons.push('SCANNER_SCAN_STALE');
@@ -1268,23 +1286,33 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
     last_scan_at: lastScanAt,
     reasons,
     rule: {
-      profit_threshold_pct: floorPct,
-      net_floor_dollars: floorDollars,
+      stop_loss_dollars: rules.stop_loss_dollars,
+      trailing_profit_start_dollars: rules.trailing_profit_start_dollars,
+      trailing_profit_giveback_dollars: rules.trailing_profit_giveback_dollars,
     },
     positions: positions.map((position) => {
       const marketValue = safeNumber(position.market_value ?? position.marketValue, null);
       const unrealized = safeNumber(position.unrealized_pl ?? position.unrealizedPnl ?? position.unrealized_intraday_pl, null);
-      const required = Number.isFinite(marketValue)
-        ? Math.max(floorDollars, marketValue * (floorPct / 100))
-        : floorDollars;
+      const runtimeState = runtimeBySymbol.get(String(position.symbol || '').toUpperCase()) || {};
+      const distanceToStop = Number.isFinite(unrealized) ? unrealized + rules.stop_loss_dollars : null;
+      const trailingPeak = safeNumber(runtimeState.trailing_peak_unrealized_pl ?? scannerRuntime?.trailing_state?.positions?.[position.symbol]?.peak_unrealized_pl, null);
+      const trailingActive = Boolean(runtimeState.trailing_active ?? (Number.isFinite(trailingPeak) && trailingPeak >= rules.trailing_profit_start_dollars));
+      const trailingSellAt = safeNumber(runtimeState.trailing_sell_if_unrealized_pl_at_or_below, Number.isFinite(trailingPeak) ? trailingPeak - rules.trailing_profit_giveback_dollars : null);
       return {
         symbol: position.symbol || null,
         market_value: marketValue,
+        quantity: safeNumber(position.net_quantity ?? position.qty ?? null, null),
+        avg_entry_price: safeNumber(position.avg_entry_price, null),
+        current_price: safeNumber(position.current_price, null),
         unrealized_pl: unrealized,
-        required_profit: Number(required.toFixed(4)),
-        eligible_for_exit: Number.isFinite(unrealized) ? unrealized >= required : false,
+        stop_loss_dollars: rules.stop_loss_dollars,
+        distance_to_stop_dollars: Number.isFinite(distanceToStop) ? Number(distanceToStop.toFixed(4)) : null,
+        trailing_active: trailingActive,
+        trailing_peak_unrealized_pl: Number.isFinite(trailingPeak) ? trailingPeak : null,
+        trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? trailingSellAt : null,
+        eligible_for_exit: Boolean(runtimeState.exit_reason),
         reason: Number.isFinite(unrealized)
-          ? (unrealized >= required ? 'TARGET_MET' : 'TARGET_NOT_MET')
+          ? (runtimeState.exit_reason || (unrealized <= -rules.stop_loss_dollars ? 'STOP_LOSS_READY' : trailingActive ? 'TRAILING_ACTIVE' : 'HOLD'))
           : 'UNREALIZED_PL_UNAVAILABLE',
       };
     }),
@@ -1362,6 +1390,19 @@ function unwrapPolicyEffectiveness(payload) {
   if (!payload) return null;
   if (payload.policy_effectiveness) return payload.policy_effectiveness;
   return payload;
+}
+
+function resolveLiveMarketRules(env = {}) {
+  return {
+    workflow: 'Live Market',
+    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'NVDA,TSLA,IREN,MRVL,INTC,MARA'),
+    max_open_positions: safeNumber(env.MAX_OPEN_POSITIONS, 2),
+    buy_notional_target: safeNumber(env.BUY_NOTIONAL_TARGET, 150),
+    min_buy_notional: safeNumber(env.MIN_BUY_NOTIONAL, 25),
+    stop_loss_dollars: safeNumber(env.POSITION_STOP_LOSS_DOLLARS, 10),
+    trailing_profit_start_dollars: safeNumber(env.TRAILING_PROFIT_START_DOLLARS, 5),
+    trailing_profit_giveback_dollars: safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 3),
+  };
 }
 
 function resolveProfitExitThresholdPct(env, regime) {

@@ -800,6 +800,36 @@ h1 {
   letter-spacing: 0.12em;
 }
 
+.position-card-large {
+  display: grid;
+  gap: 14px;
+}
+
+.position-hero {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.position-hero strong {
+  font-size: clamp(2.4rem, 7vw, 5rem);
+  letter-spacing: -0.08em;
+}
+
+.position-hero span {
+  font-size: clamp(1.8rem, 5vw, 3.5rem);
+  font-weight: 800;
+}
+
+.ok-text {
+  color: var(--green);
+}
+
+.warn-text {
+  color: var(--amber);
+}
+
 .table code {
   font-family: var(--mono);
   color: var(--cyan);

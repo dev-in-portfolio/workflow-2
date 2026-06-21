@@ -69,6 +69,13 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       ALPACA_API_KEY_ID: '',
       ALPACA_API_SECRET_KEY: '',
       ALPACA_API_BASE_URL: '',
+      MAX_OPEN_POSITIONS: '2',
+      BUY_NOTIONAL_TARGET: '150',
+      MIN_BUY_NOTIONAL: '25',
+      STOCK_SCANNER_SYMBOLS: 'NVDA,TSLA,IREN,MRVL,INTC,MARA',
+      POSITION_STOP_LOSS_DOLLARS: '10',
+      TRAILING_PROFIT_START_DOLLARS: '5',
+      TRAILING_PROFIT_GIVEBACK_DOLLARS: '3',
     },
     fetchImpl: global.fetch,
   }, {
@@ -87,8 +94,11 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.report.execution_drag, 0);
   assert.equal(snapshot.summary.blocked_count, 1);
   assert.equal(snapshot.summary.approved_count, 3);
-  assert.equal(snapshot.regime.profit_exit_threshold_pct, 40);
-  assert.equal(snapshot.regime.profit_exit_floor_dollars, 5);
+  assert.equal(snapshot.regime.workflow, 'Live Market');
+  assert.deepEqual(snapshot.regime.approved_symbols, ['NVDA', 'TSLA', 'IREN', 'MRVL', 'INTC', 'MARA']);
+  assert.equal(snapshot.regime.stop_loss_dollars, 10);
+  assert.equal(snapshot.regime.trailing_profit_start_dollars, 5);
+  assert.equal(snapshot.regime.trailing_profit_giveback_dollars, 3);
   assert.equal(snapshot.live.policy.policy.maxOpenPositions, 9);
   assert.equal(snapshot.recent_activity.paperOutcomes.length, 2);
   assert.equal(snapshot.recent_activity.orders.length, 2);
@@ -286,7 +296,7 @@ test('dashboard server serves local assets and api health', async () => {
   assert.equal(health.status, 'ok');
   assert(health.runtime_version);
   assert(Number.isFinite(health.pid));
-  assert(html.includes('Trading Control Room'));
+  assert(html.includes('Live Market'));
 });
 
 test('dashboard server serves the new Home, Status, and Policy tabs', async () => {

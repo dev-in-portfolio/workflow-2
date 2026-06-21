@@ -99,11 +99,11 @@ function render() {
   $('dashboardPort').textContent = snapshot?.dashboard?.port ? String(snapshot.dashboard.port) : '-';
   $('traderBaseUrl').textContent = snapshot?.dashboard?.trader_base_url || 'unresolved';
   $('snapshotStamp').textContent = snapshot?.timestamp ? `updated ${formatTime(snapshot.timestamp)}` : '-';
-  $('modeValue').textContent = summary.trader_mode || '-';
-  $('regimeValue').textContent = regime.active || '-';
-  $('pnlValue').textContent = formatSignedCurrency(summary.paper_pnl);
-  $('profitExitValue').textContent = formatPercent(summary.profit_exit_threshold_pct, 1);
-  $('scannerProfile').textContent = scanner.profile || workflow.desired_scanner_profile || 'not running';
+  $('modeValue').textContent = 'Live Market';
+  $('regimeValue').textContent = Array.isArray(regime.approved_symbols) ? regime.approved_symbols.join(', ') : '-';
+  $('pnlValue').textContent = formatSignedCurrency(summary.daily_change);
+  $('profitExitValue').textContent = `${formatCurrency(regime.stop_loss_dollars)} stop / ${formatCurrency(regime.trailing_profit_giveback_dollars)} trail`;
+  $('scannerProfile').textContent = scanner.status === 'running' ? 'running' : 'not running';
   $('traderStatusPill').textContent = statusLabel(workflow.status || trader.status || summary.trader_status || (state.error ? 'degraded' : 'unknown'));
   $('traderStatusPill').className = `pill ${state.error || workflow.status === 'degraded' ? 'critical' : workflow.status === 'running' ? 'ok' : workflow.status === 'starting' ? 'warn' : 'warn'}`;
   $('actionStatus').innerHTML = state.actionMessage
@@ -112,7 +112,7 @@ function render() {
 
   $('traderState').innerHTML = renderStateRows([
     ['workflow', workflow.status || '-'],
-    ['desired scanner', workflow.desired_scanner_profile || '-'],
+    ['workflow type', 'Live Market'],
     ['issues', Array.isArray(workflow.issues) && workflow.issues.length ? workflow.issues.join(', ') : 'none'],
     ['status', trader.status || '-'],
     ['pid', trader.pid || '-'],
@@ -124,7 +124,7 @@ function render() {
 
   $('scannerState').innerHTML = renderStateRows([
     ['status', scanner.status || '-'],
-    ['profile', scanner.profile || '-'],
+    ['scope', 'approved stocks only'],
     ['pid', scanner.pid || '-'],
     ['all pids', Array.isArray(scanner.pids) && scanner.pids.length ? scanner.pids.join(', ') : '-'],
     ['script', scanner.script || '-'],
@@ -137,12 +137,12 @@ function render() {
   ]);
 
   $('policyState').innerHTML = renderStateRows([
-    ['today PnL', formatSignedCurrency(summary.paper_pnl)],
+    ['Daily Change', formatSignedCurrency(summary.daily_change)],
     ['blocked', formatCount(summary.blocked_count)],
     ['approved', formatCount(summary.approved_count)],
     ['heartbeat', formatHeartbeat(live?.status?.heartbeat_count, live?.status?.last_request_at, snapshot?.timestamp)],
-    ['profit exit threshold', formatPercent(summary.profit_exit_threshold_pct, 1)],
-    ['loss exit threshold', formatPercent(regime.loss_exit_threshold_pct, 2)],
+    ['position stop', formatCurrency(regime.stop_loss_dollars)],
+    ['trailing rule', `${formatCurrency(regime.trailing_profit_start_dollars)} start / ${formatCurrency(regime.trailing_profit_giveback_dollars)} giveback`],
   ]);
 
   $('warnings').innerHTML = renderWarnings(snapshot?.alerts || [], state.error);
@@ -220,6 +220,15 @@ function formatPercent(value, decimals = 1) {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   }).format(Number(value) / 100);
+}
+
+function formatCurrency(value) {
+  if (!Number.isFinite(Number(value))) return '-';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 2,
+  }).format(Number(value));
 }
 
 function formatHeartbeat(count, lastRequestAt, snapshotTimestamp) {

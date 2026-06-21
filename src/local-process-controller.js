@@ -33,7 +33,7 @@ function createLocalProcessController(options = {}) {
   const runtimeEnv = options.runtimeEnv || loadRuntimeEnv(env, repoRoot);
   const workflowStatePath = options.workflowStatePath || path.join(repoRoot, 'data', 'workflow-state.json');
   const persisted = readPersistedWorkflowState();
-  const desiredProfile = normalizeScannerProfile(persisted.desired_scanner_profile || persisted.scanner_profile || 'crypto-only') || 'crypto-only';
+  const desiredProfile = normalizeScannerProfile(persisted.desired_scanner_profile || persisted.scanner_profile || 'live-market') || 'live-market';
   const state = {
     workflow: {
       status: 'stopped',
@@ -82,7 +82,7 @@ function createLocalProcessController(options = {}) {
   async function startWorkflow(profile = null) {
     return withWorkflowLock('start-workflow', async () => {
       state.workflow.status = 'starting';
-      const nextProfile = setDesiredScannerProfile(profile || state.workflow.desired_scanner_profile || state.scanner.last_profile || 'crypto-only');
+      const nextProfile = setDesiredScannerProfile(profile || state.workflow.desired_scanner_profile || state.scanner.last_profile || 'live-market');
       const traderResult = await startTrader();
       if (!traderResult.ok) {
         updateWorkflowStatus();
@@ -115,7 +115,7 @@ function createLocalProcessController(options = {}) {
 
   async function restartWorkflow(profile = null) {
     return withWorkflowLock('restart-workflow', async () => {
-      const nextProfile = setDesiredScannerProfile(profile || state.workflow.desired_scanner_profile || state.scanner.last_profile || 'crypto-only');
+      const nextProfile = setDesiredScannerProfile(profile || state.workflow.desired_scanner_profile || state.scanner.last_profile || 'live-market');
       await stopScanner();
       await stopTrader();
       await startTrader();
@@ -178,10 +178,10 @@ function createLocalProcessController(options = {}) {
   }
 
   async function restartTrader() {
-    return restartWorkflow(state.workflow.desired_scanner_profile || state.scanner.last_profile || 'crypto-only');
+    return restartWorkflow(state.workflow.desired_scanner_profile || state.scanner.last_profile || 'live-market');
   }
 
-  async function startScanner(profile = 'crypto-only') {
+  async function startScanner(profile = 'live-market') {
     const nextProfile = setDesiredScannerProfile(profile);
     if (!nextProfile) {
       return markAction('start-scanner', false, 'Unknown scanner profile');
@@ -266,7 +266,7 @@ function createLocalProcessController(options = {}) {
   }
 
   async function restartScanner(profile = null) {
-    const nextProfile = setDesiredScannerProfile(profile || state.scanner.profile || state.workflow.desired_scanner_profile || 'crypto-only');
+    const nextProfile = setDesiredScannerProfile(profile || state.scanner.profile || state.workflow.desired_scanner_profile || 'live-market');
     await stopScanner();
     return startScanner(nextProfile);
   }

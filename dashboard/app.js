@@ -17,7 +17,7 @@ const numberFormatter = new Intl.NumberFormat('en-US', {
 });
 
 const missingText = '-';
-const DASHBOARD_FRONTEND_VERSION = '2026-06-20.reliability-complete.1';
+const DASHBOARD_FRONTEND_VERSION = '2026-06-21.live-market-simplified.1';
 
 async function refreshSnapshot() {
   try {
@@ -45,10 +45,7 @@ function render(snapshot) {
   const dailyChange = Number.isFinite(Number(summary.daily_change))
     ? Number(summary.daily_change)
     : Number(summary.paper_pnl);
-  const executionDrag = Number(live?.report?.execution_drag || 0);
-  const profitFloorDollars = Number.isFinite(Number(summary.profit_exit_floor_dollars))
-    ? Number(summary.profit_exit_floor_dollars)
-    : Number(snapshot?.regime?.profit_exit_floor_dollars ?? 1);
+  const exitPositions = Array.isArray(live?.exit_management?.positions) ? live.exit_management.positions : [];
 
   const openPositionCount = Number.isFinite(Number(summary.open_positions_count))
     ? summary.open_positions_count
@@ -62,11 +59,11 @@ function render(snapshot) {
   $('lastTradeAge').textContent = lastTradeAge || missingText;
   $('lastTradeHint').textContent = summary.last_trade_at ? `At ${formatClock(summary.last_trade_at)}` : 'No local fill today';
   $('workflowState').textContent = String(workflowState).toUpperCase();
-  $('workflowHint').textContent = snapshot?.control?.scanner?.profile
-    ? `Scanner ${snapshot.control.scanner.profile}`
-    : `Desired ${summary.scanner_profile || 'none'}`;
+  $('workflowHint').textContent = 'Live Market';
   $('todayPnl').textContent = formatSignedCurrency(dailyChange);
-  $('profitSummary').textContent = buildProfitNote(dailyChange, executionDrag, summary.profit_exit_threshold_pct, profitFloorDollars, summary, snapshot);
+  $('buyingPower').textContent = formatCurrency(summary.account_buying_power ?? summary.account_cash);
+  $('buyingPowerHint').textContent = Number.isFinite(Number(summary.account_cash)) ? `Cash ${formatCurrency(summary.account_cash)}` : 'Alpaca account';
+  $('profitSummary').textContent = buildProfitNote(dailyChange, summary, snapshot);
   $('profitStatusPill').textContent = Number.isFinite(dailyChange)
     ? (dailyChange >= 0 ? 'Positive' : 'Negative')
     : 'No data';
@@ -78,6 +75,8 @@ function render(snapshot) {
   $('profitStatusCopy').textContent = versionWarning || statusCopy;
   $('profitStatusCopyAlt').textContent = versionWarning || statusCopy;
   $('reportDate').textContent = snapshot?.live?.overnight_status?.report_date || snapshot?.live?.status?.started_at || missingText;
+  renderPositionCard($('positionOne'), exitPositions[0], snapshot);
+  renderPositionCard($('positionTwo'), exitPositions[1], snapshot);
   renderRecentTrades(recentTrades, summary.last_trade_at);
 }
 
@@ -135,20 +134,47 @@ function estimateNetAfterDrag(gross, drag) {
   return Number(gross) - Number(drag || 0);
 }
 
-function buildProfitNote(gross, drag, floorPct, floorDollars = 1, summary = {}, snapshot = {}) {
+function buildProfitNote(gross, summary = {}, snapshot = {}) {
   const grossValue = Number(gross);
   if (!Number.isFinite(grossValue)) {
     return 'No live performance data yet.';
   }
-  const floorText = Number.isFinite(Number(floorPct))
-    ? `${formatPercent(floorPct, 1)} floor and ${formatCurrency(floorDollars)} net minimum`
-    : 'profit floor';
   const workflow = String(summary.workflow_state || snapshot?.control?.workflow?.status || 'unknown').toLowerCase();
   const positions = Number.isFinite(Number(summary.open_positions_count)) ? Number(summary.open_positions_count) : null;
+  const stop = formatCurrency(summary.stop_loss_dollars ?? snapshot?.regime?.stop_loss_dollars ?? 10);
+  const start = formatCurrency(summary.trailing_profit_start_dollars ?? snapshot?.regime?.trailing_profit_start_dollars ?? 5);
+  const giveback = formatCurrency(summary.trailing_profit_giveback_dollars ?? snapshot?.regime?.trailing_profit_giveback_dollars ?? 3);
   if (workflow !== 'running') {
-    return `What matters now: workflow is ${workflow}; Daily Change is ${formatSignedCurrency(grossValue)} from Alpaca; open positions ${positions ?? '-'}. Exit rule is ${floorText}.`;
+    return `What matters now: workflow is ${workflow}; Daily Change is ${formatSignedCurrency(grossValue)} from Alpaca; open positions ${positions ?? '-'}. Stop ${stop}; trailing starts ${start}, gives back ${giveback}.`;
   }
-  return `What matters now: workflow is running; Daily Change is ${formatSignedCurrency(grossValue)} from Alpaca; open positions ${positions ?? '-'}. Exit rule is ${floorText}.`;
+  return `What matters now: workflow is running; Daily Change is ${formatSignedCurrency(grossValue)} from Alpaca; open positions ${positions ?? '-'}. Stop ${stop}; trailing starts ${start}, gives back ${giveback}.`;
+}
+
+function renderPositionCard(target, position, snapshot = {}) {
+  if (!target) return;
+  if (!position) {
+    target.innerHTML = '<div class="empty-state">No live position in this slot.</div>';
+    return;
+  }
+  const stop = snapshot?.regime?.stop_loss_dollars ?? 10;
+  const trailing = position.trailing_active
+    ? `Active. Peak ${formatSignedCurrency(position.trailing_peak_unrealized_pl)}. Sell if P/L drops to ${formatSignedCurrency(position.trailing_sell_if_unrealized_pl_at_or_below)}.`
+    : `Not active yet. Starts at ${formatSignedCurrency(snapshot?.regime?.trailing_profit_start_dollars ?? 5)}.`;
+  target.innerHTML = `
+    <div class="position-hero">
+      <strong>${escapeHtml(position.symbol || '-')}</strong>
+      <span class="${Number(position.unrealized_pl) >= 0 ? 'ok-text' : 'warn-text'}">${escapeHtml(formatSignedCurrency(position.unrealized_pl))}</span>
+    </div>
+    <div class="trade-card-grid">
+      <span><b>Qty</b> ${escapeHtml(formatCount(position.quantity))}</span>
+      <span><b>Market value</b> ${escapeHtml(formatCurrency(position.market_value))}</span>
+      <span><b>Avg price</b> ${escapeHtml(formatCurrency(position.avg_entry_price))}</span>
+      <span><b>Current</b> ${escapeHtml(formatCurrency(position.current_price))}</span>
+      <span><b>Stop</b> ${escapeHtml(formatCurrency(-Math.abs(stop)))}</span>
+      <span><b>Distance</b> ${escapeHtml(formatSignedCurrency(position.distance_to_stop_dollars))}</span>
+    </div>
+    <div class="empty-state">${escapeHtml(trailing)}</div>
+  `;
 }
 
 function formatPercent(value, decimals = 1) {

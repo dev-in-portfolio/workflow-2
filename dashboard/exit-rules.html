@@ -12,9 +12,9 @@
     <main class="shell">
       <header class="masthead">
         <div>
-          <div class="eyebrow">Local-only dashboard</div>
+          <div class="eyebrow">Live Market exits</div>
           <h1>Exit Rules</h1>
-          <p class="lede">Focused view for the scanner thresholds and the profit floor used by the read-only dashboard. Nothing on this page can change live behavior.</p>
+          <p class="lede">Each live stock position is protected by a dollar stop and a trailing winner rule.</p>
         </div>
         <div class="header-metrics">
           <div class="metric-chip">
@@ -26,7 +26,7 @@
             <strong id="traderBaseUrl">-</strong>
           </div>
           <div class="metric-chip">
-            <span>Current regime</span>
+            <span>Workflow</span>
             <strong id="regimeValue">-</strong>
           </div>
         </div>
@@ -43,16 +43,16 @@
       <section class="hero-grid">
         <article class="hero-card">
           <div class="card-head">
-            <span class="card-title">Profit exit</span>
+            <span class="card-title">Stop and trailing exit</span>
             <span class="pill warn" id="rulePill">Loading</span>
           </div>
           <div class="threshold-block">
             <div class="threshold-value" id="profitExitThreshold">-</div>
-            <div class="threshold-caption">Profit-exit threshold</div>
+            <div class="threshold-caption">Hard stop per position</div>
           </div>
           <div class="threshold-details">
-            <div><strong>Net profit floor</strong> <span id="profitExitFloor">-</span></div>
-            <div><strong>Loss exit threshold</strong> <span id="lossExitThreshold">-</span></div>
+            <div><strong>Trailing starts</strong> <span id="profitExitFloor">-</span></div>
+            <div><strong>Giveback</strong> <span id="lossExitThreshold">-</span></div>
           </div>
           <div class="threshold-details" id="thresholdDetails"></div>
         </article>

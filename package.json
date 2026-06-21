@@ -10,11 +10,11 @@
     "test:legacy": "node --test test/trading-pipeline.test.js",
     "replay": "node src/replay-cli.js",
     "start": "node src/minimal-cli.js",
-    "start:market": "node scripts/start-overnight-scanner.js",
+    "start:market": "node scripts/start-stock-scanner.js",
     "dashboard": "node scripts/dashboard-cli.js",
     "control": "node src/server-cli.js",
     "trader": "node src/minimal-cli.js",
-    "smoke:paper": "node scripts/live-minimal-paper-smoke.js",
+    "smoke:live": "node scripts/live-minimal-paper-smoke.js",
     "status:overnight": "node scripts/overnight-status.js",
     "tune:policy": "node src/policy-cli.js"
   }

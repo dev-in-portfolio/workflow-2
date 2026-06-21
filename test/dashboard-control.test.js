@@ -33,6 +33,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
     startTrader: async () => { calls.push(['startTrader']); return { ok: true, message: 'Trader started' }; },
     stopTrader: async () => { calls.push(['stopTrader']); return { ok: true, message: 'Trader stopped' }; },
     restartTrader: async () => { calls.push(['restartTrader']); return { ok: true, message: 'Trader restarted' }; },
+    startWorkflow: async () => { calls.push(['startWorkflow']); return { ok: true, message: 'Workflow started' }; },
     startScanner: async (profile) => { calls.push(['startScanner', profile]); return { ok: true, message: 'Scanner started' }; },
     stopScanner: async () => { calls.push(['stopScanner']); return { ok: true, message: 'Scanner stopped' }; },
     restartScanner: async (profile) => { calls.push(['restartScanner', profile]); return { ok: true, message: 'Scanner restarted' }; },
@@ -52,7 +53,8 @@ test('dashboard control routes serve the operator tab and route actions locally'
   try {
     const operatorHtml = await fetch(`http://127.0.0.1:${port}/control`).then((response) => response.text());
     assert(operatorHtml.includes('Process Controls'));
-    assert(operatorHtml.includes('Switch to crypto only'));
+    assert(operatorHtml.includes('Live Market Scanner'));
+    assert.equal(operatorHtml.includes('Switch to crypto only'), false);
 
     const controlState = await fetch(`http://127.0.0.1:${port}/api/control/state`).then((response) => response.json());
     assert.equal(controlState.status, 'ok');
@@ -62,11 +64,11 @@ test('dashboard control routes serve the operator tab and route actions locally'
     const actionResponse = await fetch(`http://127.0.0.1:${port}/api/control/action`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'switch-scanner', profile: 'crypto-only' }),
+      body: JSON.stringify({ action: 'start-workflow' }),
     }).then((response) => response.json());
     assert.equal(actionResponse.ok, true);
     assert.equal(actionResponse.verified, true);
-    assert.deepEqual(calls.shift(), ['switchScannerProfile', 'crypto-only']);
+    assert.deepEqual(calls.shift(), ['startWorkflow']);
 
     const refreshAction = await fetch(`http://127.0.0.1:${port}/api/control/action`, {
       method: 'POST',

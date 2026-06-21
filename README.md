@@ -1,27 +1,24 @@
 # Trading Automation Control Plane
 
-This repository is a paper-first trading control plane with a direct-running execution service.
+This repository is a simplified Live Market trading control plane with a direct-running execution service and a local dashboard.
 
 ## What It Does
 
-- Normalizes market data into one internal schema.
-- Scores signals with deterministic freshness, contradiction, source-quality, and risk-aware checks.
-- Uses those quality scores in the hard risk gate so weak signals are blocked earlier.
-- Blocks unsafe candidates with a deterministic risk gate.
-- Can send approved orders to Alpaca when explicitly enabled with credentials and an Alpaca base URL.
-- Routes approved paper candidates into a paper-trade adapter boundary.
-- Records audit events, daily metrics, review items, and replay runs.
-- Keeps a paper-outcome feedback loop with calibration buckets and daily live-results reporting.
-- Produces tuning proposals from observed paper outcomes.
-- Exposes direct HTTP ingest endpoints and a small JSON API surface.
+- Runs one visible workflow: Live Market stock trading.
+- Scans only the approved rotation: `NVDA`, `TSLA`, `IREN`, `MRVL`, `INTC`, `MARA`.
+- Uses live Alpaca positions, open orders, account buying power, and Daily Change as the source of truth.
+- Holds at most two open positions.
+- Buys up to `$150` per position and refuses dust buys below `$25`.
+- Cuts a full position at `-$10` unrealized P/L.
+- Lets winners run, then sells after a `$3` giveback once a position has reached at least `+$5`.
+- Keeps a local dashboard focused on the few numbers that matter.
 
 ## Safety Model
 
-- Paper mode is the default.
-- Live trading is disabled by default.
-- Human approval is required by default.
+- Safe example config is the default.
+- Live trading still requires local `.env.local` credentials and explicit enablement.
 - Risk enforcement is deterministic code, not an LLM prompt.
-- The paper adapter remains the default execution boundary; Alpaca is opt-in when explicitly enabled.
+- The operator dashboard does not include liquidation, manual buy, manual sell, or cancel buttons.
 
 ## Architecture
 
@@ -30,7 +27,7 @@ Market data providers
 -> research and signal scoring
 -> deterministic risk gate
 -> human review
--> paper trade adapter
+-> Alpaca execution adapter when explicitly enabled
 -> order lifecycle tracking
 -> audit log
 -> daily metrics
@@ -40,11 +37,11 @@ Market data providers
 
 - `src/market-data.js`: symbol normalization, freshness checks, provider metadata, validation.
 - `src/signals.js`: signal scoring, contradiction checks, decision shaping.
-- `src/risk-gate.js`: deterministic paper-approval gate with reason codes.
+- `src/risk-gate.js`: deterministic approval gate with reason codes.
 - `src/paper-adapter.js`: in-memory paper order lifecycle, idempotency, fills, reconciliation.
 - `src/audit.js`: event recording and JSONL audit support.
 - `src/metrics.js`: daily summaries and performance breakdowns.
-- `src/feedback-loop.js`: paper outcome storage, daily reports, and tuning suggestions.
+- `src/feedback-loop.js`: local outcome storage, daily reports, and tuning suggestions.
 - `src/performance-tuning.js`: deterministic threshold proposals from paper results.
 - `src/review.js`: operator review payloads.
 - `src/replay.js`: replay runner for historical or fixture-driven checks.
@@ -65,7 +62,13 @@ The repo ships with these defaults:
 - `MIN_PROVIDER_CONFIRMATION_SCORE=70`
 - `MIN_EDGE_SCORE=60`
 - `MAX_STALENESS_SECONDS=60`
-- `MAX_OPEN_POSITIONS=12`
+- `MAX_OPEN_POSITIONS=2`
+- `BUY_NOTIONAL_TARGET=150`
+- `MIN_BUY_NOTIONAL=25`
+- `STOCK_SCANNER_SYMBOLS=NVDA,TSLA,IREN,MRVL,INTC,MARA`
+- `POSITION_STOP_LOSS_DOLLARS=10`
+- `TRAILING_PROFIT_START_DOLLARS=5`
+- `TRAILING_PROFIT_GIVEBACK_DOLLARS=3`
 - `AUTO_POLICY_REFRESH=false`
 - `AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT=2`
 - `AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE=50`
@@ -73,8 +76,7 @@ The repo ships with these defaults:
 - `ALPACA_EXECUTION_ENABLED=false`
 
 The config loader rejects unsafe live-trading combinations.
-See [.env.example](/C:/Users/dtoro/OneDrive/Documents/N8N/.env.example) for the current paper-first defaults and live-gate thresholds.
-If you want Alpaca activity, set `ALPACA_EXECUTION_ENABLED=true` and provide `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`, and `ALPACA_API_BASE_URL`.
+See [.env.example](/C:/Users/dtoro/OneDrive/Documents/N8N/.env.example) for safe defaults. For local live operation, `.env.local` should set `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, `ALPACA_EXECUTION_ENABLED=true`, and the Alpaca credentials/base URL.
 
 ## Running Tests
 

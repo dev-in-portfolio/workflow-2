@@ -6,6 +6,7 @@ const { createTradingControlServer } = require('./server');
 const { nowIso } = require('./util');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { createOvernightScanner } = require('./overnight-scanner');
+const { parseSymbolList, APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
 
 function resolvePerformanceHistoryPath(env = process.env) {
   const configuredPath = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
@@ -113,8 +114,10 @@ function startTradingControlServer(env = process.env, options = {}) {
       buyNotionalTarget: config.BUY_NOTIONAL_TARGET,
       minBuyNotional: config.MIN_BUY_NOTIONAL,
       volatilityThresholdPct: config.VOLATILITY_THRESHOLD_PCT,
-      sellProfitThresholdPct: Number(runtimeEnv.OVERNIGHT_SCANNER_SELL_PROFIT_THRESHOLD_PCT || runtimeEnv.STOCK_SCANNER_SELL_PROFIT_THRESHOLD_PCT || 5),
-      sellNetProfitFloorDollars: Number(runtimeEnv.SELL_NET_PROFIT_FLOOR_DOLLARS || runtimeEnv.OVERNIGHT_SCANNER_SELL_NET_PROFIT_FLOOR_DOLLARS || 1),
+      approvedSymbols: parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS),
+      positionStopLossDollars: Number(runtimeEnv.POSITION_STOP_LOSS_DOLLARS || config.POSITION_STOP_LOSS_DOLLARS || 10),
+      trailingProfitStartDollars: Number(runtimeEnv.TRAILING_PROFIT_START_DOLLARS || config.TRAILING_PROFIT_START_DOLLARS || 5),
+      trailingProfitGivebackDollars: Number(runtimeEnv.TRAILING_PROFIT_GIVEBACK_DOLLARS || config.TRAILING_PROFIT_GIVEBACK_DOLLARS || 3),
     },
   };
   const server = createTradingControlServer({

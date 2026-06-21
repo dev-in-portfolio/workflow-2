@@ -14,7 +14,7 @@
         <div>
           <div class="eyebrow">Local operator tab</div>
           <h1>Process Controls</h1>
-          <p class="lede">Buttons here only talk to the local trader and scanner processes. They do not touch Alpaca directly or change the trading logic itself.</p>
+          <p class="lede">Buttons here control the local Live Market workflow: trader plus the approved-stock scanner.</p>
         </div>
         <div class="header-metrics">
           <div class="metric-chip">
@@ -58,16 +58,8 @@
 
         <article class="panel control-panel">
           <div class="card-head">
-            <span class="card-title">Scanner controls</span>
-            <span class="subtle" id="scannerProfile">-</span>
-          </div>
-          <div class="button-grid">
-            <button class="control-button primary" data-action="start-scanner" data-profile="live-market">Start live market</button>
-            <button class="control-button" data-action="stop-scanner">Stop</button>
-            <button class="control-button" data-action="restart-scanner">Restart scanner</button>
-            <button class="control-button ghost" data-action="switch-scanner" data-profile="live-market">Switch to live market</button>
-            <button class="control-button ghost" data-action="switch-scanner" data-profile="market-aware-auto">Switch to market-aware auto</button>
-            <button class="control-button ghost" data-action="switch-scanner" data-profile="crypto-only">Switch to crypto only</button>
+            <span class="card-title">Live Market Scanner</span>
+            <span class="subtle" id="scannerProfile">approved stocks only</span>
           </div>
           <div class="state-grid" id="scannerState"></div>
         </article>
@@ -81,19 +73,19 @@
           </div>
           <div class="kpi-grid compact">
             <div class="kpi">
-              <span>Mode</span>
+              <span>Workflow</span>
               <strong id="modeValue">-</strong>
             </div>
             <div class="kpi">
-              <span>Regime</span>
+              <span>Approved list</span>
               <strong id="regimeValue">-</strong>
             </div>
             <div class="kpi">
-              <span>Today PnL</span>
+              <span>Daily Change</span>
               <strong id="pnlValue">-</strong>
             </div>
             <div class="kpi">
-              <span>Profit exit</span>
+              <span>Stop / trail</span>
               <strong id="profitExitValue">-</strong>
             </div>
           </div>

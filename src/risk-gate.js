@@ -128,6 +128,13 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   if (signalSide === 'buy' && config.blockBuys) {
     reasonCodes.push('BUY_SIDE_BLOCKED');
   }
+  const approvedSymbols = Array.isArray(config.approvedSymbols)
+    ? config.approvedSymbols.map(normalizePortfolioSymbol).filter(Boolean)
+    : [];
+  const normalizedSignalSymbol = normalizePortfolioSymbol(signal.symbol);
+  if (signalSide === 'buy' && approvedSymbols.length && normalizedSignalSymbol && !approvedSymbols.includes(normalizedSignalSymbol)) {
+    reasonCodes.push('SYMBOL_NOT_APPROVED_FOR_LIVE_MARKET');
+  }
   if (!portfolio) reasonCodes.push(RiskReason.PORTFOLIO_STATE_UNAVAILABLE);
   if (marketContext.provider_degraded) reasonCodes.push(RiskReason.DATA_PROVIDER_DEGRADED);
   if (marketContext.market_closed && signal.strategy_requires_open_market) reasonCodes.push(RiskReason.MARKET_CLOSED);
@@ -212,7 +219,6 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   if (signalSide === 'buy' && Number.isFinite(openPositionsCount) && openPositionsCount >= effectiveMaxOpenPositions) {
     reasonCodes.push(RiskReason.MAX_OPEN_POSITIONS_EXCEEDED);
   }
-  const normalizedSignalSymbol = normalizePortfolioSymbol(signal.symbol);
   const heldSymbols = new Set([
     ...(Array.isArray(portfolio.symbols_held) ? portfolio.symbols_held : []),
     ...(Array.isArray(portfolio.positions) ? portfolio.positions.map((position) => position.symbol) : []),
@@ -251,6 +257,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   let decision = RiskDecision.APPROVED_FOR_PAPER;
   if (reasonCodes.includes(RiskReason.KILL_SWITCH_ENABLED)
     || reasonCodes.includes('BUY_SIDE_BLOCKED')
+    || reasonCodes.includes('SYMBOL_NOT_APPROVED_FOR_LIVE_MARKET')
     || reasonCodes.includes(RiskReason.MAX_POSITION_SIZE_EXCEEDED)
     || reasonCodes.includes(RiskReason.MAX_DAILY_LOSS_EXCEEDED)
     || reasonCodes.includes(RiskReason.MAX_OPEN_POSITIONS_EXCEEDED)

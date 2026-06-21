@@ -28,30 +28,29 @@ function render(snapshot) {
 
   $('dashboardPort').textContent = snapshot?.dashboard?.port ? String(snapshot.dashboard.port) : '-';
   $('traderBaseUrl').textContent = snapshot?.dashboard?.trader_base_url || 'unresolved';
-  $('regimeValue').textContent = regime.active || '-';
-  $('rulePill').textContent = exitManagement.state ? String(exitManagement.state).toUpperCase() : (Number.isFinite(Number(summary.profit_exit_threshold_pct)) ? 'Active' : 'No data');
+  $('regimeValue').textContent = 'Live Market';
+  $('rulePill').textContent = exitManagement.state ? String(exitManagement.state).toUpperCase() : 'No data';
   $('rulePill').className = `pill ${state.error || exitManagement.managed === false ? 'critical' : 'ok'}`;
-  $('profitExitThreshold').textContent = formatPercent(summary.profit_exit_threshold_pct, 1);
-  $('profitExitFloor').textContent = formatCurrency(regime.profit_exit_floor_dollars ?? summary.profit_exit_floor_dollars ?? 1);
-  $('lossExitThreshold').textContent = formatPercent(regime.loss_exit_threshold_pct, 2);
+  $('profitExitThreshold').textContent = formatCurrency(regime.stop_loss_dollars ?? summary.stop_loss_dollars ?? 10);
+  $('profitExitFloor').textContent = formatCurrency(regime.trailing_profit_start_dollars ?? summary.trailing_profit_start_dollars ?? 5);
+  $('lossExitThreshold').textContent = formatCurrency(regime.trailing_profit_giveback_dollars ?? summary.trailing_profit_giveback_dollars ?? 3);
   $('thresholdDetails').innerHTML = `
     <div><strong>Market open</strong> ${regime.market_open ? 'Yes' : 'No'}</div>
     <div><strong>Exit manager</strong> ${escapeHtml(exitManagement.state || '-')}</div>
     <div><strong>Report date</strong> ${escapeHtml(snapshot?.live?.report?.date || snapshot?.live?.overnight_status?.report_date || '-')}</div>
   `;
-  renderRuleGrid(snapshot);
+  renderRuleGrid(snapshot, exitManagement);
   renderAlerts(snapshot?.alerts || [], state.error);
 }
 
-function renderRuleGrid(snapshot) {
+function renderRuleGrid(snapshot, exitManagement = {}) {
   const regime = snapshot?.regime || {};
-  const summary = snapshot?.summary || {};
   const rows = [
-    ['Profit exit threshold', formatPercent(summary.profit_exit_threshold_pct, 1)],
-    ['Net profit floor', formatCurrency(regime.profit_exit_floor_dollars ?? summary.profit_exit_floor_dollars ?? 1)],
-    ['Loss exit threshold', formatPercent(regime.loss_exit_threshold_pct, 2)],
-    ['Mode', summary.trader_mode || '-'],
-    ['Regime', regime.active || '-'],
+    ['Mode', 'Live Market'],
+    ['Position stop', formatCurrency(regime.stop_loss_dollars)],
+    ['Trailing starts', formatCurrency(regime.trailing_profit_start_dollars)],
+    ['Trailing giveback', formatCurrency(regime.trailing_profit_giveback_dollars)],
+    ['Approved symbols', Array.isArray(regime.approved_symbols) ? regime.approved_symbols.join(', ') : '-'],
     ['Market open', regime.market_open ? 'Yes' : 'No'],
     ['Exit manager', exitManagement.state || '-'],
     ['Exit reasons', Array.isArray(exitManagement.reasons) && exitManagement.reasons.length ? exitManagement.reasons.join(', ') : 'none'],
@@ -60,7 +59,7 @@ function renderRuleGrid(snapshot) {
     ? exitManagement.positions.map((position) => `
       <div class="policy-item">
         <span>${escapeHtml(position.symbol || 'position')}</span>
-        <strong>${escapeHtml(position.reason || '-')}: ${escapeHtml(formatCurrency(position.unrealized_pl))} / ${escapeHtml(formatCurrency(position.required_profit))}</strong>
+        <strong>${escapeHtml(position.reason || '-')}: ${escapeHtml(formatCurrency(position.unrealized_pl))}; stop distance ${escapeHtml(formatCurrency(position.distance_to_stop_dollars))}</strong>
       </div>
     `).join('')
     : `
