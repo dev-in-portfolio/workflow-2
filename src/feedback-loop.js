@@ -686,7 +686,7 @@ function normalizePolicySnapshot(snapshot) {
       positionSizeMultiplier: safeNumber(policy.positionSizeMultiplier ?? 1, 1),
       sellProfitThresholdPct: safeNumber(policy.sellProfitThresholdPct ?? 5, 5),
       sellNetProfitFloorDollars: safeNumber(policy.sellNetProfitFloorDollars ?? 1, 1),
-      buyNotionalTarget: safeNumber(policy.buyNotionalTarget ?? 200, 200),
+      buyNotionalTarget: safeNumber(policy.buyNotionalTarget ?? 150, 150),
       volatilityThresholdPct: safeNumber(policy.volatilityThresholdPct ?? 6, 6),
       blockedBuyCalibrationBuckets: Array.isArray(policy.blockedBuyCalibrationBuckets) ? policy.blockedBuyCalibrationBuckets.slice() : [],
       blockBuys: Boolean(policy.blockBuys ?? false),

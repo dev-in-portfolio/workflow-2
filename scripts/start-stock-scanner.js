@@ -24,7 +24,7 @@ function main(env = process.env) {
     minMovePct: 0.35,
     maxSpreadPct: 1.5,
     maxCandidatesPerRun: 8,
-    notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 200),
+    notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
     allowContrarianEntries: true,
   });
   scanner.start();

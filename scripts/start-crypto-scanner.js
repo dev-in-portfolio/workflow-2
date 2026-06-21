@@ -17,7 +17,7 @@ function main(env = process.env) {
     runtimeStateEnabled: true,
     recentSymbolsEnabled: true,
     symbols: runtimeEnv.OVERNIGHT_SCANNER_SYMBOLS || env.OVERNIGHT_SCANNER_SYMBOLS,
-    notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 200),
+    notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
     sellProfitThresholdPct: Number(runtimeEnv.OVERNIGHT_SCANNER_SELL_PROFIT_THRESHOLD_PCT || 5),
     sellNetProfitFloorDollars: Number(runtimeEnv.SELL_NET_PROFIT_FLOOR_DOLLARS || runtimeEnv.OVERNIGHT_SCANNER_SELL_NET_PROFIT_FLOOR_DOLLARS || 1),
     sellLossThresholdPct: Number(runtimeEnv.OVERNIGHT_SCANNER_SELL_LOSS_EXIT_THRESHOLD_PCT || 0.75),

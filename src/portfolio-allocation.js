@@ -40,7 +40,7 @@ function buildPortfolioSnapshot({ positions = [], openOrders = [], account = nul
 }
 
 function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = {} } = {}) {
-  const requested = Math.max(1, safeNumber(targetNotional, 200));
+  const requested = Math.max(1, safeNumber(targetNotional, 150));
   const floor = Math.max(1, safeNumber(minBuyNotional, 25));
   const remainingSlots = safeNumber(portfolio.remaining_position_slots, null);
   if (Number.isFinite(remainingSlots) && remainingSlots <= 0) {

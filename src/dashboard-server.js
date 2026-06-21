@@ -1136,7 +1136,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
     alerts.push({
       kind: 'critical',
       title: 'Local history PnL is negative',
-      message: `Today’s paper PnL is ${formatSignedNumber(report.paper_pnl)}.`,
+      message: `Today’s local-history PnL is ${formatSignedNumber(report.paper_pnl)}.`,
     });
   }
   if (status && Number.isFinite(status.uptime_minutes) && status.uptime_minutes < 10) {

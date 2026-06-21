@@ -38,7 +38,7 @@ Market data providers
 - `src/market-data.js`: symbol normalization, freshness checks, provider metadata, validation.
 - `src/signals.js`: signal scoring, contradiction checks, decision shaping.
 - `src/risk-gate.js`: deterministic approval gate with reason codes.
-- `src/paper-adapter.js`: in-memory paper order lifecycle, idempotency, fills, reconciliation.
+- `src/alpaca-adapter.js`: Alpaca execution adapter for explicitly enabled live operation.
 - `src/audit.js`: event recording and JSONL audit support.
 - `src/metrics.js`: daily summaries and performance breakdowns.
 - `src/feedback-loop.js`: local outcome storage, daily reports, and tuning suggestions.
@@ -109,11 +109,11 @@ For the dedicated standalone entrypoint, use:
 npm run trader
 ```
 
-By default, the server writes paper-history JSONL to `data/performance-history.jsonl` so the feedback loop can survive restarts.
+By default, the server writes local execution-history JSONL to `data/performance-history.jsonl` so the feedback loop can survive restarts.
 Set `PERFORMANCE_HISTORY_PATH` to change the file location, or `PORT` / `SERVER_PORT` to change the listening port.
 The server keeps the live policy snapshot at `data/live-policy.json` by default, or `LIVE_POLICY_PATH` if set.
 It also stores policy history in `data/policy-history.jsonl` by default, or `POLICY_HISTORY_PATH` if set.
-Use `MIN_PROVIDER_CONFIRMATION_SCORE`, `MIN_EDGE_SCORE`, `MAX_STALENESS_SECONDS`, `MAX_OPEN_POSITIONS`, and the `AUTO_POLICY_REFRESH*` settings to control how strict the live gate is before a signal can reach paper approval and how quickly the policy learns from outcomes and rejections. `MAX_OPEN_POSITIONS` now seeds the live startup policy, so the running service inherits your chosen concurrency target instead of falling back to the old tighter cap.
+Use `MIN_PROVIDER_CONFIRMATION_SCORE`, `MIN_EDGE_SCORE`, `MAX_STALENESS_SECONDS`, `MAX_OPEN_POSITIONS`, and the `AUTO_POLICY_REFRESH*` settings to control how strict the live gate is before a signal can reach approval and how quickly the policy learns from outcomes and rejections. `MAX_OPEN_POSITIONS` now seeds the live startup policy, so the running service inherits your chosen concurrency target instead of falling back to an old cap.
 
 To have it start automatically when you log in on Windows, run:
 
@@ -123,12 +123,7 @@ powershell -ExecutionPolicy Bypass -File scripts/startup-install.ps1
 
 That creates a launcher in your Windows Startup folder and reads `.env.local` if present.
 The startup script also writes a transcript to `data/logs/trader-startup.log` so you can inspect launch issues after the fact.
-The running service also keeps a durable overnight snapshot at `data/logs/overnight-status.json` by default.
-It writes an initial startup snapshot right away, then keeps refreshing it while the server is idle.
-That snapshot is refreshed periodically while the server is idle so the file stays current even when no requests are coming in.
-It includes `started_at` and `uptime_minutes` so you can tell how long the run has been alive.
-It also includes request and heartbeat counters so you can see whether the system has been active or only idling.
-You can print that snapshot at any time with `npm run status:overnight`, which also flags whether the file is fresh or stale.
+The running service also keeps local status snapshots under `data/logs/` so the dashboard can show freshness, uptime, request count, and heartbeat state even after restarts.
 
 To remove that startup launcher later:
 
@@ -136,7 +131,7 @@ To remove that startup launcher later:
 powershell -ExecutionPolicy Bypass -File scripts/uninstall-startup.ps1
 ```
 
-To refresh that policy from the stored paper history:
+To refresh that policy from stored local history:
 
 ```bash
 npm run tune:policy
@@ -146,18 +141,18 @@ The direct service accepts either the legacy compatibility paths or the simpler 
 
 - `POST /signal` or `POST /signals`
 - `POST /market-ingest`
-- `POST /paper-order`
-- `POST /paper-fill`
+- `POST /paper-order` compatibility intake
+- `POST /paper-fill` compatibility fill intake
 - `POST /risk-decision`
 - `GET /status`
 
-The paper-order intake path carries the live `positionSizeMultiplier` into normalized order requests so downstream sizing follows the active policy.
-`POST /market-ingest` can normalize real provider data, score it, and create a paper-order request when Alpaca and Twelve Data confirmation is strong enough.
+The compatibility order intake path carries the live `positionSizeMultiplier` into normalized order requests so downstream sizing follows the active policy.
+`POST /market-ingest` can normalize real provider data, score it, and create an order request when Alpaca and Twelve Data confirmation is strong enough.
 
 ## Replay Mode
 
-Replay runs use the same normalization, scoring, and risk gate logic as the paper flow.
-Daily live-results reports include blocked counts, approved counts, paper PnL, drawdown, false positives, and best/worst outcomes.
+Replay runs use the same normalization, scoring, and risk gate logic as the live-market flow.
+Daily live-results reports include blocked counts, approved counts, local-history PnL, drawdown, false positives, and best/worst outcomes.
 They also include the live `recommended_max_open_positions` target so you can see the current capacity recommendation alongside the rest of the daily rollup.
 They also include calibration-bucket performance so you can see which confidence ranges are winning or losing.
 
@@ -185,7 +180,7 @@ That compatibility layer is optional. The direct service does not require the or
 
 The local API exposes:
 
-- `POST /paper-outcomes` to ingest a paper result
+- `POST /paper-outcomes` compatibility intake for a recorded result
 - `GET /daily-live-results` to retrieve the current report
 - `GET /performance/tuning` to retrieve tuning suggestions and calibration buckets
 - `GET /risk-policy` to inspect the current live policy snapshot
@@ -199,21 +194,19 @@ The local API exposes:
 
 The server can also refresh the policy automatically after enough blocked decisions, outcomes, or rejection pressure accumulate, so the live gate keeps learning without a manual operator step.
 
-The tuning output now includes a proposed policy snapshot that can tighten or relax confidence, freshness, source-quality, contradiction, and signal-risk thresholds based on observed paper results.
+The tuning output now includes a proposed policy snapshot that can tighten or relax confidence, freshness, source-quality, contradiction, and signal-risk thresholds based on observed local results.
 It also carries provider-confirmation and edge-score floors so weak multi-source agreement does not silently expand risk.
-The walk-forward comparison shows whether the tuned policy actually improves paper PnL, drawdown, and false positives relative to baseline.
-If no replay fixtures are posted, the comparison can fall back to stored paper history captured by the performance store.
+The walk-forward comparison shows whether the tuned policy actually improves local-history PnL, drawdown, and false positives relative to baseline.
+If no replay fixtures are posted, the comparison can fall back to stored history captured by the performance store.
 If you pass `performanceHistoryPath` when creating the server, the performance store will persist signals, decisions, outcomes, and events to JSONL so restarts can keep using the same history.
 If you pass `policyPath` when creating the server, the live policy snapshot is written to disk and can be refreshed with the tuning CLI.
 If you need to widen or reduce how many positions can be open at once, `POST /policy-capacity-rebalance` will apply the current learning recommendation from the stored effectiveness history.
 If you need an emergency retreat, `POST /policy-rollback` will restore the best historical live policy from the stored effectiveness history.
 
-## Before Any Live Trading
+## Before Market Open
 
-You would still need:
-
-- A verified broker integration with explicit live flags.
-- Human approval gates for live turns.
-- Real portfolio reconciliation.
-- Production monitoring and incident response.
-- End-to-end live safety review.
+- Confirm Alpaca shows the expected cash and zero or known open positions.
+- Confirm the dashboard Home page says `Live Market`, max positions `2`, buy cap `$150`, and workflow `stopped`.
+- Start the workflow only during regular US market hours.
+- Watch that only one trader and one stock scanner run.
+- Confirm the scanner only considers `NVDA`, `TSLA`, `IREN`, `MRVL`, `INTC`, and `MARA`.

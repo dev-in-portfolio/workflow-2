@@ -55,7 +55,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     };
   }
 
-  const requestedBuyNotionalTarget = policy.buyNotionalTarget ?? options.buyNotionalTarget ?? 200;
+  const requestedBuyNotionalTarget = policy.buyNotionalTarget ?? options.buyNotionalTarget ?? 150;
   const minBuyNotional = Math.max(1, Number(policy.minBuyNotional ?? options.minBuyNotional ?? 25) || 25);
   const liveBuyBudget = isBuySignal(signal)
     ? await resolveLiveBuyNotionalTarget(options.executionAdapter, requestedBuyNotionalTarget)
@@ -184,7 +184,7 @@ function isBuySignal(signal = {}) {
 }
 
 async function resolveLiveBuyNotionalTarget(executionAdapter, desiredTarget) {
-  const fallbackTarget = Math.max(1, Number(desiredTarget) || 200);
+  const fallbackTarget = Math.max(1, Number(desiredTarget) || 150);
   if (!executionAdapter || typeof executionAdapter.getAccount !== 'function') {
     return { target: fallbackTarget, requested: fallbackTarget, cash_limited: false };
   }
