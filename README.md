@@ -76,7 +76,7 @@ The repo ships with these defaults:
 - `ALPACA_EXECUTION_ENABLED=false`
 
 The config loader rejects unsafe live-trading combinations.
-See [.env.example](/C:/Users/dtoro/OneDrive/Documents/N8N/.env.example) for safe defaults. For local live operation, `.env.local` should set `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, `ALPACA_EXECUTION_ENABLED=true`, and the Alpaca credentials/base URL.
+See [.env.example](/C:/Users/dtoro/OneDrive/Documents/Workflow2/.env.example) for safe defaults. For local live operation, `.env.local` should set `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, `ALPACA_EXECUTION_ENABLED=true`, and the Alpaca credentials/base URL.
 
 ## Running Tests
 
@@ -101,7 +101,7 @@ npm run dashboard
 
 The dashboard is read-only and starts on `http://127.0.0.1:1111` when free, or the next available local port if `1111` is already occupied. It reads the existing trader endpoints and local history files without changing any execution behavior.
 It also opens your browser automatically when launched from `npm run dashboard`, unless you disable that with `DASHBOARD_OPEN_BROWSER=false`.
-For a one-double-click launch on Windows, use [`start-dashboard.cmd`](/C:/Users/dtoro/OneDrive/Documents/N8N/start-dashboard.cmd).
+For a one-double-click launch on Windows, use [`start-dashboard.cmd`](/C:/Users/dtoro/OneDrive/Documents/Workflow2/start-dashboard.cmd).
 
 For the dedicated standalone entrypoint, use:
 
