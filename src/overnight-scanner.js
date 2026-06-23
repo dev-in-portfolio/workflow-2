@@ -595,7 +595,7 @@ function buildCandidateForSymbol(symbol, snapshot, latestQuote, options = {}) {
   );
   const highPrice = safeNumber(snapshot.minuteBar?.h ?? snapshot.latestTrade?.p ?? currentPrice, currentPrice);
   const lowPrice = safeNumber(snapshot.minuteBar?.l ?? snapshot.latestTrade?.p ?? currentPrice, currentPrice);
-  const positionQty = safeNumber(options.position?.qty_available ?? options.position?.qty ?? 0, 0);
+  const positionQty = safeNumber(options.position?.qty ?? options.position?.quantity ?? options.position?.qty_available ?? 0, 0);
   const avgEntryPrice = safeNumber(options.position?.avg_entry_price ?? options.position?.avgEntryPrice ?? null);
   const unrealizedPct = Number.isFinite(avgEntryPrice) && avgEntryPrice > 0
     ? ((currentPrice - avgEntryPrice) / avgEntryPrice) * 100

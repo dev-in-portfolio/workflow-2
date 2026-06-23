@@ -44,7 +44,7 @@ function render(snapshot) {
   $('uptimeValue').textContent = formatMinutes(summary.uptime_minutes);
   $('heartbeatValue').textContent = formatHeartbeat(status?.heartbeat_count, status?.last_request_at, snapshot?.timestamp);
   $('marketOpenValue').textContent = regime.market_open ? 'Yes' : 'No';
-  $('scannerScanValue').textContent = scannerRuntime.last_scan_time ? `${msAgo(scannerRuntime.last_scan_time)} ago` : '-';
+  $('scannerScanValue').textContent = scannerRuntime.last_scan_time ? msAgo(scannerRuntime.last_scan_time) : '-';
   $('scannerSkipValue').textContent = topSkipReason(scannerRuntime.skip_summary);
   $('exitManagementValue').textContent = String(exitManagement.state || '-').toUpperCase();
   $('dashboardUrlValue').textContent = snapshot?.dashboard?.base_url || '-';

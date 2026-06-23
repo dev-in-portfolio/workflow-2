@@ -9,6 +9,13 @@ function normalizeAlpacaBaseUrl(value, fallback) {
   return baseUrl || 'https://paper-api.alpaca.markets';
 }
 
+function roundEquityPrice(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return value;
+  const decimals = Math.abs(numericValue) >= 1 ? 2 : 4;
+  return Number(numericValue.toFixed(decimals));
+}
+
 function buildAlpacaOrderPayload(request) {
   const assetType = String(request.asset_type || request.assetType || '').trim().toLowerCase();
   const symbol = String(request.symbol || '').trim().toUpperCase();
@@ -32,7 +39,7 @@ function buildAlpacaOrderPayload(request) {
   }
 
   if (request.limit_price !== undefined && request.limit_price !== null) {
-    payload.limit_price = String(request.limit_price);
+    payload.limit_price = String(isCryptoOrder ? request.limit_price : roundEquityPrice(request.limit_price));
   }
 
   const hasStopLoss = request.stop_loss !== undefined && request.stop_loss !== null;
@@ -40,8 +47,8 @@ function buildAlpacaOrderPayload(request) {
   if (!isCryptoOrder) {
     if (hasStopLoss && hasTakeProfit) {
       payload.order_class = 'bracket';
-      payload.take_profit = { limit_price: String(request.take_profit) };
-      payload.stop_loss = { stop_price: String(request.stop_loss) };
+      payload.take_profit = { limit_price: String(roundEquityPrice(request.take_profit)) };
+      payload.stop_loss = { stop_price: String(roundEquityPrice(request.stop_loss)) };
     } else if (hasStopLoss || hasTakeProfit) {
       throw new Error('Alpaca bracket orders require both stop_loss and take_profit');
     }
@@ -83,9 +90,13 @@ class AlpacaTradeAdapter {
     this.#ensureConfigured();
     const isCryptoOrder = String(request.asset_type || request.assetType || '').trim().toLowerCase() === 'crypto'
       || String(request.symbol || '').includes('/');
+    const quantity = safeNumber(request.quantity, null);
+    const isFractionalStockOrder = !isCryptoOrder
+      && (request.supports_fractional_shares === true
+        || (Number.isFinite(quantity) && quantity > 0 && !Number.isInteger(quantity)));
     const executionRequest = this.paperTrading && request.allow_bracket !== true
       ? { ...request, stop_loss: null, take_profit: null }
-      : isCryptoOrder
+      : isCryptoOrder || isFractionalStockOrder
         ? { ...request, stop_loss: null, take_profit: null }
         : request;
     const payload = buildAlpacaOrderPayload(executionRequest);

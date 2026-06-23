@@ -640,6 +640,7 @@ function defaultPolicySnapshot() {
       minCryptoProviderConfirmationScore: 35,
       minSellProviderConfirmationScore: 60,
       sellMaxProviderPriceDiffPct: 0.75,
+      maxSpreadSlippagePct: 7,
       minEdgeScore: 60,
       blockedCalibrationBuckets: [],
       maxContradictionScore: 50,
@@ -650,6 +651,13 @@ function defaultPolicySnapshot() {
       positionSizeMultiplier: 1,
       sellProfitThresholdPct: 5,
       sellNetProfitFloorDollars: 1,
+      approvedSymbols: [],
+      minBuyNotional: 25,
+      positionStopLossDollars: 1,
+      positionStopLossNotionalPct: 0.75,
+      positionStopLossMaxDollars: 2.5,
+      trailingProfitStartDollars: 0.5,
+      trailingProfitGivebackDollars: 0.3,
       blockedBuyCalibrationBuckets: [],
       blockBuys: false,
     },
@@ -676,6 +684,7 @@ function normalizePolicySnapshot(snapshot) {
       minCryptoProviderConfirmationScore: safeNumber(policy.minCryptoProviderConfirmationScore ?? 35, 35),
       minSellProviderConfirmationScore: safeNumber(policy.minSellProviderConfirmationScore ?? 60, 60),
       sellMaxProviderPriceDiffPct: safeNumber(policy.sellMaxProviderPriceDiffPct ?? 0.75, 0.75),
+      maxSpreadSlippagePct: safeNumber(policy.maxSpreadSlippagePct ?? 7, 7),
       minEdgeScore: safeNumber(policy.minEdgeScore ?? 60, 60),
       blockedCalibrationBuckets: Array.isArray(policy.blockedCalibrationBuckets) ? policy.blockedCalibrationBuckets.slice() : [],
       maxContradictionScore: safeNumber(policy.maxContradictionScore ?? 50, 50),
@@ -687,11 +696,29 @@ function normalizePolicySnapshot(snapshot) {
       sellProfitThresholdPct: safeNumber(policy.sellProfitThresholdPct ?? 5, 5),
       sellNetProfitFloorDollars: safeNumber(policy.sellNetProfitFloorDollars ?? 1, 1),
       buyNotionalTarget: safeNumber(policy.buyNotionalTarget ?? 150, 150),
-      volatilityThresholdPct: safeNumber(policy.volatilityThresholdPct ?? 6, 6),
+      approvedSymbols: normalizeApprovedSymbols(policy.approvedSymbols),
+      minBuyNotional: safeNumber(policy.minBuyNotional ?? 25, 25),
+      positionStopLossDollars: safeNumber(policy.positionStopLossDollars ?? 1, 1),
+      positionStopLossNotionalPct: safeNumber(policy.positionStopLossNotionalPct ?? 0.75, 0.75),
+      positionStopLossMaxDollars: safeNumber(policy.positionStopLossMaxDollars ?? 2.5, 2.5),
+      trailingProfitStartDollars: safeNumber(policy.trailingProfitStartDollars ?? 0.5, 0.5),
+      trailingProfitGivebackDollars: safeNumber(policy.trailingProfitGivebackDollars ?? 0.3, 0.3),
+      volatilityThresholdPct: policy.volatilityThresholdPct === undefined || policy.volatilityThresholdPct === null
+        ? null
+        : safeNumber(policy.volatilityThresholdPct, null),
       blockedBuyCalibrationBuckets: Array.isArray(policy.blockedBuyCalibrationBuckets) ? policy.blockedBuyCalibrationBuckets.slice() : [],
       blockBuys: Boolean(policy.blockBuys ?? false),
     },
   };
+}
+
+function normalizeApprovedSymbols(value) {
+  const rawSymbols = Array.isArray(value)
+    ? value
+    : String(value || '').split(',');
+  return [...new Set(rawSymbols
+    .map((symbol) => String(symbol || '').trim().toUpperCase())
+    .filter(Boolean))];
 }
 
 function mergePolicySnapshot(snapshot, patch = {}) {

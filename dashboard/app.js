@@ -61,6 +61,7 @@ function render(snapshot) {
   $('workflowState').textContent = String(workflowState).toUpperCase();
   $('workflowHint').textContent = 'Live Market';
   $('todayPnl').textContent = formatSignedCurrency(dailyChange);
+  $('todayPnl').className = Number.isFinite(dailyChange) && dailyChange >= 0 ? 'ok-text' : 'warn-text';
   $('buyingPower').textContent = formatCurrency(summary.account_buying_power ?? summary.account_cash);
   $('buyingPowerHint').textContent = Number.isFinite(Number(summary.account_cash)) ? `Cash ${formatCurrency(summary.account_cash)}` : 'Alpaca account';
   $('profitSummary').textContent = buildProfitNote(dailyChange, summary, snapshot);
@@ -75,8 +76,8 @@ function render(snapshot) {
   $('profitStatusCopy').textContent = versionWarning || statusCopy;
   $('profitStatusCopyAlt').textContent = versionWarning || statusCopy;
   $('reportDate').textContent = snapshot?.live?.report?.date || snapshot?.live?.status?.started_at || missingText;
-  renderPositionCard($('positionOne'), exitPositions[0], snapshot);
-  renderPositionCard($('positionTwo'), exitPositions[1], snapshot);
+  renderPositionCard($('positionOne'), exitPositions[0], snapshot, { primary: true, slotLabel: 'Primary position' });
+  renderPositionCard($('positionTwo'), exitPositions[1], snapshot, { primary: false, slotLabel: 'Secondary position' });
   renderRecentTrades(recentTrades, summary.last_trade_at);
 }
 
@@ -150,20 +151,48 @@ function buildProfitNote(gross, summary = {}, snapshot = {}) {
   return `What matters now: workflow is running; Daily Change is ${formatSignedCurrency(grossValue)} from Alpaca; open positions ${positions ?? '-'}. Stop ${stop}; trailing starts ${start}, gives back ${giveback}.`;
 }
 
-function renderPositionCard(target, position, snapshot = {}) {
+function renderPositionCard(target, position, snapshot = {}, options = {}) {
   if (!target) return;
   if (!position) {
+    target.className = 'position-card-large';
     target.innerHTML = '<div class="empty-state">No live position in this slot.</div>';
     return;
   }
-  const stop = snapshot?.regime?.stop_loss_dollars ?? 10;
-  const trailing = position.trailing_active
-    ? `Active. Peak ${formatSignedCurrency(position.trailing_peak_unrealized_pl)}. Sell if P/L drops to ${formatSignedCurrency(position.trailing_sell_if_unrealized_pl_at_or_below)}.`
-    : `Not active yet. Starts at ${formatSignedCurrency(snapshot?.regime?.trailing_profit_start_dollars ?? 5)}.`;
+  const visual = derivePositionVisual(position, snapshot);
+  const stop = Number(snapshot?.regime?.stop_loss_dollars ?? 10);
+  target.className = `position-card-large ${visual.stateClass} ${options.primary ? 'is-primary' : ''}`.trim();
+  target.style.setProperty('--meter-fill', `${visual.meterFill}%`);
+  target.style.setProperty('--pressure-fill', `${visual.pressureFill}%`);
+  target.style.setProperty('--trail-fill', `${visual.trailFill}%`);
   target.innerHTML = `
     <div class="position-hero">
-      <strong>${escapeHtml(position.symbol || '-')}</strong>
-      <span class="${Number(position.unrealized_pl) >= 0 ? 'ok-text' : 'warn-text'}">${escapeHtml(formatSignedCurrency(position.unrealized_pl))}</span>
+      <div>
+        <div class="position-status ${visual.statusTone}">${escapeHtml(options.slotLabel || 'Live position')}</div>
+        <strong>${escapeHtml(position.symbol || '-')}</strong>
+      </div>
+      <span class="${visual.pnlTone}">${escapeHtml(formatSignedCurrency(position.unrealized_pl))}</span>
+    </div>
+    <div class="position-ladder">
+      <div class="position-ladder-top">
+        <span>Trail ribbon</span>
+        <span>${escapeHtml(visual.trailLabel)}</span>
+      </div>
+      <div class="position-ribbon" aria-hidden="true">
+        <div class="position-ribbon-fill"></div>
+        <div class="position-ribbon-trail"></div>
+      </div>
+      <div class="position-ribbon-markers">
+        <span>${escapeHtml(visual.trailStartLabel)}</span>
+        <span>${escapeHtml(visual.trailPeakLabel)}</span>
+        <span>${escapeHtml(visual.trailExitLabel)}</span>
+      </div>
+    </div>
+    <div class="position-pressure">
+      <div class="position-pressure-row">
+        <span>Exit pressure</span>
+        <span>${escapeHtml(visual.pressureLabel)}</span>
+      </div>
+      <div class="position-pressure-bar"><span></span></div>
     </div>
     <div class="trade-card-grid">
       <span><b>Qty</b> ${escapeHtml(formatCount(position.quantity))}</span>
@@ -173,8 +202,77 @@ function renderPositionCard(target, position, snapshot = {}) {
       <span><b>Stop</b> ${escapeHtml(formatCurrency(-Math.abs(stop)))}</span>
       <span><b>Distance</b> ${escapeHtml(formatSignedCurrency(position.distance_to_stop_dollars))}</span>
     </div>
-    <div class="empty-state">${escapeHtml(trailing)}</div>
+    <div class="position-note">${escapeHtml(visual.note)}</div>
   `;
+}
+
+function derivePositionVisual(position, snapshot = {}) {
+  const unrealized = Number(position?.unrealized_pl);
+  const distanceToStop = Number(position?.distance_to_stop_dollars);
+  const peak = Number(position?.trailing_peak_unrealized_pl);
+  const trailTrigger = Number(position?.trailing_sell_if_unrealized_pl_at_or_below);
+  const trailingActive = Boolean(position?.trailing_active);
+  const trailingStart = Number(snapshot?.regime?.trailing_profit_start_dollars ?? 5);
+  const stop = Number(snapshot?.regime?.stop_loss_dollars ?? 10);
+  const distanceSafe = Number.isFinite(distanceToStop) ? distanceToStop : null;
+  const trailSpan = Number.isFinite(peak) && Number.isFinite(trailTrigger) ? Math.max(0.01, peak - trailTrigger) : null;
+  const currentTrailProgress = Number.isFinite(unrealized) && trailSpan !== null
+    ? clamp((unrealized - trailTrigger) / trailSpan, 0, 1)
+    : 0;
+  const pressure = Number.isFinite(distanceSafe)
+    ? clamp(1 - clamp(distanceSafe, 0, stop) / Math.max(stop, 0.01), 0, 1)
+    : 0;
+
+  let state = 'state-calm';
+  let statusTone = 'ok';
+  let pnlTone = Number.isFinite(unrealized) && unrealized >= 0 ? 'ok-text' : 'warn-text';
+  let note = `Trailing is ${trailingActive ? 'active' : 'idle'}.`;
+  if (Number.isFinite(unrealized) && unrealized < 0) {
+    state = 'state-under-pressure';
+    statusTone = 'critical';
+    note = `Under water by ${formatSignedCurrency(unrealized)}. The stop remains ${formatSignedCurrency(-Math.abs(stop))}.`;
+  } else if (trailingActive && Number.isFinite(peak) && peak >= trailingStart) {
+    state = pressure > 0.72 ? 'state-near-exit' : 'state-profit-locked';
+    statusTone = pressure > 0.72 ? 'warn' : 'ok';
+    note = `Peak ${formatSignedCurrency(peak)} with trailing exit at ${formatSignedCurrency(trailTrigger)}.`;
+  } else if (Number.isFinite(distanceSafe) && distanceSafe <= Math.max(0.25, stop * 0.15)) {
+    state = 'state-near-exit';
+    statusTone = 'warn';
+    note = `Within ${formatSignedCurrency(distanceSafe)} of the stop.`;
+  } else if (Number.isFinite(unrealized) && unrealized > 0) {
+    state = 'state-active';
+    statusTone = 'ok';
+    note = `Positive and still building from ${formatSignedCurrency(unrealized)}.`;
+  } else {
+    note = trailingActive
+      ? `Trailing is active with peak ${formatSignedCurrency(peak)}.`
+      : `Trailing starts after ${formatSignedCurrency(trailingStart)}.`;
+  }
+
+  const trailFill = Number.isFinite(unrealized) && Number.isFinite(peak) && peak > 0
+    ? clamp((unrealized / peak) * 100, 0, 100)
+    : (trailingActive ? 100 : clamp((trailingStart / Math.max(trailingStart + Math.abs(distanceSafe || 0), 0.01)) * 100, 8, 88));
+
+  return {
+    stateClass: state,
+    statusTone,
+    pnlTone,
+    note,
+    pressureFill: Math.round(pressure * 100),
+    pressureLabel: `${Math.round(pressure * 100)}%`,
+    trailFill: Math.round(trailFill),
+    meterFill: Math.round(trailFill),
+    trailLabel: trailingActive ? 'Trailing live' : 'Awaiting trail',
+    trailStartLabel: `Start ${formatSignedCurrency(trailingStart)}`,
+    trailPeakLabel: `Peak ${formatSignedCurrency(peak)}`,
+    trailExitLabel: `Exit ${formatSignedCurrency(trailTrigger)}`,
+  };
+}
+
+function clamp(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.min(max, Math.max(min, numeric));
 }
 
 function formatPercent(value, decimals = 1) {

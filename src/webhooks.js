@@ -31,7 +31,7 @@ function buildPaperOrderRequestFromSignal(signal, options = {}) {
     if (!sizing.pass) {
       return null;
     }
-    const timeInForce = sizing.supports_fractional_shares ? 'gtc' : (signal.time_in_force || 'day');
+    const timeInForce = 'day';
     return {
       request_id: signal.request_id || signal.signal_id || null,
       signal_id: signal.signal_id || null,
@@ -42,6 +42,7 @@ function buildPaperOrderRequestFromSignal(signal, options = {}) {
       order_type: signal.order_type || 'market',
       quantity: sizing.quantity,
       notional: sizing.notional,
+      supports_fractional_shares: Boolean(sizing.supports_fractional_shares),
       limit_price: signal.limit_price ?? null,
       stop_loss: signal.stop_loss ?? null,
       take_profit: signal.take_profit ?? null,

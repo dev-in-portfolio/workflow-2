@@ -1,7 +1,7 @@
 const { createStockScanner } = require('../src/stock-scanner');
 const { loadRuntimeEnv } = require('../src/runtime-env');
 const { nowIso } = require('../src/util');
-const { resolveRotatingStockSymbols } = require('../src/volatile-stock-universe');
+const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('../src/volatile-stock-universe');
 
 function resolveLocalBaseUrl(env = process.env) {
   return String(env.STOCK_SCANNER_LOCAL_BASE_URL || env.LOCAL_BASE_URL || `http://127.0.0.1:${env.PORT || env.SERVER_PORT || 3000}`).trim();
@@ -10,22 +10,22 @@ function resolveLocalBaseUrl(env = process.env) {
 function main(env = process.env) {
   const runtimeEnv = loadRuntimeEnv(env);
   const localBaseUrl = resolveLocalBaseUrl(runtimeEnv);
-  const stockSymbols = resolveRotatingStockSymbols(runtimeEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS);
+  const stockSymbols = parseSymbolList(
+    runtimeEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS,
+    APPROVED_LIVE_MARKET_SYMBOLS,
+  );
   const scanner = createStockScanner({
     env: runtimeEnv,
     localBaseUrl,
     enabled: true,
     keepAlive: true,
     runtimeStateEnabled: true,
-    recentSymbolsEnabled: true,
     symbols: stockSymbols,
     intervalMs: 30_000,
-    cooldownMs: 4 * 60_000,
-    minMovePct: 0.35,
-    maxSpreadPct: 1.5,
     maxCandidatesPerRun: 8,
     notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
     allowContrarianEntries: true,
+    requireMultiSourceConfirmation: false,
   });
   scanner.start();
   process.stdout.write(`${JSON.stringify({

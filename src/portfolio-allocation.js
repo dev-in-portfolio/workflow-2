@@ -11,7 +11,7 @@ function normalizeBrokerSymbol(symbol) {
 
 function buildPortfolioSnapshot({ positions = [], openOrders = [], account = null, maxOpenPositions = null } = {}) {
   const livePositions = Array.isArray(positions) ? positions.filter((position) => {
-    const qty = safeNumber(position.qty_available ?? position.qty ?? position.quantity, 0);
+    const qty = safeNumber(position.qty ?? position.quantity ?? position.qty_available, 0);
     return Number.isFinite(qty) && Math.abs(qty) > 0;
   }) : [];
   const liveOpenOrders = Array.isArray(openOrders) ? openOrders : [];
@@ -40,6 +40,7 @@ function buildPortfolioSnapshot({ positions = [], openOrders = [], account = nul
 }
 
 function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = {} } = {}) {
+  const cashBufferFactor = 0.99;
   const requested = Math.max(1, safeNumber(targetNotional, 150));
   const floor = Math.max(1, safeNumber(minBuyNotional, 25));
   const remainingSlots = safeNumber(portfolio.remaining_position_slots, null);
@@ -58,7 +59,7 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
   const cashSource = Number.isFinite(cash) && Number.isFinite(buyingPower)
     ? (cash <= buyingPower ? 'cash' : 'buying_power')
     : (Number.isFinite(cash) ? 'cash' : 'buying_power');
-  const spendableCash = limitingCash * 0.95;
+  const spendableCash = limitingCash * cashBufferFactor;
   const slotBudget = Number.isFinite(remainingSlots) && remainingSlots > 0
     ? spendableCash / remainingSlots
     : spendableCash;

@@ -96,7 +96,6 @@ function scoreSignal(signal, context = {}) {
   const providerConfirmation = resolveProviderConfirmation(signal, context);
   const issues = [];
 
-  if (freshness < (context.min_freshness_score ?? 25)) issues.push('STALE_DATA');
   if (edge < (context.min_edge_score ?? 60)) issues.push('LOW_EDGE_SCORE');
   if (contradiction >= 60) issues.push('HIGH_CONTRADICTION');
   if (risk >= 75) issues.push('RISK_TOO_HIGH');
@@ -105,7 +104,7 @@ function scoreSignal(signal, context = {}) {
   if (!signal.take_profit) issues.push('MISSING_TAKE_PROFIT');
 
   let finalDecision = 'needs_review';
-  if (issues.includes('STALE_DATA') || issues.includes('LOW_EDGE_SCORE') || issues.includes('RISK_TOO_HIGH') || issues.includes('MULTI_SOURCE_CONFIRMATION_FAILED')) {
+  if (issues.includes('LOW_EDGE_SCORE') || issues.includes('RISK_TOO_HIGH') || issues.includes('MULTI_SOURCE_CONFIRMATION_FAILED')) {
     finalDecision = 'blocked';
   } else if (confidence >= (context.min_confidence_for_paper ?? 80) && risk < 55 && contradiction < 50) {
     finalDecision = 'approved_for_paper';

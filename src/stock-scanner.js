@@ -1,10 +1,11 @@
+const fs = require('fs');
+const path = require('path');
 const { buildProviderConfirmationFromContext, normalizeMarketData } = require('./market-data');
 const { parseBool } = require('./config');
 const { nowIso, safeNumber, hashObject, clamp } = require('./util');
 const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
-const { loadRecentSymbolMap, saveRecentSymbolMap } = require('./scanner-recent-symbols');
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
 const { isRegularUsMarketHours } = require('./market-hours');
 
@@ -17,7 +18,7 @@ function createStockScanner(options = {}) {
 
   const apiKeyId = options.apiKeyId || env.ALPACA_API_KEY_ID || '';
   const apiSecretKey = options.apiSecretKey || env.ALPACA_API_SECRET_KEY || '';
-  const baseUrl = trimTrailingSlash(options.baseUrl || env.ALPACA_API_BASE_URL || 'https://data.alpaca.markets');
+  const baseUrl = trimTrailingSlash(options.baseUrl || env.ALPACA_DATA_BASE_URL || 'https://data.alpaca.markets');
   const twelveDataApiKey = options.twelveDataApiKey || env.TWELVE_DATA_API_KEY || env.TWELVEDATA_API_KEY || '';
   const twelveDataBaseUrl = trimTrailingSlash(options.twelveDataBaseUrl || env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com');
   const localBaseUrl = trimTrailingSlash(options.localBaseUrl || options.local_url || '');
@@ -26,29 +27,28 @@ function createStockScanner(options = {}) {
     ? parseSymbolList(options.symbols, APPROVED_LIVE_MARKET_SYMBOLS)
     : parseSymbolList(env.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS);
   const intervalMs = Math.max(15_000, Number(options.intervalMs ?? Number(env.STOCK_SCANNER_INTERVAL_SECONDS || 60) * 1000) || 60_000);
-  const cooldownMs = Math.max(60_000, Number(options.cooldownMs ?? Number(env.STOCK_SCANNER_COOLDOWN_MINUTES || 15) * 60_000) || 900_000);
-  const minMovePct = Math.max(0.2, Number(options.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT ?? 0.35) || 0.35);
-  const maxSpreadPct = Math.max(0.02, Number(options.maxSpreadPct ?? env.STOCK_SCANNER_MAX_SPREAD_PCT ?? 0.8) || 0.8);
   const maxCandidatesPerRun = Math.max(1, Number(options.maxCandidatesPerRun ?? env.STOCK_SCANNER_MAX_CANDIDATES ?? 2) || 2);
   const notional = Math.max(1, Number(options.notional ?? env.BUY_NOTIONAL_TARGET ?? 150) || 150);
   const minBuyNotional = Math.max(1, Number(options.minBuyNotional ?? env.MIN_BUY_NOTIONAL ?? 25) || 25);
   const maxOpenPositions = Math.max(1, Number(options.maxOpenPositions ?? env.MAX_OPEN_POSITIONS ?? 2) || 2);
-  const stopLossDollars = Math.max(0.01, Number(options.stopLossDollars ?? env.POSITION_STOP_LOSS_DOLLARS ?? 10) || 10);
-  const trailingProfitStartDollars = Math.max(0.01, Number(options.trailingProfitStartDollars ?? env.TRAILING_PROFIT_START_DOLLARS ?? 5) || 5);
-  const trailingProfitGivebackDollars = Math.max(0.01, Number(options.trailingProfitGivebackDollars ?? env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? 3) || 3);
+  const stopLossDollars = Math.max(0.01, Number(options.stopLossDollars ?? env.POSITION_STOP_LOSS_DOLLARS ?? 1) || 1);
+  const stopLossNotionalPct = Math.max(0, safeNumber(options.stopLossNotionalPct ?? env.POSITION_STOP_LOSS_NOTIONAL_PCT, 0.75));
+  const stopLossMaxDollars = Math.max(stopLossDollars, safeNumber(options.stopLossMaxDollars ?? env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5));
+  const trailingProfitStartDollars = Math.max(0.01, Number(options.trailingProfitStartDollars ?? env.TRAILING_PROFIT_START_DOLLARS ?? 0.5) || 0.5);
+  const trailingProfitGivebackDollars = Math.max(0.01, Number(options.trailingProfitGivebackDollars ?? env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? 0.3) || 0.3);
   const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? Boolean(twelveDataApiKey);
   const allowContrarianEntries = options.allowContrarianEntries ?? true;
   const blockBuys = options.blockBuys ?? parseBool(env.BLOCK_BUYS, false);
   const sellMaxPriceDiffPct = safeNumber(options.sellMaxPriceDiffPct ?? env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, 0.75);
+  const recentTradePenaltyMinutes = Math.max(0, safeNumber(options.recentTradePenaltyMinutes ?? env.STOCK_SCANNER_RECENT_TRADE_PENALTY_MINUTES, 15));
+  const recentTradeRankPenalty = Math.max(0, safeNumber(options.recentTradeRankPenalty ?? env.STOCK_SCANNER_RECENT_TRADE_RANK_PENALTY, 20));
+  const recentLossPenaltyMinutes = Math.max(0, safeNumber(options.recentLossPenaltyMinutes ?? env.STOCK_SCANNER_RECENT_LOSS_PENALTY_MINUTES, 10));
+  const recentLossRankPenalty = Math.max(0, safeNumber(options.recentLossRankPenalty ?? env.STOCK_SCANNER_RECENT_LOSS_RANK_PENALTY, 60));
   const keepAlive = options.keepAlive ?? true;
   const runtimeStateEnabled = options.runtimeStateEnabled ?? parseBool(env.SCANNER_RUNTIME_STATE_ENABLED, false);
-  const recentSymbolsEnabled = options.recentSymbolsEnabled ?? parseBool(env.SCANNER_RECENT_SYMBOLS_ENABLED, false);
   const requireMarketOpen = options.requireMarketOpen ?? parseBool(env.STOCK_SCANNER_REQUIRE_MARKET_OPEN, true);
 
   const state = {
-    lastSentAtBySymbol: recentSymbolsEnabled
-      ? loadRecentSymbolMap({ env, repoRoot: process.cwd(), profile: 'live-market', maxAgeMs: cooldownMs })
-      : new Map(),
     running: false,
     timer: null,
     lastRunAt: null,
@@ -99,6 +99,16 @@ function createStockScanner(options = {}) {
       const portfolio = buildPortfolioSnapshot({ positions, openOrders, account, maxOpenPositions });
       const allocation = allocateBuyNotional({ targetNotional: notional, minBuyNotional, portfolio });
       const skipTracker = createSkipTracker();
+      const recentTradePenalties = loadRecentTradePenalties({
+        env,
+        repoRoot: process.cwd(),
+        now: receivedAt,
+        windowMinutes: recentTradePenaltyMinutes,
+        penalty: recentTradeRankPenalty,
+        lossWindowMinutes: recentLossPenaltyMinutes,
+        lossPenalty: recentLossRankPenalty,
+        overrides: options.recentTradePenalties,
+      });
       const marketOpen = options.marketOpen ?? isRegularUsMarketHours(new Date());
       if (requireMarketOpen && !marketOpen) {
         skipTracker.record('MARKET_CLOSED_FOR_STOCKS', { symbol: '*', market_open: false });
@@ -121,9 +131,6 @@ function createStockScanner(options = {}) {
       saveTrailingState(trailingState, { env, repoRoot: process.cwd() });
       const candidates = buildCandidates(bundle, {
         receivedAt,
-        minMovePct,
-        maxSpreadPct,
-        cooldownMs,
         maxCandidatesPerRun,
         maxBuyCandidates: Math.min(maxCandidatesPerRun, Math.max(0, portfolio.remaining_position_slots ?? maxOpenPositions)),
         notional: allocation.accepted ? allocation.notional : notional,
@@ -131,6 +138,8 @@ function createStockScanner(options = {}) {
         marketOpen,
         requireMarketOpen,
         stopLossDollars,
+        stopLossNotionalPct,
+        stopLossMaxDollars,
         trailingProfitStartDollars,
         trailingProfitGivebackDollars,
         trailingState,
@@ -143,15 +152,13 @@ function createStockScanner(options = {}) {
         portfolio,
         skipTracker,
         runId: runOptions.runId || `stock_${hashObject({ receivedAt, symbols, baseUrl }).slice(0, 10)}`,
-        lastSentAtBySymbol: state.lastSentAtBySymbol,
         positions: approvedPositions,
         approvedSymbols: symbols,
+        recentTradePenalties,
       });
 
       const results = [];
       for (const candidate of candidates) {
-        state.lastSentAtBySymbol.set(candidate.symbol, Date.now());
-        persistRecentSymbols();
         const response = await localFetch(`${localBaseUrl}/${candidate.endpoint || 'paper-order'}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -171,7 +178,7 @@ function createStockScanner(options = {}) {
           status: responseBody?.final_decision || responseBody?.status || null,
           response: responseBody,
         });
-        if (!(response.ok && (responseBody?.final_decision === 'APPROVED_FOR_PAPER' || responseBody?.accepted === true))) {
+        if (!isApprovedPostResult({ accepted: response.ok, response: responseBody })) {
           const reasons = responseBody?.reason_codes || responseBody?.riskDecision?.reason_codes || responseBody?.risk_decision?.reason_codes || [];
           for (const reason of Array.isArray(reasons) ? reasons : [reasons].filter(Boolean)) {
             skipTracker.record(reason || 'RISK_REJECTED', { symbol: candidate.symbol, stage: 'risk' });
@@ -184,7 +191,7 @@ function createStockScanner(options = {}) {
       state.lastScanError = null;
       state.lastCandidateCount = candidates.length;
       state.lastPostedCount = results.length;
-      state.lastApprovedCount = results.filter((result) => result.status === 'APPROVED_FOR_PAPER' || result.response?.accepted === true).length;
+      state.lastApprovedCount = results.filter(isApprovedPostResult).length;
       state.lastRejectedCount = results.length - state.lastApprovedCount;
       writeRuntimeSnapshot({
         receivedAt,
@@ -196,6 +203,7 @@ function createStockScanner(options = {}) {
         recentSkips: skipTracker.recent(),
         candidates,
         results,
+        recentTradePenalties,
       });
       return {
         accepted: true,
@@ -256,14 +264,13 @@ function createStockScanner(options = {}) {
       localBaseUrl,
       symbols,
       intervalMs,
-      cooldownMs,
-      minMovePct,
-      maxSpreadPct,
       maxCandidatesPerRun,
       notional,
       minBuyNotional,
       maxOpenPositions,
       stopLossDollars,
+      stopLossNotionalPct,
+      stopLossMaxDollars,
       trailingProfitStartDollars,
       trailingProfitGivebackDollars,
       twelveDataApiKey,
@@ -272,12 +279,16 @@ function createStockScanner(options = {}) {
       requireMarketOpen,
       keepAlive,
       sellMaxPriceDiffPct,
+      recentTradePenaltyMinutes,
+      recentTradeRankPenalty,
+      recentLossPenaltyMinutes,
+      recentLossRankPenalty,
     },
   };
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, trailingState = null, skipSummary = null, recentSkips = [], candidates = [], results = [], error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, trailingState = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     writeScannerRuntimeState({
       scanner: 'stock-scanner',
@@ -290,8 +301,19 @@ function createStockScanner(options = {}) {
       last_scan_error: error,
       candidate_count: candidates.length,
       posted_count: results.length,
-      approved_count: results.filter((result) => result.status === 'APPROVED_FOR_PAPER' || result.response?.accepted === true).length,
-      rejected_count: results.filter((result) => !(result.status === 'APPROVED_FOR_PAPER' || result.response?.accepted === true)).length,
+      approved_count: results.filter(isApprovedPostResult).length,
+      rejected_count: results.filter((result) => !isApprovedPostResult(result)).length,
+      post_results: results.map(summarizePostResult),
+      recent_trade_rank_penalties: summarizeRecentTradePenalties(recentTradePenalties),
+      candidate_rank_details: candidates
+        .filter((candidate) => candidate.payload?.side === 'buy')
+        .map((candidate) => ({
+          symbol: candidate.symbol,
+          rank_score: roundScore(candidate.rankScore),
+          base_rank_score: roundScore(candidate.baseRankScore ?? candidate.rankScore),
+          recent_trade_rank_penalty: roundScore(candidate.recentTradeRankPenalty || 0),
+          recent_trade_at: candidate.recentTradePenalty?.last_traded_at || null,
+        })),
       skip_summary: skipSummary || {
         allocation_block: allocation?.accepted === false ? 1 : 0,
         max_position_or_cash_block: allocation?.accepted === false ? allocation.reason : null,
@@ -308,6 +330,8 @@ function createStockScanner(options = {}) {
       approved_symbols: symbols,
       exit_rules: {
         stop_loss_dollars: stopLossDollars,
+        stop_loss_notional_pct: stopLossNotionalPct,
+        stop_loss_max_dollars: stopLossMaxDollars,
         trailing_profit_start_dollars: trailingProfitStartDollars,
         trailing_profit_giveback_dollars: trailingProfitGivebackDollars,
       },
@@ -321,10 +345,6 @@ function createStockScanner(options = {}) {
     }, { env, repoRoot: process.cwd() });
   }
 
-  function persistRecentSymbols() {
-    if (!recentSymbolsEnabled) return;
-    saveRecentSymbolMap(state.lastSentAtBySymbol, { env, repoRoot: process.cwd(), profile: 'live-market' });
-  }
 }
 
 function createSkipTracker(limit = 12) {
@@ -484,16 +504,14 @@ function buildCandidates(bundle, options = {}) {
     }
     const snapshot = bundle.snapshots[symbol] || {};
     const latestQuote = bundle.latestQuotes[symbol] || snapshot.latestQuote || snapshot.latest_quote || {};
-    const candidate = buildStockCandidateForSymbol(symbol, snapshot, latestQuote, {
-      receivedAt: now,
-      minMovePct: options.minMovePct,
-      maxSpreadPct: options.maxSpreadPct,
-      cooldownMs: options.cooldownMs,
-      lastSentAt: options.lastSentAtBySymbol?.get(symbol),
-      notional: options.notional,
-      allocation: options.allocation,
-      runId: options.runId,
+      const candidate = buildStockCandidateForSymbol(symbol, snapshot, latestQuote, {
+        receivedAt: now,
+        notional: options.notional,
+        allocation: options.allocation,
+        runId: options.runId,
       stopLossDollars: options.stopLossDollars,
+      stopLossNotionalPct: options.stopLossNotionalPct,
+      stopLossMaxDollars: options.stopLossMaxDollars,
       trailingProfitStartDollars: options.trailingProfitStartDollars,
       trailingProfitGivebackDollars: options.trailingProfitGivebackDollars,
       trailingState: options.trailingState,
@@ -509,8 +527,9 @@ function buildCandidates(bundle, options = {}) {
       requireMarketOpen: options.requireMarketOpen,
       sellMaxPriceDiffPct: options.sellMaxPriceDiffPct,
       assetType: 'stock',
+      recentTradePenalty: getRecentTradePenalty(options.recentTradePenalties, symbol),
       position_avg_entry_price: safeNumber(positionsBySymbol.get(symbol)?.avg_entry_price ?? positionsBySymbol.get(symbol)?.avgEntryPrice ?? null),
-      position_qty_available: safeNumber(positionsBySymbol.get(symbol)?.qty_available ?? positionsBySymbol.get(symbol)?.qty ?? null),
+      position_qty_available: safeNumber(positionsBySymbol.get(symbol)?.qty ?? positionsBySymbol.get(symbol)?.quantity ?? positionsBySymbol.get(symbol)?.qty_available ?? null),
     });
     if (candidate?.payload?.side === 'sell') {
       sellEntries.push(candidate);
@@ -543,11 +562,8 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   const spreadPct = Number.isFinite(bid) && Number.isFinite(ask) && currentPrice > 0
     ? ((ask - bid) / currentPrice) * 100
     : 0;
-  if (spreadPct > (options.maxSpreadPct ?? 0.8)) {
-    return skip('SPREAD_TOO_WIDE', { spread_pct: Number(spreadPct.toFixed(4)) });
-  }
 
-  const positionQty = safeNumber(options.position?.qty_available ?? options.position?.qty ?? 0, 0);
+  const positionQty = safeNumber(options.position?.qty ?? options.position?.quantity ?? options.position?.qty_available ?? 0, 0);
   const hasPosition = Number.isFinite(positionQty) && Math.abs(positionQty) > 0;
   const openBuyOrders = Array.isArray(options.openOrder)
     ? options.openOrder.filter((order) => String(order.side || '').toLowerCase() === 'buy')
@@ -574,17 +590,271 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   return buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, options });
 }
 
+function isApprovedPostResult(result = {}) {
+  const response = result.response || result;
+  const decision = response?.final_decision
+    || response?.decision
+    || response?.riskDecision?.decision
+    || response?.risk_decision?.decision
+    || result.status;
+  return Boolean(result.accepted !== false)
+    && (decision === 'APPROVED_FOR_PAPER' || response?.accepted === true);
+}
+
+function summarizePostResult(result = {}) {
+  const response = result.response || {};
+  return {
+    symbol: result.symbol || response.signal?.symbol || null,
+    accepted: result.accepted,
+    status: result.status,
+    response_accepted: response.accepted,
+    stage: response.stage || response.last_result?.stage || null,
+    error: response.error || response.last_result?.error || null,
+    message: response.message || response.last_result?.message || null,
+    reason_codes: response.reason_codes || response.last_result?.reason_codes || response.riskDecision?.reason_codes || response.risk_decision?.reason_codes || [],
+    risk_decision: response.riskDecision?.decision || response.risk_decision?.decision || null,
+  };
+}
+
+function loadRecentTradePenalties({ env = process.env, repoRoot = process.cwd(), now = nowIso(), windowMinutes = 5, penalty = 8, lossWindowMinutes = 10, lossPenalty = 60, overrides = null } = {}) {
+  if ((!windowMinutes || !penalty) && (!lossWindowMinutes || !lossPenalty)) return new Map();
+  if (overrides) return normalizeRecentTradePenaltyMap(overrides, { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty });
+  const historyPath = resolvePerformanceHistoryPath(env, repoRoot);
+  const lines = readTailLines(historyPath, 512 * 1024);
+  return normalizeRecentTradePenaltyMap(lines.map(parseJsonLine).filter(Boolean), { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty });
+}
+
+function resolvePerformanceHistoryPath(env = process.env, repoRoot = process.cwd()) {
+  const configured = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
+  return path.resolve(repoRoot, configured || path.join('data', 'performance-history.jsonl'));
+}
+
+function readTailLines(filePath, maxBytes = 512 * 1024) {
+  try {
+    const stat = fs.statSync(filePath);
+    const start = Math.max(0, stat.size - maxBytes);
+    const buffer = Buffer.alloc(stat.size - start);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonLine(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRecentTradePenaltyMap(source, { now = nowIso(), windowMinutes = 15, penalty = 20, lossWindowMinutes = 10, lossPenalty = 60 } = {}) {
+  const map = new Map();
+  const nowMs = new Date(now).getTime();
+  const windowMs = Math.max(0, safeNumber(windowMinutes, 15)) * 60_000;
+  const lossWindowMs = Math.max(0, safeNumber(lossWindowMinutes, 10)) * 60_000;
+  if (!Number.isFinite(nowMs)) return map;
+  const records = source instanceof Map
+    ? [...source.values()]
+    : Array.isArray(source)
+      ? source
+      : Object.values(source || {});
+  for (const item of records) {
+    const record = item?.record || item;
+    const trade = extractFilledTrade(record);
+    if (!trade.symbol || !trade.traded_at) continue;
+    const tradedAtMs = new Date(trade.traded_at).getTime();
+    if (!Number.isFinite(tradedAtMs)) continue;
+    const ageMs = nowMs - tradedAtMs;
+    if (ageMs < 0) continue;
+    const isLossExit = trade.side === 'sell' && trade.loss_exit;
+    if (trade.side !== 'sell') continue;
+    const components = [];
+    if (windowMs > 0 && penalty > 0 && ageMs <= windowMs) {
+      components.push(buildPenaltyComponent({
+        trade,
+        tradedAtMs,
+        nowMs,
+        windowMs,
+        penalty,
+        reason: 'recent_sell',
+      }));
+    }
+    if (isLossExit && lossWindowMs > 0 && lossPenalty > 0 && ageMs <= lossWindowMs) {
+      components.push(buildPenaltyComponent({
+        trade,
+        tradedAtMs,
+        nowMs,
+        windowMs: lossWindowMs,
+        penalty: lossPenalty,
+        reason: 'recent_loss_exit',
+      }));
+    }
+    if (!components.length) continue;
+    const existing = map.get(trade.symbol) || {
+      symbol: trade.symbol,
+      last_traded_at: trade.traded_at,
+      components: [],
+    };
+    existing.components.push(...components);
+    existing.components.sort((a, b) => new Date(b.traded_at).getTime() - new Date(a.traded_at).getTime());
+    existing.penalty = existing.components.reduce((sum, component) => sum + safeNumber(component.penalty, 0), 0);
+    existing.last_traded_at = existing.components[0]?.traded_at || trade.traded_at;
+    existing.age_seconds = existing.components.length
+      ? Math.min(...existing.components.map((component) => safeNumber(component.age_seconds, 0)))
+      : Math.round(ageMs / 1000);
+    existing.window_seconds = existing.components.length
+      ? Math.max(...existing.components.map((component) => safeNumber(component.window_seconds, 0)))
+      : 0;
+    existing.remaining_seconds = existing.components.length
+      ? Math.max(...existing.components.map((component) => safeNumber(component.remaining_seconds, 0)))
+      : 0;
+    existing.reason = existing.components.some((component) => component.reason === 'recent_loss_exit')
+      ? 'compound_recent_sell_and_loss'
+      : 'compound_recent_sell';
+    existing.loss_exit = existing.components.some((component) => component.loss_exit);
+    existing.exit_reason = existing.components.find((component) => component.exit_reason)?.exit_reason || null;
+    map.set(trade.symbol, existing);
+  }
+  return map;
+}
+
+function buildPenaltyComponent({ trade, tradedAtMs, nowMs, windowMs, penalty, reason }) {
+  const expiresAtMs = tradedAtMs + windowMs;
+  return {
+    reason,
+    traded_at: trade.traded_at,
+    expires_at: new Date(expiresAtMs).toISOString(),
+    age_seconds: Math.max(0, Math.round((nowMs - tradedAtMs) / 1000)),
+    remaining_seconds: Math.max(0, Math.round((expiresAtMs - nowMs) / 1000)),
+    window_seconds: Math.round(windowMs / 1000),
+    penalty,
+    side: trade.side,
+    loss_exit: Boolean(trade.loss_exit),
+    exit_reason: trade.exit_reason || null,
+  };
+}
+
+function extractFilledTrade(record = {}) {
+  const paperResult = record.paper_result || record.paperResult || {};
+  const status = String(paperResult.status || record.status || '').trim().toLowerCase();
+  const hasOrder = Boolean(paperResult.order_id || paperResult.filled_at || paperResult.filledAt || record.paper_result);
+  if (status && !['filled', 'accepted', 'new'].includes(status)) return {};
+  if (!hasOrder && record.entry_type !== 'paper_outcome') return {};
+  const symbol = String(record.symbol || paperResult.symbol || record.original_signal?.symbol || paperResult.original_signal?.symbol || '').trim().toUpperCase();
+  const tradedAt = paperResult.filled_at
+    || paperResult.filledAt
+    || record.recorded_at
+    || record.created_at
+    || record.timestamp
+    || null;
+  const side = String(record.side || record.paper_order_request?.side || record.original_signal?.side || paperResult.side || '').trim().toLowerCase();
+  const exitState = record.original_signal?.market_context?.exit_state
+    || record.market_context?.exit_state
+    || record.exit_state
+    || {};
+  const exitReason = String(exitState.exit_reason || record.exit_reason || '').trim();
+  const pnlValues = [
+    record.net_pnl,
+    record.adjusted_pnl,
+    record.pnl,
+    record.gross_pnl,
+    exitState.net_pnl,
+    exitState.gross_pnl,
+    exitState.unrealized_pl,
+  ].map((value) => safeNumber(value, null)).filter(Number.isFinite);
+  const lossExit = side === 'sell' && (
+    pnlValues.some((value) => value < 0)
+    || /STOP_LOSS|LOSS/i.test(exitReason)
+  );
+  return {
+    symbol,
+    traded_at: tradedAt,
+    side,
+    loss_exit: lossExit,
+    exit_reason: exitReason || null,
+  };
+}
+
+function getRecentTradePenalty(penalties, symbol) {
+  if (!penalties) return null;
+  const normalized = String(symbol || '').trim().toUpperCase();
+  if (!normalized) return null;
+  if (penalties instanceof Map) return penalties.get(normalized) || null;
+  return penalties[normalized] || null;
+}
+
+function summarizeRecentTradePenalties(penalties) {
+  if (!penalties) return [];
+  const values = penalties instanceof Map ? [...penalties.values()] : Object.values(penalties);
+  return values.map((entry) => ({
+    symbol: entry.symbol,
+    last_traded_at: entry.last_traded_at,
+    age_seconds: entry.age_seconds,
+    window_seconds: entry.window_seconds,
+    remaining_seconds: entry.remaining_seconds,
+    penalty: entry.penalty,
+    reason: entry.reason || 'compound_recent_sell',
+    loss_exit: Boolean(entry.loss_exit),
+    exit_reason: entry.exit_reason || null,
+    components: Array.isArray(entry.components) ? entry.components : [],
+  }));
+}
+
+function calculateEffectiveStopLossDollars({
+  baseStopLossDollars = 1,
+  stopLossNotionalPct = 0,
+  stopLossMaxDollars = baseStopLossDollars,
+  positionMarketValue = null,
+} = {}) {
+  const base = Math.abs(safeNumber(baseStopLossDollars, 1));
+  const maxStop = Math.max(base, Math.abs(safeNumber(stopLossMaxDollars, base)));
+  const notionalPct = Math.max(0, safeNumber(stopLossNotionalPct, 0));
+  const marketValue = Math.abs(safeNumber(positionMarketValue, NaN));
+  const notionalStop = Number.isFinite(marketValue) && marketValue > 0 && notionalPct > 0
+    ? marketValue * (notionalPct / 100)
+    : base;
+  return roundCurrency(Math.min(maxStop, Math.max(base, notionalStop)));
+}
+
 function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, positionQty, options }) {
   const unrealized = safeNumber(options.position?.unrealized_pl ?? options.position?.unrealizedPnl ?? options.position?.unrealized_intraday_pl, null);
   const trailingRecord = options.trailingState?.positions?.[symbol] || {};
-  const stopLossDollars = options.stopLossDollars ?? 10;
-  const trailingStart = options.trailingProfitStartDollars ?? 5;
-  const trailingGiveback = options.trailingProfitGivebackDollars ?? 3;
+  const stopLossDollars = options.stopLossDollars ?? 1;
+  const stopLossNotionalPct = Math.max(0, safeNumber(options.stopLossNotionalPct, 0));
+  const stopLossMaxDollars = Math.max(Math.abs(stopLossDollars), safeNumber(options.stopLossMaxDollars, Math.abs(stopLossDollars)));
+  const trailingStart = options.trailingProfitStartDollars ?? 0.5;
+  const trailingGiveback = options.trailingProfitGivebackDollars ?? 0.3;
   const peak = safeNumber(trailingRecord.peak_unrealized_pl, null);
   const trailingActive = Number.isFinite(peak) && peak >= trailingStart;
   const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
+  const entryPrice = safeNumber(options.position?.avg_entry_price ?? options.position?.avgEntryPrice ?? options.position_avg_entry_price, null);
+  const entrySlippage = Math.max(0, safeNumber(options.position?.entry_slippage ?? options.position?.entrySlippage, 0));
+  const exitSlippage = Math.max(0, safeNumber(options.exitSlippage ?? options.position?.exit_slippage ?? options.position?.exitSlippage, 0));
+  const fees = Math.max(0, safeNumber(options.fees ?? options.position?.fees ?? options.position?.estimated_fees, 0));
+  const grossPnl = Number.isFinite(entryPrice)
+    ? (currentPrice - entryPrice) * Math.abs(positionQty)
+    : unrealized;
+  const executionDrag = entrySlippage + exitSlippage + fees;
+  const netPnl = Number.isFinite(grossPnl) ? grossPnl - executionDrag : null;
+  const positionMarketValue = safeNumber(
+    options.position?.market_value ?? options.position?.marketValue,
+    Number.isFinite(currentPrice) ? Math.abs(positionQty) * currentPrice : null,
+  );
+  const effectiveStopLossDollars = calculateEffectiveStopLossDollars({
+    baseStopLossDollars: stopLossDollars,
+    stopLossNotionalPct,
+    stopLossMaxDollars,
+    positionMarketValue,
+  });
   let exitReason = null;
-  if (Number.isFinite(unrealized) && unrealized <= -Math.abs(stopLossDollars)) {
+  if (Number.isFinite(unrealized) && unrealized <= -effectiveStopLossDollars) {
     exitReason = 'STOP_LOSS_DOLLARS';
   } else if (trailingActive && Number.isFinite(unrealized) && unrealized <= trailingSellAt) {
     exitReason = 'TRAILING_PROFIT_GIVEBACK';
@@ -592,11 +862,25 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const exitState = {
     symbol,
     unrealized_pl: Number.isFinite(unrealized) ? roundCurrency(unrealized) : null,
-    stop_loss_dollars: stopLossDollars,
-    distance_to_stop_dollars: Number.isFinite(unrealized) ? roundCurrency(unrealized + stopLossDollars) : null,
+    stop_loss_dollars: roundCurrency(effectiveStopLossDollars),
+    base_stop_loss_dollars: roundCurrency(Math.abs(stopLossDollars)),
+    stop_loss_notional_pct: roundCurrency(stopLossNotionalPct),
+    stop_loss_max_dollars: roundCurrency(stopLossMaxDollars),
+    position_market_value: Number.isFinite(positionMarketValue) ? roundCurrency(positionMarketValue) : null,
+    distance_to_stop_dollars: Number.isFinite(unrealized) ? roundCurrency(unrealized + effectiveStopLossDollars) : null,
     trailing_active: trailingActive,
     trailing_peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
     trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? roundCurrency(trailingSellAt) : null,
+    sell_price: Number.isFinite(currentPrice) ? roundCurrency(currentPrice) : null,
+    entry_price: Number.isFinite(entryPrice) ? roundCurrency(entryPrice) : null,
+    quantity: Number(Math.abs(positionQty).toFixed(6)),
+    gross_pnl: Number.isFinite(grossPnl) ? roundCurrency(grossPnl) : null,
+    entry_slippage: roundCurrency(entrySlippage),
+    exit_slippage: roundCurrency(exitSlippage),
+    fees: roundCurrency(fees),
+    execution_drag: roundCurrency(executionDrag),
+    net_pnl: Number.isFinite(netPnl) ? roundCurrency(netPnl) : null,
+    real_gain: Number.isFinite(netPnl) ? netPnl >= 0 : null,
     exit_reason: exitReason,
   };
   if (!exitReason) {
@@ -620,20 +904,16 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
 
 function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, options }) {
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
-  const entryThreshold = options.minMovePct ?? 0.35;
-  if (!options.allowContrarianEntries && movePct < entryThreshold) {
-    return options.skipTracker?.record?.('INSUFFICIENT_MOVE', { symbol, move_pct: Number(movePct.toFixed(4)) }) && null;
-  }
-  if (options.allowContrarianEntries && Math.abs(movePct) < entryThreshold) {
-    return options.skipTracker?.record?.('INSUFFICIENT_MOVE', { symbol, move_pct: Number(movePct.toFixed(4)) }) && null;
-  }
   const notional = safeNumber(options.notional, 150);
   if (!Number.isFinite(notional) || notional <= 0) {
     options.skipTracker?.record?.('BELOW_MINIMUM_BUY_NOTIONAL', { symbol, notional });
     return null;
   }
   const volumeScore = Math.log10(Math.max(10, safeNumber(snapshot.prevDailyBar?.v ?? snapshot.dailyBar?.v ?? 0, 0)));
-  const rankScore = Math.abs(movePct) * 10 + volumeScore - (spreadPct * 3);
+  const baseRankScore = Math.abs(movePct) * 10 + volumeScore - (spreadPct * 3);
+  const recentPenalty = options.recentTradePenalty || null;
+  const recentTradeRankPenalty = Math.max(0, safeNumber(recentPenalty?.penalty, 0));
+  const rankScore = baseRankScore - recentTradeRankPenalty;
   return buildSignalCandidate({
     symbol,
     side: 'buy',
@@ -646,10 +926,13 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     quantity: null,
     notional,
     rankScore,
+    baseRankScore,
+    recentTradeRankPenalty,
+    recentTradePenalty: recentPenalty,
   });
 }
 
-function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, rankScore = 0, exitState = null }) {
+function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, recentTradePenalty = null, exitState = null }) {
   const receivedAt = options.receivedAt || nowIso();
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
@@ -697,6 +980,11 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       spread_pct: Number(spreadPct.toFixed(4)),
       current_price: Number(currentPrice.toFixed(6)),
       previous_close: Number(previousClose.toFixed(6)),
+      rank_score: side === 'buy' ? roundScore(rankScore) : null,
+      base_rank_score: side === 'buy' ? roundScore(baseRankScore) : null,
+      recent_trade_rank_penalty: side === 'buy' ? roundScore(recentTradeRankPenalty) : 0,
+      recent_trade_at: side === 'buy' ? recentTradePenalty?.last_traded_at || null : null,
+      recent_trade_penalty_reason: side === 'buy' ? recentTradePenalty?.reason || null : null,
     },
     volume,
     alpaca_quote: normalizedPrimary,
@@ -725,7 +1013,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
   }
   const signalId = `stock_${hashObject({ symbol, side, receivedAt, price: currentPrice, runId: options.runId || null }).slice(0, 16)}`;
   const estimatedQty = side === 'buy' && notional ? notional / currentPrice : Math.max(0.000001, quantity || 0);
-  const riskPerShare = side === 'buy' && estimatedQty > 0 ? (options.stopLossDollars ?? 10) / estimatedQty : currentPrice * 0.01;
+  const riskPerShare = side === 'buy' && estimatedQty > 0 ? (options.stopLossDollars ?? 1) / estimatedQty : currentPrice * 0.01;
   const rewardPerShare = Math.max(riskPerShare * 1.8, currentPrice * 0.02);
   const payload = {
     signal_id: signalId,
@@ -744,11 +1032,12 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     price: currentPrice,
     quantity,
     notional,
+    supports_fractional_shares: side === 'buy' ? true : null,
     requested_notional: side === 'buy' ? options.allocation?.requested ?? notional : null,
     submitted_notional: side === 'buy' ? options.allocation?.notional ?? notional : null,
     min_buy_notional: side === 'buy' ? options.allocation?.floor ?? null : null,
-    stop_loss: side === 'sell' ? currentPrice * 1.01 : Math.max(0.01, currentPrice - riskPerShare),
-    take_profit: side === 'sell' ? Math.max(0.01, currentPrice * 0.99) : currentPrice + rewardPerShare,
+    stop_loss: roundEquityPrice(side === 'sell' ? currentPrice * 1.01 : Math.max(0.01, currentPrice - riskPerShare)),
+    take_profit: roundEquityPrice(side === 'sell' ? Math.max(0.01, currentPrice * 0.99) : currentPrice + rewardPerShare),
     confidence_score: normalizedPrimary.confidence_score,
     freshness_score: 100,
     source_quality_score: clamp(80 + (providerConfirmation?.confirmed ? 10 : -10), 0, 100),
@@ -766,6 +1055,9 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     movePct,
     spreadPct,
     rankScore,
+    baseRankScore,
+    recentTradeRankPenalty,
+    recentTradePenalty,
     endpoint: 'paper-order',
     payload,
     exitState,
@@ -816,8 +1108,21 @@ function roundCurrency(value) {
   return Math.round(Number(value) * 10000) / 10000;
 }
 
+function roundScore(value) {
+  return Math.round(Number(value) * 1000) / 1000;
+}
+
+function roundEquityPrice(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return null;
+  const decimals = Math.abs(numericValue) >= 1 ? 2 : 4;
+  return Number(numericValue.toFixed(decimals));
+}
+
 module.exports = {
   APPROVED_LIVE_MARKET_SYMBOLS,
   buildStockCandidateForSymbol,
+  calculateEffectiveStopLossDollars,
   createStockScanner,
+  normalizeRecentTradePenaltyMap,
 };

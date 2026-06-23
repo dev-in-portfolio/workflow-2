@@ -41,26 +41,27 @@ function computePaperOutcome({
   const maxAdverseExcursion = Number.isFinite(entry) && Number.isFinite(low) && entry > 0
     ? buySide ? Math.max(0, entry - low) * qty : Math.max(0, high - entry) * qty
     : null;
-  const pnl = Number.isFinite(entry) && exit !== null
+  const gross_pnl = Number.isFinite(entry) && exit !== null
     ? (buySide ? (exit - entry) : (entry - exit)) * qty
     : null;
-  const normalizedEstimatedEntry = Number.isFinite(estimated_entry_price) ? Number(estimated_entry_price) : Number(paper_result?.average_fill_price);
-  const normalizedEstimatedExit = Number.isFinite(estimated_exit_price) ? Number(estimated_exit_price) : Number(paper_result?.average_exit_price);
-  const normalizedEstimatedFees = Number.isFinite(estimated_fees) ? Number(estimated_fees) : Number(paper_result?.estimated_fees);
-  const execution_slippage = Number.isFinite(estimated_entry_price) && Number.isFinite(entry)
-    ? Math.abs(estimated_entry_price - entry) * qty
+  const normalizedEstimatedEntry = optionalNumber(estimated_entry_price, optionalNumber(paper_result?.average_fill_price, null));
+  const normalizedEstimatedExit = optionalNumber(estimated_exit_price, optionalNumber(paper_result?.average_exit_price, null));
+  const normalizedEstimatedFees = optionalNumber(estimated_fees, optionalNumber(paper_result?.estimated_fees, null));
+  const entry_slippage = Number.isFinite(normalizedEstimatedEntry) && Number.isFinite(entry)
+    ? Math.abs(normalizedEstimatedEntry - entry) * qty
     : null;
   const exit_slippage = Number.isFinite(normalizedEstimatedExit) && exit !== null
     ? Math.abs(normalizedEstimatedExit - exit) * qty
     : null;
-  const total_execution_drag = [
-    Number.isFinite(normalizedEstimatedEntry) && Number.isFinite(entry) ? Math.abs(normalizedEstimatedEntry - entry) * qty : execution_slippage,
+  const fees = Number.isFinite(normalizedEstimatedFees) ? normalizedEstimatedFees : null;
+  const execution_drag = [
+    entry_slippage,
     exit_slippage,
-    Number.isFinite(normalizedEstimatedFees) ? normalizedEstimatedFees : null,
+    fees,
   ].filter((value) => Number.isFinite(value)).reduce((sum, value) => sum + value, 0);
-  const adjusted_pnl = Number.isFinite(pnl) ? pnl - total_execution_drag : null;
-  const execution_drag_ratio = Number.isFinite(adjusted_pnl) && adjusted_pnl !== 0
-    ? total_execution_drag / Math.max(1, Math.abs(adjusted_pnl) + total_execution_drag)
+  const net_pnl = Number.isFinite(gross_pnl) ? gross_pnl - execution_drag : null;
+  const execution_drag_ratio = Number.isFinite(net_pnl) && net_pnl !== 0
+    ? execution_drag / Math.max(1, Math.abs(net_pnl) + execution_drag)
     : null;
   const status = normalizeFillStatus(paper_result);
 
@@ -80,16 +81,27 @@ function computePaperOutcome({
     status,
     max_favorable_excursion: maxFavorableExcursion,
     max_adverse_excursion: maxAdverseExcursion,
-    pnl,
-    adjusted_pnl,
-    execution_slippage,
+    gross_pnl,
+    pnl: gross_pnl,
+    net_pnl,
+    adjusted_pnl: net_pnl,
+    entry_slippage,
+    execution_slippage: entry_slippage,
     exit_slippage,
-    execution_drag: total_execution_drag,
+    fees,
+    execution_drag,
     execution_drag_ratio,
-    win_loss: adjusted_pnl === null ? 'unknown' : adjusted_pnl >= 0 ? 'win' : 'loss',
+    real_gain: Number.isFinite(net_pnl) ? net_pnl >= 0 : null,
+    win_loss: net_pnl === null ? 'unknown' : net_pnl >= 0 ? 'win' : 'loss',
     calibration_bucket: calibrationBucketForConfidence(original_signal?.confidence_score),
     false_positive: Boolean(false_positive),
   };
+}
+
+function optionalNumber(value, fallback = null) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function normalizeFillStatus(paperResult = {}) {

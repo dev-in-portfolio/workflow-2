@@ -49,6 +49,38 @@ test('buy sizing floors whole-share stock orders and never exceeds the budget', 
   assert.equal(order.time_in_force, 'day');
 });
 
+test('buy sizing uses fractional shares for stock orders when explicitly enabled', () => {
+  const sizing = resolveBuyOrderSizing({
+    signal_id: 'sig-fractional-stock',
+    action_candidate: 'paper_buy',
+    symbol: 'NVDA',
+    asset_type: 'stock',
+    price: 129.16,
+    supports_fractional_shares: true,
+  });
+
+  assert.equal(sizing.pass, true);
+  assert.equal(sizing.supports_fractional_shares, true);
+  assert.equal(sizing.sizing_mode, 'fractional_qty');
+  assert(sizing.quantity > 0);
+  assert.equal(sizing.quantity < 2, true);
+  assert.equal(sizing.notional <= 150, true);
+
+  const order = buildPaperOrderRequestFromSignal({
+    signal_id: 'sig-fractional-stock-order',
+    action_candidate: 'paper_buy',
+    symbol: 'NVDA',
+    asset_type: 'stock',
+    price: 129.16,
+    supports_fractional_shares: true,
+  });
+
+  assert.equal(order.quantity > 0, true);
+  assert.equal(order.notional <= 150, true);
+  assert.equal(order.supports_fractional_shares, true);
+  assert.equal(order.time_in_force, 'day');
+});
+
 test('buy sizing blocks stock orders that cannot fit a single share inside the budget', () => {
   const sizing = resolveBuyOrderSizing({
     signal_id: 'sig-too-expensive',

@@ -1633,15 +1633,17 @@ test('alpaca order payload maps bracket orders and auth headers', async () => {
     side: 'buy',
     order_type: 'market',
     quantity: 2,
-    stop_loss: 190,
-    take_profit: 220,
+    limit_price: 190.12345,
+    stop_loss: 190.98765,
+    take_profit: 220.54321,
     time_in_force: 'day',
   });
   assert.equal(payload.client_order_id, 'req-alpaca');
   assert.equal(payload.qty, '2');
   assert.equal(payload.order_class, 'bracket');
-  assert.equal(payload.take_profit.limit_price, '220');
-  assert.equal(payload.stop_loss.stop_price, '190');
+  assert.equal(payload.limit_price, '190.12');
+  assert.equal(payload.take_profit.limit_price, '220.54');
+  assert.equal(payload.stop_loss.stop_price, '190.99');
 
   const requests = [];
   const adapter = new AlpacaTradeAdapter({
@@ -1724,6 +1726,83 @@ test('alpaca crypto orders strip bracket exits before submission', async () => {
   assert.equal(body.take_profit, undefined);
   assert.equal(body.stop_loss, undefined);
   assert.equal(body.notional, '50');
+});
+
+test('alpaca execution adapter strips brackets for fractional stock orders', async () => {
+  const requests = [];
+  const adapter = new AlpacaTradeAdapter({
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    baseUrl: 'https://api.alpaca.markets',
+    fetch: async (url, init) => {
+      requests.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: 'alpaca-order-fractional', status: 'accepted' }),
+      };
+    },
+  });
+
+  const result = await adapter.submitOrder({
+    request_id: 'req-fractional',
+    signal_id: 'sig-fractional',
+    symbol: 'INTC',
+    asset_type: 'stock',
+    side: 'buy',
+    order_type: 'market',
+    quantity: 0.95,
+    supports_fractional_shares: true,
+    stop_loss: 127.08,
+    take_profit: 156.95,
+    time_in_force: 'day',
+  });
+
+  assert.equal(result.order_id, 'alpaca-order-fractional');
+  const body = JSON.parse(requests[0].init.body);
+  assert.equal(body.order_class, undefined);
+  assert.equal(body.take_profit, undefined);
+  assert.equal(body.stop_loss, undefined);
+  assert.equal(body.time_in_force, 'day');
+  assert.equal(body.qty, '0.95');
+});
+
+test('alpaca execution adapter infers fractional stock sells from quantity', async () => {
+  const requests = [];
+  const adapter = new AlpacaTradeAdapter({
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    baseUrl: 'https://api.alpaca.markets',
+    fetch: async (url, init) => {
+      requests.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: 'alpaca-order-fractional-sell', status: 'accepted' }),
+      };
+    },
+  });
+
+  const result = await adapter.submitOrder({
+    request_id: 'req-fractional-sell',
+    signal_id: 'sig-fractional-sell',
+    symbol: 'NVDA',
+    asset_type: 'stock',
+    side: 'sell',
+    order_type: 'market',
+    quantity: 1.280305,
+    stop_loss: 202.5,
+    take_profit: 198.49,
+    time_in_force: 'day',
+  });
+
+  assert.equal(result.order_id, 'alpaca-order-fractional-sell');
+  const body = JSON.parse(requests[0].init.body);
+  assert.equal(body.order_class, undefined);
+  assert.equal(body.take_profit, undefined);
+  assert.equal(body.stop_loss, undefined);
+  assert.equal(body.side, 'sell');
+  assert.equal(body.qty, '1.280305');
 });
 
 test('alpaca paper trading adapter strips bracket exits unless explicitly requested', async () => {

@@ -63,7 +63,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
     minVolume: 50000,
     positionSizeMultiplier: 1,
     maxSpreadSlippagePct: 0.75,
-    volatilityThresholdPct: 6,
+    volatilityThresholdPct: null,
     cooldownAfterLossMinutes: 60,
     cooldownAfterSignalSpamMinutes: 15,
     duplicateSignalWindowMinutes: 30,
@@ -113,6 +113,11 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   };
   const snapshotHash = hashObject(riskSnapshot);
   const signalSide = normalizeTradeSideHint(signal.side || signal.direction || '');
+  const isScannerExitSell = signalSide === 'sell' && Boolean(
+    marketContext.exit_state?.exit_reason
+      || signal.market_context?.exit_state?.exit_reason
+      || signal.marketContext?.exit_state?.exit_reason,
+  );
   const multiSourceConfirmation = buildProviderConfirmationFromContext(marketContext, {
     confirmation_options: {
       maxPriceDiffPct: config.maxProviderPriceDiffPct ?? 0.5,
@@ -159,7 +164,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
     reasonCodes.push('BLOCKED_BUY_CALIBRATION_BUCKET');
   }
   if (signal.freshness_score !== undefined && signal.freshness_score < config.minFreshnessScore) {
-    reasonCodes.push('LOW_FRESHNESS');
+    warnings.push('LOW_FRESHNESS');
   }
   if (signal.edge_score !== undefined && signal.edge_score < config.minEdgeScore) {
     reasonCodes.push('LOW_EDGE_SCORE');
@@ -198,13 +203,16 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
     if (stopDistancePct <= 0 || stopDistancePct > 20) reasonCodes.push(RiskReason.INVALID_STOP_DISTANCE);
   }
 
-  if (Number.isFinite(rewardRiskRatio) && rewardRiskRatio + 1e-9 < config.minRewardRiskRatio) {
+  if (!isScannerExitSell && Number.isFinite(rewardRiskRatio) && rewardRiskRatio + 1e-9 < config.minRewardRiskRatio) {
     reasonCodes.push(RiskReason.INVALID_REWARD_RISK);
   }
   if (safeNumber(signal.liquidity_score, 100) < config.minLiquidityScore) reasonCodes.push(RiskReason.MIN_LIQUIDITY_NOT_MET);
   if (safeNumber(signal.volume, marketContext.volume ?? 0) < config.minVolume) reasonCodes.push(RiskReason.MIN_VOLUME_NOT_MET);
-  if (safeNumber(marketContext.spread_slippage_pct, 0) > config.maxSpreadSlippagePct) reasonCodes.push(RiskReason.MAX_SPREAD_SLIPPAGE_EXCEEDED);
-  if (safeNumber(marketContext.volatility_pct, 0) > config.volatilityThresholdPct) warnings.push(RiskReason.VOLATILITY_THRESHOLD_EXCEEDED);
+  if (safeNumber(marketContext.spread_slippage_pct, 0) > config.maxSpreadSlippagePct) warnings.push(RiskReason.MAX_SPREAD_SLIPPAGE_EXCEEDED);
+  const volatilityThresholdPct = safeNumber(config.volatilityThresholdPct, null);
+  if (Number.isFinite(volatilityThresholdPct) && safeNumber(marketContext.volatility_pct, 0) > volatilityThresholdPct) {
+    warnings.push(RiskReason.VOLATILITY_THRESHOLD_EXCEEDED);
+  }
   if (portfolio.trade_count_today !== undefined && portfolio.trade_count_today >= config.maxTradesPerDay) {
     reasonCodes.push(RiskReason.MAX_TRADES_PER_DAY_EXCEEDED);
   }
@@ -213,7 +221,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
       ?? portfolio.open_position_count
       ?? portfolio.positions_open_count
       ?? (Array.isArray(portfolio.open_positions) ? portfolio.open_positions.length : null)
-      ?? (Array.isArray(portfolio.positions) ? portfolio.positions.filter((position) => safeNumber(position.quantity ?? position.qty_available ?? position.qty, 0) !== 0).length : null),
+      ?? (Array.isArray(portfolio.positions) ? portfolio.positions.filter((position) => safeNumber(position.qty ?? position.quantity ?? position.qty_available, 0) !== 0).length : null),
     null,
   );
   if (signalSide === 'buy' && Number.isFinite(openPositionsCount) && openPositionsCount >= effectiveMaxOpenPositions) {
@@ -269,7 +277,6 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
     || reasonCodes.includes(RiskReason.MAX_CRYPTO_EXPOSURE_EXCEEDED)
     || reasonCodes.includes(RiskReason.MIN_LIQUIDITY_NOT_MET)
     || reasonCodes.includes(RiskReason.MIN_VOLUME_NOT_MET)
-    || reasonCodes.includes(RiskReason.MAX_SPREAD_SLIPPAGE_EXCEEDED)
     || reasonCodes.includes(RiskReason.EVENT_BLACKOUT)
     || reasonCodes.includes(RiskReason.COOLDOWN_AFTER_LOSS)
     || reasonCodes.includes(RiskReason.COOLDOWN_AFTER_SIGNAL_SPAM)
@@ -279,7 +286,6 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
     || reasonCodes.includes(RiskReason.INVALID_STOP_DISTANCE)
     || reasonCodes.includes(RiskReason.MISSING_TAKE_PROFIT)
     || reasonCodes.includes(RiskReason.INVALID_REWARD_RISK)
-    || reasonCodes.includes('LOW_FRESHNESS')
     || reasonCodes.includes('BLOCKED_CALIBRATION_BUCKET')
     || reasonCodes.includes('BLOCKED_BUY_CALIBRATION_BUCKET')
     || reasonCodes.includes('LOW_EDGE_SCORE')

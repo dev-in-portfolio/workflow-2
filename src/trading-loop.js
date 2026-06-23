@@ -201,7 +201,7 @@ async function resolveLiveBuyNotionalTarget(executionAdapter, desiredTarget) {
     if (!availableNumbers.length) {
       return { target: fallbackTarget, requested: fallbackTarget, cash_limited: false };
     }
-    const maxSafeBudget = Math.max(1, Math.floor(Math.min(...availableNumbers) * 0.95 * 100) / 100);
+    const maxSafeBudget = Math.max(1, Math.floor(Math.min(...availableNumbers) * 0.99 * 100) / 100);
     const target = Math.min(fallbackTarget, maxSafeBudget);
     return { target, requested: fallbackTarget, cash_limited: target < fallbackTarget, max_safe_budget: maxSafeBudget };
   } catch {
