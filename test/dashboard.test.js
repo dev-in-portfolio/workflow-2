@@ -65,17 +65,20 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
     traderBaseUrl: baseUrl,
     port: 1111,
     dataDir,
+    nowProvider: () => new Date('2026-06-17T12:00:00Z'),
     env: {
       ALPACA_API_KEY_ID: '',
       ALPACA_API_SECRET_KEY: '',
       ALPACA_API_BASE_URL: '',
-      MAX_OPEN_POSITIONS: '2',
+      MAX_OPEN_POSITIONS: '1',
       BUY_NOTIONAL_TARGET: '150',
       MIN_BUY_NOTIONAL: '25',
-      STOCK_SCANNER_SYMBOLS: 'NVDA,TSLA,IREN,MRVL,INTC,MARA',
-      POSITION_STOP_LOSS_DOLLARS: '10',
-      TRAILING_PROFIT_START_DOLLARS: '5',
-      TRAILING_PROFIT_GIVEBACK_DOLLARS: '3',
+      STOCK_SCANNER_SYMBOLS: 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL',
+      POSITION_STOP_LOSS_DOLLARS: '1',
+      POSITION_STOP_LOSS_NOTIONAL_PCT: '0.75',
+      POSITION_STOP_LOSS_MAX_DOLLARS: '2.50',
+      TRAILING_PROFIT_START_DOLLARS: '0.50',
+      TRAILING_PROFIT_GIVEBACK_DOLLARS: '0.30',
     },
     fetchImpl: global.fetch,
   }, {
@@ -95,10 +98,16 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.blocked_count, 1);
   assert.equal(snapshot.summary.approved_count, 3);
   assert.equal(snapshot.regime.workflow, 'Live Market');
-  assert.deepEqual(snapshot.regime.approved_symbols, ['NVDA', 'TSLA', 'IREN', 'MRVL', 'INTC', 'MARA']);
-  assert.equal(snapshot.regime.stop_loss_dollars, 10);
-  assert.equal(snapshot.regime.trailing_profit_start_dollars, 5);
-  assert.equal(snapshot.regime.trailing_profit_giveback_dollars, 3);
+  assert.deepEqual(snapshot.regime.approved_symbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'DFTX', 'APGE', 'NVDA', 'WDC', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL']);
+  assert.equal(snapshot.regime.stop_loss_dollars, 1);
+  assert.equal(snapshot.regime.stop_loss_notional_pct, 0.75);
+  assert.equal(snapshot.regime.stop_loss_max_dollars, 2.5);
+  assert.equal(snapshot.regime.trailing_profit_start_dollars, 0.5);
+  assert.equal(snapshot.regime.trailing_profit_giveback_dollars, 0.3);
+  assert.equal(snapshot.automation.live_market.current.market_day, true);
+  assert.equal(snapshot.automation.live_market.start.today, true);
+  assert.equal(snapshot.automation.live_market.stop.today, true);
+  assert(snapshot.automation.live_market.start.label.includes('8:30 AM ET'));
   assert.equal(snapshot.live.policy.policy.maxOpenPositions, 9);
   assert.equal(snapshot.recent_activity.paperOutcomes.length, 2);
   assert.equal(snapshot.recent_activity.orders.length, 2);

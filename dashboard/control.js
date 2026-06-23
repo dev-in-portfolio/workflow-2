@@ -91,6 +91,7 @@ function render() {
   const live = snapshot.live || {};
   const scannerRuntime = live.scanner_runtime || {};
   const regime = snapshot.regime || {};
+  const automation = snapshot.automation?.live_market || {};
   const trader = control.trader || {};
   const scanner = control.scanner || {};
   const workflow = control.workflow || {};
@@ -104,6 +105,9 @@ function render() {
   $('pnlValue').textContent = formatSignedCurrency(summary.daily_change);
   $('profitExitValue').textContent = `${formatCurrency(regime.stop_loss_dollars)} stop / ${formatCurrency(regime.trailing_profit_giveback_dollars)} trail`;
   $('scannerProfile').textContent = scanner.status === 'running' ? 'running' : 'not running';
+  $('scheduleBadge').textContent = formatScheduleBadge(automation);
+  $('scheduleBadge').className = `tag ${formatScheduleBadgeKind(automation)}`;
+  $('scheduleHint').textContent = automation.note || 'Upcoming schedule';
   $('traderStatusPill').textContent = statusLabel(workflow.status || trader.status || summary.trader_status || (state.error ? 'degraded' : 'unknown'));
   $('traderStatusPill').className = `pill ${state.error || workflow.status === 'degraded' ? 'critical' : workflow.status === 'running' ? 'ok' : workflow.status === 'starting' ? 'warn' : 'warn'}`;
   $('actionStatus').innerHTML = state.actionMessage
@@ -120,6 +124,14 @@ function render() {
     ['managed', boolLabel(trader.managed)],
     ['last action', formatTime(trader.last_action_at)],
     ['started', formatTime(trader.started_at)],
+  ]);
+
+  $('automationSchedule').innerHTML = renderStateRows([
+    ['next start', automation.start?.label || '-'],
+    ['next stop', automation.stop?.label || '-'],
+    ['market day', boolLabel(automation.current?.market_day)],
+    ['holiday', boolLabel(automation.current?.holiday)],
+    ['timezone', automation.timezone || 'America/New_York'],
   ]);
 
   $('scannerState').innerHTML = renderStateRows([
@@ -248,6 +260,32 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function formatScheduleBadge(automation) {
+  if (!automation || !automation.current) return 'Schedule unavailable';
+  if (automation.current.holiday) return 'Holiday';
+  if (!automation.current.market_day) return 'Closed';
+  if (automation.start?.today && automation.stop?.today) {
+    return 'Queued for today';
+  }
+  if (automation.start?.today) {
+    return 'Starting today';
+  }
+  if (automation.stop?.today) {
+    return 'Stopping today';
+  }
+  return 'Next market day';
+}
+
+function formatScheduleBadgeKind(automation) {
+  if (!automation || !automation.current) return 'cyan';
+  if (automation.current.holiday) return 'red';
+  if (!automation.current.market_day) return 'amber';
+  if (automation.start?.today && automation.stop?.today) return 'green';
+  if (automation.start?.today) return 'cyan';
+  if (automation.stop?.today) return 'amber';
+  return 'cyan';
 }
 
 function msAgo(value) {

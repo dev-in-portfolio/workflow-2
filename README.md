@@ -210,3 +210,21 @@ If you need an emergency retreat, `POST /policy-rollback` will restore the best 
 - Start the workflow only during regular US market hours.
 - Watch that only one trader and one stock scanner run.
 - Confirm the scanner only considers `NVDA`, `TSLA`, `IREN`, `MRVL`, `INTC`, and `MARA`.
+
+## Daily Automation
+
+This repo now includes a repo-local weekday automation that uses the dashboard control API to start the live-market workflow at `8:30 AM America/New_York` and stop it at `4:15 PM America/New_York`.
+
+To register the Windows scheduled tasks:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-live-market-automation.ps1
+```
+
+To remove them later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-live-market-automation.ps1
+```
+
+The automation skips US market holidays when the holiday calendar helper is available, and it never trades manually or changes strategy settings.

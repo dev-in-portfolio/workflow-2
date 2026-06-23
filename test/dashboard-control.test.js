@@ -57,6 +57,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
     const operatorHtml = await fetch(`http://127.0.0.1:${port}/control`).then((response) => response.text());
     assert(operatorHtml.includes('Process Controls'));
     assert(operatorHtml.includes('Live Market Scanner'));
+    assert(operatorHtml.includes('Upcoming schedule'));
     assert.equal(operatorHtml.includes('Switch to crypto only'), false);
 
     const controlState = await fetch(`http://127.0.0.1:${port}/api/control/state`).then((response) => response.json());

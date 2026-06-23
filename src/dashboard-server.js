@@ -9,6 +9,8 @@ const { isRegularUsMarketHours, resolveMarketRegime } = require('./market-hours'
 const { nowIso, safeNumber } = require('./util');
 const { createLocalProcessController } = require('./local-process-controller');
 const { readOperatorTimelineTail } = require('./operator-timeline');
+const { calculateEffectiveStopLossDollars } = require('./stock-scanner');
+const { resolveLiveMarketAutomationSchedule } = require('./live-market-schedule');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -167,6 +169,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   }
 
   const dataDir = context.dataDir || options.dataDir || path.resolve(process.cwd(), 'data');
+  const nowProvider = options.nowProvider || (() => new Date());
+  const currentDate = nowProvider();
   const now = nowIso();
   const dashboardPort = options.port || state.dashboardPort || DEFAULT_DASHBOARD_PORT;
   const traderDiscovery = await resolveTraderBaseUrl({
@@ -205,9 +209,10 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const operatorTimeline = readOperatorTimelineTail({ filePath: path.join(dataDir, 'logs', 'operator-timeline.jsonl'), limit: 50 });
   const recentLogLines = readRelevantLogLines(dataDir, DEFAULT_LOG_LINE_LIMIT);
 
-  const regime = resolveMarketRegime(new Date());
+  const regime = resolveMarketRegime(currentDate);
   const activePolicySnapshot = unwrapPolicySnapshot(riskPolicy.data) || unwrapPolicySnapshot(overnightStatus.data?.policy_snapshot) || livePolicyFile || null;
   const liveMarketRules = resolveLiveMarketRules(runtimeEnv);
+  const liveMarketSchedule = resolveLiveMarketAutomationSchedule(currentDate);
   const configDrift = buildConfigDrift(activePolicySnapshot, runtimeEnv);
   const report = unwrapReport(dailyLiveResults.data) || unwrapReport(overnightStatus.data) || unwrapReport(overnightStatusFile) || null;
   const status = unwrapStatus(liveStatus.data) || unwrapStatus(overnightStatus.data) || unwrapStatus(overnightStatusFile) || null;
@@ -271,13 +276,15 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     control: controlState,
     regime: {
       active: regime,
-      market_open: isRegularUsMarketHours(new Date()),
+      market_open: isRegularUsMarketHours(currentDate),
       workflow: 'Live Market',
       approved_symbols: liveMarketRules.approved_symbols,
       max_open_positions: liveMarketRules.max_open_positions,
       buy_notional_target: liveMarketRules.buy_notional_target,
       min_buy_notional: liveMarketRules.min_buy_notional,
       stop_loss_dollars: liveMarketRules.stop_loss_dollars,
+      stop_loss_notional_pct: liveMarketRules.stop_loss_notional_pct,
+      stop_loss_max_dollars: liveMarketRules.stop_loss_max_dollars,
       trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
       trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
     },
@@ -294,6 +301,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       scanner_runtime: scannerRuntimeFile || null,
       config_drift: configDrift,
       exit_management: exitManagement,
+    },
+    automation: {
+      live_market: liveMarketSchedule,
     },
     recent_activity: {
       paper_outcomes: recentEntries.paperOutcomes,
@@ -1199,6 +1209,8 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     buy_notional_target: liveMarketRules.buy_notional_target,
     min_buy_notional: liveMarketRules.min_buy_notional,
     stop_loss_dollars: liveMarketRules.stop_loss_dollars,
+    stop_loss_notional_pct: liveMarketRules.stop_loss_notional_pct,
+    stop_loss_max_dollars: liveMarketRules.stop_loss_max_dollars,
     trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
     trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
     approved_symbols: liveMarketRules.approved_symbols,
@@ -1228,11 +1240,12 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
     minBuyNotional: safeNumber(runtimeEnv.MIN_BUY_NOTIONAL, null),
-    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'NVDA,TSLA,IREN,MRVL,INTC,MARA'),
+    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL'),
     positionStopLossDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_DOLLARS, null),
+    positionStopLossNotionalPct: safeNumber(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT, null),
+    positionStopLossMaxDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS, null),
     trailingProfitStartDollars: safeNumber(runtimeEnv.TRAILING_PROFIT_START_DOLLARS, null),
     trailingProfitGivebackDollars: safeNumber(runtimeEnv.TRAILING_PROFIT_GIVEBACK_DOLLARS, null),
-    volatilityThresholdPct: safeNumber(runtimeEnv.VOLATILITY_THRESHOLD_PCT, null),
     blockedBuyCalibrationBuckets: parseCsvForDrift(runtimeEnv.BLOCKED_BUY_CALIBRATION_BUCKETS),
     blockBuys: parseBoolForDrift(runtimeEnv.BLOCK_BUYS),
   };
@@ -1242,9 +1255,10 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     ['minBuyNotional', policy.minBuyNotional, expected.minBuyNotional],
     ['approvedSymbols', policy.approvedSymbols, expected.approvedSymbols],
     ['positionStopLossDollars', policy.positionStopLossDollars, expected.positionStopLossDollars],
+    ['positionStopLossNotionalPct', policy.positionStopLossNotionalPct, expected.positionStopLossNotionalPct],
+    ['positionStopLossMaxDollars', policy.positionStopLossMaxDollars, expected.positionStopLossMaxDollars],
     ['trailingProfitStartDollars', policy.trailingProfitStartDollars, expected.trailingProfitStartDollars],
     ['trailingProfitGivebackDollars', policy.trailingProfitGivebackDollars, expected.trailingProfitGivebackDollars],
-    ['volatilityThresholdPct', policy.volatilityThresholdPct, expected.volatilityThresholdPct],
     ['blockedBuyCalibrationBuckets', policy.blockedBuyCalibrationBuckets, expected.blockedBuyCalibrationBuckets],
     ['blockBuys', policy.blockBuys, expected.blockBuys],
   ];
@@ -1290,6 +1304,8 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
     reasons,
     rule: {
       stop_loss_dollars: rules.stop_loss_dollars,
+      stop_loss_notional_pct: rules.stop_loss_notional_pct,
+      stop_loss_max_dollars: rules.stop_loss_max_dollars,
       trailing_profit_start_dollars: rules.trailing_profit_start_dollars,
       trailing_profit_giveback_dollars: rules.trailing_profit_giveback_dollars,
     },
@@ -1297,7 +1313,13 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
       const marketValue = safeNumber(position.market_value ?? position.marketValue, null);
       const unrealized = safeNumber(position.unrealized_pl ?? position.unrealizedPnl ?? position.unrealized_intraday_pl, null);
       const runtimeState = runtimeBySymbol.get(String(position.symbol || '').toUpperCase()) || {};
-      const distanceToStop = Number.isFinite(unrealized) ? unrealized + rules.stop_loss_dollars : null;
+      const effectiveStopLoss = safeNumber(runtimeState.stop_loss_dollars, calculateEffectiveStopLossDollars({
+        baseStopLossDollars: rules.stop_loss_dollars,
+        stopLossNotionalPct: rules.stop_loss_notional_pct,
+        stopLossMaxDollars: rules.stop_loss_max_dollars,
+        positionMarketValue: marketValue,
+      }));
+      const distanceToStop = Number.isFinite(unrealized) ? unrealized + effectiveStopLoss : null;
       const trailingPeak = safeNumber(runtimeState.trailing_peak_unrealized_pl ?? scannerRuntime?.trailing_state?.positions?.[position.symbol]?.peak_unrealized_pl, null);
       const trailingActive = Boolean(runtimeState.trailing_active ?? (Number.isFinite(trailingPeak) && trailingPeak >= rules.trailing_profit_start_dollars));
       const trailingSellAt = safeNumber(runtimeState.trailing_sell_if_unrealized_pl_at_or_below, Number.isFinite(trailingPeak) ? trailingPeak - rules.trailing_profit_giveback_dollars : null);
@@ -1308,14 +1330,18 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
         avg_entry_price: safeNumber(position.avg_entry_price, null),
         current_price: safeNumber(position.current_price, null),
         unrealized_pl: unrealized,
-        stop_loss_dollars: rules.stop_loss_dollars,
+        stop_loss_dollars: effectiveStopLoss,
+        effective_stop_loss_dollars: effectiveStopLoss,
+        base_stop_loss_dollars: rules.stop_loss_dollars,
+        stop_loss_notional_pct: rules.stop_loss_notional_pct,
+        stop_loss_max_dollars: rules.stop_loss_max_dollars,
         distance_to_stop_dollars: Number.isFinite(distanceToStop) ? Number(distanceToStop.toFixed(4)) : null,
         trailing_active: trailingActive,
         trailing_peak_unrealized_pl: Number.isFinite(trailingPeak) ? trailingPeak : null,
         trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? trailingSellAt : null,
         eligible_for_exit: Boolean(runtimeState.exit_reason),
         reason: Number.isFinite(unrealized)
-          ? (runtimeState.exit_reason || (unrealized <= -rules.stop_loss_dollars ? 'STOP_LOSS_READY' : trailingActive ? 'TRAILING_ACTIVE' : 'HOLD'))
+          ? (runtimeState.exit_reason || (unrealized <= -effectiveStopLoss ? 'STOP_LOSS_READY' : trailingActive ? 'TRAILING_ACTIVE' : 'HOLD'))
           : 'UNREALIZED_PL_UNAVAILABLE',
       };
     }),
@@ -1398,13 +1424,15 @@ function unwrapPolicyEffectiveness(payload) {
 function resolveLiveMarketRules(env = {}) {
   return {
     workflow: 'Live Market',
-    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'NVDA,TSLA,IREN,MRVL,INTC,MARA'),
-    max_open_positions: safeNumber(env.MAX_OPEN_POSITIONS, 2),
+    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL'),
+    max_open_positions: safeNumber(env.MAX_OPEN_POSITIONS, 1),
     buy_notional_target: safeNumber(env.BUY_NOTIONAL_TARGET, 150),
     min_buy_notional: safeNumber(env.MIN_BUY_NOTIONAL, 25),
-    stop_loss_dollars: safeNumber(env.POSITION_STOP_LOSS_DOLLARS, 10),
-    trailing_profit_start_dollars: safeNumber(env.TRAILING_PROFIT_START_DOLLARS, 5),
-    trailing_profit_giveback_dollars: safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 3),
+    stop_loss_dollars: safeNumber(env.POSITION_STOP_LOSS_DOLLARS, 1),
+    stop_loss_notional_pct: safeNumber(env.POSITION_STOP_LOSS_NOTIONAL_PCT, 0.75),
+    stop_loss_max_dollars: safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5),
+    trailing_profit_start_dollars: safeNumber(env.TRAILING_PROFIT_START_DOLLARS, 0.5),
+    trailing_profit_giveback_dollars: safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 0.3),
   };
 }
 
