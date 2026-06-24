@@ -42,6 +42,13 @@ const RiskReason = {
   EXECUTION_QUALITY_DEGRADED: 'EXECUTION_QUALITY_DEGRADED',
   LOW_FILL_RATE: 'LOW_FILL_RATE',
   HIGH_PARTIAL_FILL_RATE: 'HIGH_PARTIAL_FILL_RATE',
+  BROKER_RECONCILIATION_UNAVAILABLE: 'BROKER_RECONCILIATION_UNAVAILABLE',
+  BROKER_ACCOUNT_UNAVAILABLE: 'BROKER_ACCOUNT_UNAVAILABLE',
+  BROKER_POSITIONS_UNAVAILABLE: 'BROKER_POSITIONS_UNAVAILABLE',
+  BROKER_OPEN_ORDERS_UNAVAILABLE: 'BROKER_OPEN_ORDERS_UNAVAILABLE',
+  BROKER_RECONCILIATION_FAILED: 'BROKER_RECONCILIATION_FAILED',
+  BROKER_STATE_REQUIRED_FOR_BUY: 'BROKER_STATE_REQUIRED_FOR_BUY',
+  BUYING_POWER_UNAVAILABLE: 'BUYING_POWER_UNAVAILABLE',
 };
 
 function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext = {}, now = new Date()) {
@@ -128,6 +135,12 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   });
 
   if (config.killSwitch) reasonCodes.push(RiskReason.KILL_SWITCH_ENABLED);
+  for (const brokerReason of [
+    ...(Array.isArray(portfolio?.broker_reconciliation_reason_codes) ? portfolio.broker_reconciliation_reason_codes : []),
+    ...(Array.isArray(portfolio?.reason_codes) ? portfolio.reason_codes : []),
+  ]) {
+    if (brokerReason && !reasonCodes.includes(brokerReason)) reasonCodes.push(brokerReason);
+  }
   if (config.liveTradingEnabled) warnings.push('LIVE_TRADING_MODE_ENABLED_BUT_NOT_IMPLEMENTED');
   if (!config.paperAdapterEnabled) reasonCodes.push(RiskReason.PAPER_BROKER_UNAVAILABLE);
   if (signalSide === 'buy' && config.blockBuys) {
@@ -296,6 +309,12 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
     || reasonCodes.includes('HIGH_CONTRADICTION')
     || reasonCodes.includes('SIGNAL_RISK_TOO_HIGH')
     || reasonCodes.includes(RiskReason.MULTI_SOURCE_CONFIRMATION_FAILED)
+    || reasonCodes.includes(RiskReason.BROKER_ACCOUNT_UNAVAILABLE)
+    || reasonCodes.includes(RiskReason.BROKER_POSITIONS_UNAVAILABLE)
+    || reasonCodes.includes(RiskReason.BROKER_OPEN_ORDERS_UNAVAILABLE)
+    || reasonCodes.includes(RiskReason.BROKER_RECONCILIATION_FAILED)
+    || reasonCodes.includes(RiskReason.BROKER_STATE_REQUIRED_FOR_BUY)
+    || reasonCodes.includes(RiskReason.BUYING_POWER_UNAVAILABLE)
     || reasonCodes.includes(RiskReason.PAPER_BROKER_UNAVAILABLE)
     || reasonCodes.includes(RiskReason.PORTFOLIO_STATE_UNAVAILABLE)
     || reasonCodes.includes(RiskReason.MISSING_PORTFOLIO_CONTEXT)

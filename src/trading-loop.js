@@ -1,5 +1,7 @@
 const { computePaperOutcome } = require('./paper-outcomes');
+const { isBrokerBackedExecutionAdapter, reconcileBrokerPortfolio } = require('./broker-reconciliation');
 const { deriveMarketActivitySignal } = require('./market-activity');
+const { allocateBuyNotional } = require('./portfolio-allocation');
 const { evaluateRiskGate } = require('./risk-gate');
 const { buildPaperOrderRequestFromSignal, resolveBuyOrderSizing, validatePaperOrderWebhookPayload } = require('./webhooks');
 const { nowIso, safeNumber } = require('./util');
@@ -18,7 +20,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
   const audit = options.audit || null;
   const policySnapshot = options.policySnapshot || performance?.getPolicySnapshot?.() || { policy: {} };
   const policy = policySnapshot.policy || {};
-  const portfolio = signalOrRequest.portfolio || signalOrRequest.portfolio_context || {};
+  const requestedPortfolio = signalOrRequest.portfolio || signalOrRequest.portfolio_context || {};
 
   const validation = validatePaperOrderWebhookPayload(signal);
   if (!validation.pass) {
@@ -31,7 +33,19 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     };
   }
 
-  const riskDecision = evaluateRiskGate(signal, portfolio, policy, marketContext);
+  const brokerReconciliation = await reconcileBrokerPortfolio({
+    executionAdapter: options.executionAdapter,
+    requestPortfolio: requestedPortfolio,
+    policy,
+    signal,
+  });
+  const portfolio = brokerReconciliation.broker_reconciled_portfolio || requestedPortfolio;
+  const reconciledMarketContext = {
+    ...marketContext,
+    broker_reconciliation: brokerReconciliation,
+  };
+
+  const riskDecision = evaluateRiskGate(signal, portfolio, policy, reconciledMarketContext);
   if (performance?.recordSignal) {
     performance.recordSignal(signal);
   }
@@ -41,6 +55,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
       signal_id: signal.signal_id || null,
       timestamp: signal.created_at || riskDecision.timestamp || nowIso(),
       policy_snapshot: policySnapshot,
+      broker_reconciliation: brokerReconciliation,
     });
   }
 
@@ -51,29 +66,38 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
       reason_codes: riskDecision.reason_codes || [],
       signal,
       riskDecision,
-      market_context: marketContext,
+      broker_reconciliation: brokerReconciliation,
+      market_context: reconciledMarketContext,
     };
   }
 
   const requestedBuyNotionalTarget = policy.buyNotionalTarget ?? options.buyNotionalTarget ?? 150;
   const minBuyNotional = Math.max(1, Number(policy.minBuyNotional ?? options.minBuyNotional ?? 25) || 25);
+  const strictBrokerCash = isBuySignal(signal) && isBrokerBackedExecutionAdapter(options.executionAdapter);
   const liveBuyBudget = isBuySignal(signal)
-    ? await resolveLiveBuyNotionalTarget(options.executionAdapter, requestedBuyNotionalTarget)
+    ? allocateBuyNotional({
+      targetNotional: requestedBuyNotionalTarget,
+      minBuyNotional,
+      portfolio,
+      requireBrokerCash: strictBrokerCash,
+    })
     : { target: requestedBuyNotionalTarget, requested: requestedBuyNotionalTarget, cash_limited: false };
-  const effectiveBuyNotionalTarget = liveBuyBudget.target;
-  if (isBuySignal(signal) && effectiveBuyNotionalTarget < minBuyNotional) {
+  const effectiveBuyNotionalTarget = liveBuyBudget.notional ?? liveBuyBudget.target;
+  if (isBuySignal(signal) && (!liveBuyBudget.accepted || effectiveBuyNotionalTarget < minBuyNotional)) {
     return {
       accepted: false,
       stage: 'decision',
-      reason_codes: ['CASH_TOO_LOW_FOR_TARGET_SIZE'],
+      reason_codes: [liveBuyBudget.reason || 'CASH_TOO_LOW_FOR_TARGET_SIZE'],
       signal,
       riskDecision,
-      market_context: marketContext,
+      broker_reconciliation: brokerReconciliation,
+      market_context: reconciledMarketContext,
       sizing: {
         requested_notional: requestedBuyNotionalTarget,
         submitted_notional: effectiveBuyNotionalTarget,
         min_buy_notional: minBuyNotional,
         cash_limited: Boolean(liveBuyBudget.cash_limited),
+        allocation: liveBuyBudget,
       },
     };
   }
@@ -86,6 +110,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     paperOrderRequest.requested_notional = requestedBuyNotionalTarget;
     paperOrderRequest.submitted_notional = effectiveBuyNotionalTarget;
     paperOrderRequest.min_buy_notional = minBuyNotional;
+    if (strictBrokerCash) paperOrderRequest.require_idempotency = true;
   }
   if (!paperOrderRequest) {
     if (isBuySignal(signal)) {
@@ -99,7 +124,8 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
           reason_codes: buySizing.reason_codes,
           signal,
           riskDecision,
-          market_context: marketContext,
+          broker_reconciliation: brokerReconciliation,
+          market_context: reconciledMarketContext,
         };
       }
     }
@@ -109,7 +135,8 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
       reason_codes: ['NON_TRADE_DECISION'],
       signal,
       riskDecision,
-      market_context: marketContext,
+      broker_reconciliation: brokerReconciliation,
+      market_context: reconciledMarketContext,
     };
   }
 
@@ -122,13 +149,14 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
       signal,
       riskDecision,
       paperOrderRequest,
-      market_context: marketContext,
+      broker_reconciliation: brokerReconciliation,
+      market_context: reconciledMarketContext,
       open_orders: openOrderCheck.open_orders || [],
     };
   }
 
   const paperOrder = await options.executionAdapter.submitOrder(paperOrderRequest, {
-    market: marketContext,
+    market: reconciledMarketContext,
     requireHumanApproval: policy.requireHumanApproval,
   });
 
@@ -154,6 +182,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
       payload: {
         signal,
         riskDecision,
+        brokerReconciliation,
         paperOrderRequest,
         paperOrder,
         confirmation,
@@ -175,7 +204,8 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     confirmation,
     paperResult,
     paperOutcome,
-    market_context: marketContext,
+    market_context: reconciledMarketContext,
+    broker_reconciliation: brokerReconciliation,
   };
 }
 
@@ -410,15 +440,29 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
   if (!performance) return null;
 
   const exit = exitSnapshot || {};
+  const signalExitState = signal.market_context?.exit_state
+    || signal.marketContext?.exit_state
+    || signal.exit_state
+    || {};
   const sellSide = String(signal.side || signal.direction || '').trim().toLowerCase() === 'sell'
     || String(signal.direction || '').trim().toLowerCase() === 'bearish';
-  const costBasis = safeNumber(signal.position_avg_entry_price ?? signal.position_entry_price ?? signal.avg_entry_price ?? null, null);
+  const costBasis = safeNumber(
+    signal.position_avg_entry_price
+      ?? signal.position_entry_price
+      ?? signal.avg_entry_price
+      ?? signalExitState.entry_price
+      ?? null,
+    null,
+  );
   const entryPrice = sellSide && Number.isFinite(costBasis)
     ? costBasis
     : safeNumber(paperResult.average_fill_price ?? signal.entry_price ?? signal.price, null);
   const exitPrice = sellSide
-    ? safeNumber(paperResult.average_fill_price ?? signal.entry_price ?? signal.price, null)
+    ? safeNumber(paperResult.average_fill_price ?? signalExitState.sell_price ?? signal.entry_price ?? signal.price, null)
     : exit.exit_price ?? null;
+  const outcomeQuantity = sellSide
+    ? safeNumber(signalExitState.quantity ?? exit.quantity ?? paperResult.filled_quantity ?? signal.quantity, 0)
+    : safeNumber(exit.quantity ?? paperResult.filled_quantity ?? signal.quantity, 0);
   const outcome = computePaperOutcome({
     original_signal: signal,
     paper_result: paperResult,
@@ -426,10 +470,13 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
     exit_price: exitPrice,
     high_price: exit.high_price ?? null,
     low_price: exit.low_price ?? null,
-    quantity: exit.quantity ?? paperResult.filled_quantity ?? signal.quantity ?? 0,
+    quantity: outcomeQuantity,
     side: sellSide ? 'sell' : 'buy',
     position_exit: sellSide,
     false_positive: exit.false_positive,
+    estimated_entry_price: signalExitState.entry_price ?? null,
+    estimated_exit_price: signalExitState.sell_price ?? null,
+    estimated_fees: signalExitState.fees ?? paperResult.estimated_fees ?? null,
   });
 
   if (typeof performance.recordPaperOutcome === 'function') {

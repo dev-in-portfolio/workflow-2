@@ -21,6 +21,14 @@ function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = []
     }, 0) / paperOutcomes.length
     : 0;
   const fillQualitySummary = summarizeFillQuality(paperOutcomes);
+  const pnlByExitReason = summarizePnlBy(paperOutcomes, 'exit_reason');
+  const pnlBySymbol = summarizePnlBy(paperOutcomes, 'symbol');
+  const pnlByRegime = summarizePnlBy(paperOutcomes, 'regime');
+  const profitFactor = calculateProfitFactor(paperOutcomes);
+  const churn = summarizeChurn(paperOutcomes);
+  const stopoutClustering = summarizeStopoutClustering(paperOutcomes);
+  const tradeDuration = summarizeTradeDuration(paperOutcomes);
+  const slippageSummary = summarizeSlippage(paperOutcomes);
   const falsePositives = paperOutcomes.filter((outcome) => outcome.false_positive || outcome.win_loss === 'loss' && outcome.calibration_bucket === '90-100').length;
   const calibrationBuckets = summarizeCalibrationBuckets(paperOutcomes);
   const falsePositiveBuckets = summarizeFalsePositiveBuckets(paperOutcomes);
@@ -64,6 +72,15 @@ function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = []
     execution_drag: executionDrag,
     execution_drag_ratio: executionDragRatio,
     fill_quality_summary: fillQualitySummary,
+    pnl_by_exit_reason: pnlByExitReason,
+    pnl_by_symbol: pnlBySymbol,
+    pnl_by_regime: pnlByRegime,
+    profit_factor: profitFactor,
+    churn,
+    stopout_clustering: stopoutClustering,
+    trade_duration_summary: tradeDuration,
+    partial_fill_rate: fillQualitySummary.partial_fill_rate,
+    slippage_summary: slippageSummary,
     false_positives: falsePositives,
     false_positive_buckets: falsePositiveBuckets,
     signal_quality_summary: signalQualitySummary,
@@ -253,6 +270,102 @@ function summarizeFillQuality(paperOutcomes = []) {
   return summary;
 }
 
+function summarizePnlBy(paperOutcomes = [], key = 'symbol') {
+  const buckets = new Map();
+  for (const outcome of paperOutcomes) {
+    const bucketKey = outcome?.[key]
+      || outcome?.original_signal?.[key]
+      || outcome?.paper_result?.original_signal?.[key]
+      || outcome?.market_context?.[key]
+      || 'unknown';
+    const bucket = buckets.get(bucketKey) || { key: bucketKey, count: 0, wins: 0, losses: 0, pnl: 0 };
+    const pnl = safeNumber(outcome.pnl ?? outcome.net_pnl ?? outcome.adjusted_pnl, 0);
+    bucket.count += 1;
+    bucket.pnl += pnl;
+    if (pnl > 0) bucket.wins += 1;
+    if (pnl < 0) bucket.losses += 1;
+    buckets.set(bucketKey, bucket);
+  }
+  return [...buckets.values()]
+    .map((bucket) => ({
+      ...bucket,
+      average_pnl: bucket.count ? bucket.pnl / bucket.count : 0,
+      win_rate: bucket.count ? bucket.wins / bucket.count : 0,
+    }))
+    .sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
+}
+
+function calculateProfitFactor(paperOutcomes = []) {
+  const grossProfit = paperOutcomes.reduce((sum, outcome) => {
+    const pnl = safeNumber(outcome.pnl ?? outcome.net_pnl ?? outcome.adjusted_pnl, 0);
+    return pnl > 0 ? sum + pnl : sum;
+  }, 0);
+  const grossLoss = Math.abs(paperOutcomes.reduce((sum, outcome) => {
+    const pnl = safeNumber(outcome.pnl ?? outcome.net_pnl ?? outcome.adjusted_pnl, 0);
+    return pnl < 0 ? sum + pnl : sum;
+  }, 0));
+  if (grossProfit === 0 && grossLoss === 0) return null;
+  if (grossLoss === 0) return Number.POSITIVE_INFINITY;
+  return grossProfit / grossLoss;
+}
+
+function summarizeChurn(paperOutcomes = []) {
+  const bySymbol = new Map();
+  for (const outcome of paperOutcomes) {
+    const symbol = outcome.symbol || outcome.original_signal?.symbol || 'unknown';
+    bySymbol.set(symbol, (bySymbol.get(symbol) || 0) + 1);
+  }
+  const counts = [...bySymbol.entries()].map(([symbol, count]) => ({ symbol, count })).sort((a, b) => b.count - a.count);
+  return {
+    unique_symbols: bySymbol.size,
+    total_trades: paperOutcomes.length,
+    max_symbol_trades: counts[0] || null,
+    repeated_symbol_count: counts.filter((item) => item.count > 1).length,
+    by_symbol: counts,
+  };
+}
+
+function summarizeStopoutClustering(paperOutcomes = []) {
+  const stopouts = paperOutcomes.filter((outcome) => {
+    const reason = String(outcome.exit_reason || outcome.original_signal?.market_context?.exit_state?.exit_reason || '').toUpperCase();
+    return reason.includes('STOP');
+  });
+  return {
+    count: stopouts.length,
+    by_symbol: summarizePnlBy(stopouts, 'symbol'),
+    recent_symbols: stopouts.slice(-5).map((outcome) => outcome.symbol || outcome.original_signal?.symbol || 'unknown'),
+  };
+}
+
+function summarizeTradeDuration(paperOutcomes = []) {
+  const durations = paperOutcomes.map((outcome) => {
+    const startedAt = new Date(outcome.entry_at || outcome.created_at || outcome.original_signal?.created_at || 0).getTime();
+    const endedAt = new Date(outcome.recorded_at || outcome.filled_at || outcome.paper_result?.filled_at || 0).getTime();
+    return Number.isFinite(startedAt) && Number.isFinite(endedAt) && startedAt > 0 && endedAt >= startedAt
+      ? (endedAt - startedAt) / 1000
+      : null;
+  }).filter(Number.isFinite);
+  if (!durations.length) return { count: 0, average_seconds: null, min_seconds: null, max_seconds: null };
+  return {
+    count: durations.length,
+    average_seconds: durations.reduce((sum, value) => sum + value, 0) / durations.length,
+    min_seconds: Math.min(...durations),
+    max_seconds: Math.max(...durations),
+  };
+}
+
+function summarizeSlippage(paperOutcomes = []) {
+  const values = paperOutcomes
+    .map((outcome) => safeNumber(outcome.slippage ?? outcome.execution_slippage ?? outcome.paper_result?.slippage, null))
+    .filter(Number.isFinite);
+  if (!values.length) return { count: 0, average: null, total: null };
+  return {
+    count: values.length,
+    average: values.reduce((sum, value) => sum + value, 0) / values.length,
+    total: values.reduce((sum, value) => sum + value, 0),
+  };
+}
+
 function recommendOpenPositionCapFromReport({
   currentMaxOpenPositions = 12,
   paperPnl = 0,
@@ -390,12 +503,18 @@ module.exports = {
   calculateDrawdown,
   chooseBestSignal,
   chooseWorstSignal,
+  calculateProfitFactor,
   generateDailySummary,
   generateDailyLiveResultsReport,
   summarizeCalibrationBuckets,
   summarizeFalsePositiveBuckets,
   summarizeSignalQualityOutliers,
   summarizeFillQuality,
+  summarizePnlBy,
+  summarizeChurn,
+  summarizeStopoutClustering,
+  summarizeTradeDuration,
+  summarizeSlippage,
   recommendOpenPositionCapFromReport,
   summarizeSignalQuality,
 };

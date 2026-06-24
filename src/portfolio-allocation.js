@@ -39,7 +39,7 @@ function buildPortfolioSnapshot({ positions = [], openOrders = [], account = nul
   };
 }
 
-function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = {} } = {}) {
+function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = {}, requireBrokerCash = false } = {}) {
   const cashBufferFactor = 0.99;
   const requested = Math.max(1, safeNumber(targetNotional, 150));
   const floor = Math.max(1, safeNumber(minBuyNotional, 25));
@@ -51,6 +51,18 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
     .map((value) => safeNumber(value, null))
     .filter((value) => Number.isFinite(value) && value > 0);
   if (!cashCandidates.length) {
+    if (requireBrokerCash) {
+      return {
+        accepted: false,
+        reason: 'BUYING_POWER_UNAVAILABLE',
+        requested,
+        notional: 0,
+        floor,
+        remaining_slots: remainingSlots,
+        slot_budget: 0,
+        cash_source: null,
+      };
+    }
     return { accepted: true, reason: null, requested, notional: requested, floor, remaining_slots: remainingSlots, slot_budget: requested, cash_source: 'unavailable_fallback' };
   }
   const cash = safeNumber(portfolio.cash, null);

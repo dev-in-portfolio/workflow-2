@@ -75,15 +75,22 @@ class AlpacaTradeAdapter {
     this.fetchImpl = options.fetch || globalThis.fetch;
     this.dryRun = options.dryRun ?? false;
     this.userAgent = options.userAgent || 'trading-automation-control-plane/0.1.0';
+    this.requiresBrokerReconciliation = true;
+    this.supportsIdempotency = true;
   }
 
   async submitOrder(request) {
+    const idempotencyKey = deriveClientOrderId(request);
     if (this.dryRun) {
       return {
         order_id: request.request_id || request.signal_id || `alpaca_dry_${Date.now()}`,
         status: 'dry_run',
         request,
         submitted_to: this.baseUrl,
+        idempotency_key: idempotencyKey,
+        idempotency_status: idempotencyKey ? 'dry_run_checked' : 'not_requested',
+        existing_order_reused: false,
+        idempotency_checked: Boolean(idempotencyKey),
       };
     }
 
@@ -100,6 +107,30 @@ class AlpacaTradeAdapter {
         ? { ...request, stop_loss: null, take_profit: null }
         : request;
     const payload = buildAlpacaOrderPayload(executionRequest);
+    if (idempotencyKey) {
+      try {
+        const existingOrder = await this.findExistingOrderForRequest(executionRequest);
+        if (existingOrder) {
+          return {
+            order_id: existingOrder.id || existingOrder.order_id || idempotencyKey,
+            status: existingOrder.status || 'accepted',
+            submitted_to: this.baseUrl,
+            external_order: existingOrder,
+            request,
+            idempotency_key: idempotencyKey,
+            idempotency_status: 'existing_order_reused',
+            existing_order_reused: true,
+            idempotency_checked: true,
+          };
+        }
+      } catch (error) {
+        if (request.require_idempotency) {
+          error.idempotency_key = idempotencyKey;
+          error.idempotency_status = 'lookup_failed';
+          throw error;
+        }
+      }
+    }
     const response = await this.fetchImpl(`${this.baseUrl}/v2/orders`, {
       method: 'POST',
       headers: this.#headers(),
@@ -114,9 +145,25 @@ class AlpacaTradeAdapter {
     }
     if (!response.ok) {
       const brokerMessage = body?.message || body?.error || body?.detail || body?.raw || bodyText || 'unknown error';
+      if (idempotencyKey && isDuplicateClientOrderError(response.status, brokerMessage)) {
+        const existingOrder = await this.getOrderByClientOrderId(idempotencyKey);
+        return {
+          order_id: existingOrder.id || existingOrder.order_id || idempotencyKey,
+          status: existingOrder.status || 'accepted',
+          submitted_to: this.baseUrl,
+          external_order: existingOrder,
+          request,
+          idempotency_key: idempotencyKey,
+          idempotency_status: 'existing_order_reused_after_duplicate',
+          existing_order_reused: true,
+          idempotency_checked: true,
+        };
+      }
       const error = new Error(`Alpaca order rejected (${response.status}): ${brokerMessage}`);
       error.status = response.status;
       error.response = body;
+      error.idempotency_key = idempotencyKey;
+      error.idempotency_status = idempotencyKey ? 'checked_then_rejected' : 'not_requested';
       throw error;
     }
     return {
@@ -125,6 +172,10 @@ class AlpacaTradeAdapter {
       submitted_to: this.baseUrl,
       external_order: body,
       request,
+      idempotency_key: idempotencyKey,
+      idempotency_status: idempotencyKey ? 'new_order_submitted' : 'not_requested',
+      existing_order_reused: false,
+      idempotency_checked: Boolean(idempotencyKey),
     };
   }
 
@@ -197,6 +248,67 @@ class AlpacaTradeAdapter {
     return Array.isArray(body) ? body : body?.orders || body?.data || [];
   }
 
+  async getPositions() {
+    this.#ensureConfigured();
+    const response = await this.fetchImpl(`${this.baseUrl}/v2/positions`, {
+      method: 'GET',
+      headers: this.#headers(),
+    });
+    const bodyText = await response.text();
+    let body = null;
+    try {
+      body = bodyText ? JSON.parse(bodyText) : {};
+    } catch {
+      body = { raw: bodyText };
+    }
+    if (!response.ok) {
+      const error = new Error(`Alpaca positions request failed (${response.status})`);
+      error.status = response.status;
+      error.response = body;
+      throw error;
+    }
+    return Array.isArray(body) ? body : body?.positions || body?.data || [];
+  }
+
+  async getOrderByClientOrderId(clientOrderId) {
+    this.#ensureConfigured();
+    if (!clientOrderId) {
+      throw new Error('Alpaca client order lookup requires a client order id');
+    }
+    const response = await this.fetchImpl(`${this.baseUrl}/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`, {
+      method: 'GET',
+      headers: this.#headers(),
+    });
+    const bodyText = await response.text();
+    let body = null;
+    try {
+      body = bodyText ? JSON.parse(bodyText) : {};
+    } catch {
+      body = { raw: bodyText };
+    }
+    if (!response.ok) {
+      const error = new Error(`Alpaca client order lookup failed (${response.status})`);
+      error.status = response.status;
+      error.response = body;
+      throw error;
+    }
+    return body;
+  }
+
+  async findExistingOrderForRequest(request = {}) {
+    const clientOrderId = deriveClientOrderId(request);
+    if (!clientOrderId) return null;
+    try {
+      return await this.getOrderByClientOrderId(clientOrderId);
+    } catch (error) {
+      if (![404, 422].includes(Number(error.status))) throw error;
+    }
+    const openOrders = await this.getOpenOrders();
+    return (Array.isArray(openOrders) ? openOrders : []).find((order) => {
+      return String(order.client_order_id || order.request_id || '').trim() === clientOrderId;
+    }) || null;
+  }
+
   #headers() {
     return {
       'APCA-API-KEY-ID': this.apiKeyId,
@@ -216,8 +328,20 @@ class AlpacaTradeAdapter {
   }
 }
 
+function deriveClientOrderId(request = {}) {
+  return request.client_order_id || request.idempotency_key || request.request_id || request.signal_id || null;
+}
+
+function isDuplicateClientOrderError(status, message) {
+  const text = String(message || '').toLowerCase();
+  return [400, 403, 409, 422].includes(Number(status))
+    && text.includes('client')
+    && text.includes('order');
+}
+
 module.exports = {
   AlpacaTradeAdapter,
   buildAlpacaOrderPayload,
+  deriveClientOrderId,
   normalizeAlpacaBaseUrl,
 };

@@ -5,6 +5,7 @@ const { promisify } = require('util');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { nowIso } = require('./util');
 const { appendOperatorTimelineEvent } = require('./operator-timeline');
+const { acquireProcessLock, listProcessLocks, releaseProcessLock } = require('./process-lock');
 
 const execFileAsync = promisify(execFile);
 
@@ -144,9 +145,33 @@ function createLocalProcessController(options = {}) {
     if (await isPortOccupied(traderPort) && !(await isUrlAlive(state.trader.base_url))) {
       return markAction('start-trader', false, `Port ${traderPort} is already in use`);
     }
-    const child = launchNodeScript('src/trader-cli.js', {
-      PORT: String(traderPort),
-      SERVER_PORT: String(traderPort),
+    const preflightLock = acquireProcessLock({
+      repoRoot,
+      name: 'trader',
+      owner: 'local-process-controller',
+      pid: process.pid,
+      metadata: { script: 'src/trader-cli.js', port: traderPort, phase: 'starting' },
+    });
+    if (!preflightLock.acquired) {
+      return markAction('start-trader', false, 'Trader lock is already held', { process_lock: preflightLock });
+    }
+    let child = null;
+    try {
+      child = launchNodeScript('src/trader-cli.js', {
+        PORT: String(traderPort),
+        SERVER_PORT: String(traderPort),
+      });
+    } catch (error) {
+      releaseProcessLock({ repoRoot, name: 'trader', pid: process.pid });
+      return markAction('start-trader', false, error.message);
+    }
+    releaseProcessLock({ repoRoot, name: 'trader', pid: process.pid });
+    const lockResult = acquireProcessLock({
+      repoRoot,
+      name: 'trader',
+      owner: 'local-process-controller',
+      pid: child.pid,
+      metadata: { script: 'src/trader-cli.js', port: traderPort },
     });
     state.trader = {
       ...state.trader,
@@ -156,6 +181,7 @@ function createLocalProcessController(options = {}) {
       last_action_at: nowIso(),
       last_error: null,
       managed: true,
+      lock: lockResult,
     };
     const ready = await waitForUrl(state.trader.base_url, 10_000);
     state.trader.status = ready ? 'running' : 'starting';
@@ -170,6 +196,7 @@ function createLocalProcessController(options = {}) {
       state.trader.pid = null;
       state.trader.managed = false;
       state.updated_at = nowIso();
+      releaseProcessLock({ repoRoot, name: 'trader' });
       return markAction('stop-trader', true, 'Trader already stopped');
     }
     await killPids(pids);
@@ -177,6 +204,7 @@ function createLocalProcessController(options = {}) {
     state.trader.status = 'stopped';
     state.trader.managed = false;
     state.trader.last_action_at = nowIso();
+    releaseProcessLock({ repoRoot, name: 'trader' });
     state.updated_at = nowIso();
     return markAction('stop-trader', true, `Stopped ${pids.length} trader process${pids.length === 1 ? '' : 'es'}`);
   }
@@ -195,7 +223,31 @@ function createLocalProcessController(options = {}) {
       await stopScanner();
     }
     const script = SCANNER_PROFILES[nextProfile].script;
-    const child = launchNodeScript(script, buildScannerEnv(nextProfile));
+    const preflightLock = acquireProcessLock({
+      repoRoot,
+      name: 'scanner',
+      owner: 'local-process-controller',
+      pid: process.pid,
+      metadata: { script, profile: nextProfile, phase: 'starting' },
+    });
+    if (!preflightLock.acquired) {
+      return markAction('start-scanner', false, 'Scanner lock is already held', { process_lock: preflightLock });
+    }
+    let child = null;
+    try {
+      child = launchNodeScript(script, buildScannerEnv(nextProfile));
+    } catch (error) {
+      releaseProcessLock({ repoRoot, name: 'scanner', pid: process.pid });
+      return markAction('start-scanner', false, error.message);
+    }
+    releaseProcessLock({ repoRoot, name: 'scanner', pid: process.pid });
+    const lockResult = acquireProcessLock({
+      repoRoot,
+      name: 'scanner',
+      owner: 'local-process-controller',
+      pid: child.pid,
+      metadata: { script, profile: nextProfile },
+    });
     state.scanner = {
       ...state.scanner,
       pid: child.pid,
@@ -211,6 +263,7 @@ function createLocalProcessController(options = {}) {
       managed: true,
       multiple_running: false,
       discovered: [],
+      lock: lockResult,
     };
     await sleep(700);
     state.scanner.status = isPidAlive(child.pid) ? 'running' : 'starting';
@@ -240,6 +293,7 @@ function createLocalProcessController(options = {}) {
         discovered: [],
       };
       state.updated_at = nowIso();
+      releaseProcessLock({ repoRoot, name: 'scanner' });
       return markAction('stop-scanner', true, 'Scanner already stopped');
     }
     await killPids(pids);
@@ -256,6 +310,7 @@ function createLocalProcessController(options = {}) {
       discovered: [],
       last_action_at: nowIso(),
     };
+    releaseProcessLock({ repoRoot, name: 'scanner' });
     state.updated_at = nowIso();
     return markAction('stop-scanner', true, `Stopped ${pids.length} scanner process${pids.length === 1 ? '' : 'es'}`);
   }
@@ -371,6 +426,7 @@ function createLocalProcessController(options = {}) {
       },
       last_action: state.last_action,
       updated_at: state.updated_at,
+      process_locks: listProcessLocks({ repoRoot }),
     };
   }
 

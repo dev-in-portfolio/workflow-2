@@ -19,6 +19,8 @@ module.exports = {
   ...require('./risk-gate'),
   ...require('./reliability'),
   ...require('./runtime-env'),
+  ...require('./policy-health'),
+  ...require('./live-preflight'),
   ...require('./signals'),
   ...require('./server'),
   ...require('./server-cli'),

@@ -5,8 +5,8 @@
   "type": "commonjs",
   "scripts": {
     "check:imports": "node scripts/check-case-sensitive-imports.js",
-    "test": "node scripts/check-case-sensitive-imports.js && node --test --test-concurrency=1 test/buy-sizing.test.js test/risk-gate.test.js test/operator-timeline.test.js test/dashboard-control.test.js test/dashboard.test.js test/market-hours.test.js test/stock-scanner.test.js test/us-market-holidays.test.js test/minimal-v1.test.js test/overnight-scanner.test.js test/server-cli-port-fallback.test.js test/live-market-daily-automation.test.js test/live-market-schedule.test.js",
-    "ci": "node scripts/check-case-sensitive-imports.js && node --test --test-concurrency=1 test/buy-sizing.test.js test/risk-gate.test.js test/operator-timeline.test.js test/dashboard-control.test.js test/dashboard.test.js test/market-hours.test.js test/stock-scanner.test.js test/us-market-holidays.test.js test/minimal-v1.test.js test/overnight-scanner.test.js test/server-cli-port-fallback.test.js test/live-market-daily-automation.test.js test/live-market-schedule.test.js",
+    "test": "node scripts/check-case-sensitive-imports.js && node --test --test-concurrency=1 test/buy-sizing.test.js test/risk-gate.test.js test/broker-reconciliation.test.js test/alpaca-idempotency.test.js test/process-lock.test.js test/exit-protection.test.js test/live-preflight.test.js test/operator-timeline.test.js test/dashboard-control.test.js test/dashboard.test.js test/market-hours.test.js test/stock-scanner.test.js test/us-market-holidays.test.js test/minimal-v1.test.js test/overnight-scanner.test.js test/server-cli-port-fallback.test.js test/live-market-daily-automation.test.js test/live-market-schedule.test.js",
+    "ci": "node scripts/check-case-sensitive-imports.js && node --test --test-concurrency=1 test/buy-sizing.test.js test/risk-gate.test.js test/broker-reconciliation.test.js test/alpaca-idempotency.test.js test/process-lock.test.js test/exit-protection.test.js test/live-preflight.test.js test/operator-timeline.test.js test/dashboard-control.test.js test/dashboard.test.js test/market-hours.test.js test/stock-scanner.test.js test/us-market-holidays.test.js test/minimal-v1.test.js test/overnight-scanner.test.js test/server-cli-port-fallback.test.js test/live-market-daily-automation.test.js test/live-market-schedule.test.js",
     "test:legacy": "node --test test/trading-pipeline.test.js",
     "replay": "node src/replay-cli.js",
     "start": "node src/minimal-cli.js",
@@ -15,6 +15,7 @@
     "control": "node src/server-cli.js",
     "trader": "node src/minimal-cli.js",
     "live-market:automation": "node scripts/live-market-daily-start-stop.js",
+    "preflight:live": "node scripts/live-preflight.js",
     "smoke:live": "node scripts/live-minimal-paper-smoke.js",
     "status:overnight": "node scripts/overnight-status.js",
     "tune:policy": "node src/policy-cli.js"

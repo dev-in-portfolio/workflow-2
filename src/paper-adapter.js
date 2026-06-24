@@ -43,6 +43,8 @@ class PaperTradeAdapter {
     this.simulateSlippagePct = options.simulateSlippagePct ?? 0.05;
     this.simulateFee = options.simulateFee ?? 0.0;
     this.dryRun = options.dryRun ?? true;
+    this.requiresBrokerReconciliation = options.requiresBrokerReconciliation ?? false;
+    this.account = options.account || { cash: 100000, buying_power: 100000 };
   }
 
   proposeOrder(request) {
@@ -191,6 +193,32 @@ class PaperTradeAdapter {
 
   getOrder(orderId) {
     return this.orders.get(orderId) || null;
+  }
+
+  getOrderByClientOrderId(clientOrderId) {
+    if (!clientOrderId) return null;
+    const orderId = this.idempotencyIndex.get(clientOrderId);
+    return orderId ? this.getOrder(orderId) : null;
+  }
+
+  findExistingOrderForRequest(request = {}) {
+    const requestKey = request.request_id || request.idempotency_key || request.signal_id || null;
+    return requestKey ? this.getOrderByClientOrderId(requestKey) : null;
+  }
+
+  getPositions() {
+    return [...this.positions.values()].map((position) => ({
+      symbol: position.symbol,
+      qty: position.quantity,
+      quantity: position.quantity,
+      avg_entry_price: position.average_price,
+      average_price: position.average_price,
+      market_value: Math.abs(position.quantity * position.average_price),
+    }));
+  }
+
+  getAccount() {
+    return { ...this.account };
   }
 
   #buildOrder(request, status) {

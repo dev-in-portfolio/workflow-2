@@ -21,7 +21,7 @@ test('policy snapshots preserve explicit settings and allow volatility to be omi
       maxOpenPositions: 2,
       buyNotionalTarget: 2500,
       minBuyNotional: 25,
-      approvedSymbols: ['SPCX', 'SMCI', 'FDX', 'MU', 'DFTX', 'APGE', 'NVDA', 'WDC', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'ABSI', 'VIX', 'AMO', 'SNDK', 'VTAK'],
+      approvedSymbols: ['SPCX', 'SMCI', 'FDX', 'MU', 'APGE', 'NVDA', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'VIX', 'AMO', 'SNDK', 'VTAK'],
       positionStopLossDollars: 1,
       positionStopLossNotionalPct: 0.75,
       positionStopLossMaxDollars: 2.5,
@@ -34,7 +34,7 @@ test('policy snapshots preserve explicit settings and allow volatility to be omi
   assert.equal(snapshot.policy.buyNotionalTarget, 2500);
   assert.equal(snapshot.policy.minBuyNotional, 25);
   assert.equal(snapshot.policy.volatilityThresholdPct, null);
-  assert.deepEqual(snapshot.policy.approvedSymbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'DFTX', 'APGE', 'NVDA', 'WDC', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'ABSI', 'VIX', 'AMO', 'SNDK', 'VTAK']);
+  assert.deepEqual(snapshot.policy.approvedSymbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'APGE', 'NVDA', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'VIX', 'AMO', 'SNDK', 'VTAK']);
   assert.equal(snapshot.policy.positionStopLossDollars, 1);
   assert.equal(snapshot.policy.positionStopLossNotionalPct, 0.75);
   assert.equal(snapshot.policy.positionStopLossMaxDollars, 2.5);

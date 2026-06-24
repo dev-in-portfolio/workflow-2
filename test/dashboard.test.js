@@ -11,6 +11,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-test-'));
   const dataDir = path.join(tempDir, 'data');
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'logs', 'overnight-status.json'), JSON.stringify({
     status: 'ok',
     mode: 'minimal-v1',
@@ -39,6 +40,21 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       minConfidenceForPaper: 72,
     },
   }) + '\n');
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'live-preflight-latest.json'), JSON.stringify({
+    status: 'WARN',
+    checked_at: '2026-06-19T14:59:00.000Z',
+    critical_failures: [],
+    warnings: ['ENV_CHANGED_AFTER_START_RESTART_REQUIRED'],
+    policy: {
+      health: {
+        status: 'WARN',
+        warnings: ['POLICY_STALE'],
+        critical_failures: [],
+        deprecated_fields: [],
+        suspicious_fields: [],
+      },
+    },
+  }, null, 2));
 
   const trader = http.createServer((req, res) => {
     const payloads = {
@@ -73,7 +89,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       MAX_OPEN_POSITIONS: '1',
       BUY_NOTIONAL_TARGET: '150',
       MIN_BUY_NOTIONAL: '25',
-      STOCK_SCANNER_SYMBOLS: 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,ABSI,VIX,AMO,SNDK,VTAK',
+      STOCK_SCANNER_SYMBOLS: 'SPCX,SMCI,FDX,MU,APGE,NVDA,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,VIX,AMO,SNDK,VTAK',
       POSITION_STOP_LOSS_DOLLARS: '1',
       POSITION_STOP_LOSS_NOTIONAL_PCT: '0.75',
       POSITION_STOP_LOSS_MAX_DOLLARS: '2.50',
@@ -91,6 +107,10 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.dashboard.trader_base_url, baseUrl);
   assert(snapshot.dashboard.runtime_version);
   assert.equal(snapshot.live.exit_management.state, 'unmanaged');
+  assert.equal(snapshot.live.preflight.status, 'WARN');
+  assert.equal(snapshot.live.policy_health.status, 'WARN');
+  assert.equal(snapshot.summary.preflight_status, 'WARN');
+  assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
   assert.equal(typeof snapshot.live.config_drift.has_drift, 'boolean');
   assert.equal(snapshot.summary.trader_status, 'ok');
   assert.equal(snapshot.summary.paper_pnl, 2.5);
@@ -98,7 +118,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.blocked_count, 1);
   assert.equal(snapshot.summary.approved_count, 3);
   assert.equal(snapshot.regime.workflow, 'Live Market');
-  assert.deepEqual(snapshot.regime.approved_symbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'DFTX', 'APGE', 'NVDA', 'WDC', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'ABSI', 'VIX', 'AMO', 'SNDK', 'VTAK']);
+  assert.deepEqual(snapshot.regime.approved_symbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'APGE', 'NVDA', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'VIX', 'AMO', 'SNDK', 'VTAK']);
   assert.equal(snapshot.regime.stop_loss_dollars, 1);
   assert.equal(snapshot.regime.stop_loss_notional_pct, 0.75);
   assert.equal(snapshot.regime.stop_loss_max_dollars, 2.5);

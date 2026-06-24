@@ -8,9 +8,11 @@ const { loadRuntimeEnv } = require('./runtime-env');
 const { isRegularUsMarketHours, resolveMarketRegime } = require('./market-hours');
 const { nowIso, safeNumber } = require('./util');
 const { createLocalProcessController } = require('./local-process-controller');
+const { classifyExitProtection } = require('./exit-protection');
 const { readOperatorTimelineTail } = require('./operator-timeline');
 const { calculateEffectiveStopLossDollars } = require('./stock-scanner');
 const { resolveLiveMarketAutomationSchedule } = require('./live-market-schedule');
+const { evaluatePolicyHealth } = require('./policy-health');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -190,6 +192,10 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     fetchImpl,
     env: runtimeEnv,
   });
+  const liveOpenOrders = await fetchBrokerOpenOrders({
+    fetchImpl,
+    env: runtimeEnv,
+  });
   const liveStatus = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/status');
   const dailyLiveResults = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/daily-live-results');
   const riskPolicy = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/risk-policy');
@@ -203,6 +209,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const scannerRuntimeFilePath = path.join(dataDir, 'logs', 'scanner-runtime.json');
   const scannerRuntimeFile = readJsonFileIfPresent(scannerRuntimeFilePath);
   const scannerRuntimeFileMeta = fileMeta(scannerRuntimeFilePath, scannerRuntimeFile);
+  const preflightLatestPath = path.join(dataDir, 'runtime', 'live-preflight-latest.json');
+  const preflightLatest = readJsonFileIfPresent(preflightLatestPath);
   const livePolicyFile = readJsonFileIfPresent(path.join(dataDir, 'live-policy.json'));
   const performanceHistory = readJsonlTail(path.join(dataDir, 'performance-history.jsonl'), 512);
   const policyHistory = readJsonlTail(path.join(dataDir, 'policy-history.jsonl'), DEFAULT_RECENT_ENTRY_LIMIT);
@@ -214,6 +222,13 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const liveMarketRules = resolveLiveMarketRules(runtimeEnv);
   const liveMarketSchedule = resolveLiveMarketAutomationSchedule(currentDate);
   const configDrift = buildConfigDrift(activePolicySnapshot, runtimeEnv);
+  const envLocalMetaForPolicy = getFileStat(path.resolve(options.repoRoot || path.resolve(__dirname, '..'), '.env.local'));
+  const policyHealth = preflightLatest?.policy?.health || evaluatePolicyHealth({
+    policySnapshot: activePolicySnapshot,
+    runtimeEnv,
+    envLocalMtimeMs: envLocalMetaForPolicy.mtime_ms,
+    now,
+  });
   const report = unwrapReport(dailyLiveResults.data) || unwrapReport(overnightStatus.data) || unwrapReport(overnightStatusFile) || null;
   const status = unwrapStatus(liveStatus.data) || unwrapStatus(overnightStatus.data) || unwrapStatus(overnightStatusFile) || null;
 
@@ -222,6 +237,16 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const recentPolicyChanges = summarizePolicyHistory(policyHistory.entries);
   const livePositionSummary = normalizeLivePositions(livePositions);
   const controlState = context.controlManager?.getState?.() || null;
+  const exitProtection = classifyExitProtection({
+    positions: livePositionSummary.positions,
+    openOrders: liveOpenOrders.orders,
+    scannerRuntime: scannerRuntimeFile,
+    now: currentDate,
+  });
+  const envLocalWarning = buildEnvLocalChangedAfterStartWarning({
+    repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+    startedAt: state.startedAt,
+  });
   const exitManagement = buildExitManagementState({
     scannerRuntime: scannerRuntimeFile,
     control: controlState,
@@ -257,6 +282,10 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     configDrift,
     processDiscovery,
     exitManagement,
+    exitProtection,
+    envLocalWarning,
+    preflight: preflightLatest,
+    policyHealth,
   });
 
   return {
@@ -294,13 +323,28 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       account: liveAccount.data || null,
       positions: livePositions.data || livePositions.positions || null,
       positions_summary: livePositionSummary,
+      open_orders: liveOpenOrders,
       policy: activePolicySnapshot,
       tuning: unwrapTuningSummary(performanceTuning.data),
       policy_effectiveness: unwrapPolicyEffectiveness(policyEffectiveness.data),
       overnight_status: overnightStatus.data || overnightStatusFile || null,
       scanner_runtime: scannerRuntimeFile || null,
       config_drift: configDrift,
+      preflight: preflightLatest || null,
+      policy_health: policyHealth,
       exit_management: exitManagement,
+      exit_protection: exitProtection,
+      broker_state_availability: {
+        account_available: Boolean(liveAccount.available),
+        positions_available: Boolean(livePositions.available),
+        open_orders_available: Boolean(liveOpenOrders.available),
+        reason_codes: [
+          liveAccount.available ? null : 'BROKER_ACCOUNT_UNAVAILABLE',
+          livePositions.available ? null : 'BROKER_POSITIONS_UNAVAILABLE',
+          liveOpenOrders.available ? null : 'BROKER_OPEN_ORDERS_UNAVAILABLE',
+        ].filter(Boolean),
+      },
+      env_changed_after_start: envLocalWarning,
     },
     automation: {
       live_market: liveMarketSchedule,
@@ -329,6 +373,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       performance_history: fileMeta(path.join(dataDir, 'performance-history.jsonl'), performanceHistory.meta),
       policy_history: fileMeta(path.join(dataDir, 'policy-history.jsonl'), policyHistory.meta),
       live_policy: fileMeta(path.join(dataDir, 'live-policy.json'), livePolicyFile),
+      live_preflight: fileMeta(preflightLatestPath, preflightLatest),
     },
     source_health: sourceHealth,
     alerts,
@@ -342,6 +387,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       livePositions: livePositionSummary,
       liveAccount,
       control: controlState,
+      preflight: preflightLatest,
     }),
     timestamp: now,
   };
@@ -430,6 +476,83 @@ async function fetchBrokerPositions({ fetchImpl, env }) {
       reason: error.message,
     };
   }
+}
+
+async function fetchBrokerOpenOrders({ fetchImpl, env }) {
+  const apiKeyId = String(env?.ALPACA_API_KEY_ID || '').trim();
+  const apiSecretKey = String(env?.ALPACA_API_SECRET_KEY || '').trim();
+  const baseUrl = String(env?.ALPACA_API_BASE_URL || '').trim() || 'https://paper-api.alpaca.markets';
+  if (!apiKeyId || !apiSecretKey) {
+    return { available: false, count: null, orders: [], source: 'alpaca', reason: 'credentials_missing' };
+  }
+
+  try {
+    const response = await fetchWithTimeout(fetchImpl, `${trimTrailingSlash(baseUrl)}/v2/orders?status=open&limit=500`, {
+      timeoutMs: 2500,
+      headers: {
+        'APCA-API-KEY-ID': apiKeyId,
+        'APCA-API-SECRET-KEY': apiSecretKey,
+        'content-type': 'application/json',
+      },
+    });
+    const text = await response.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { raw: text };
+    }
+    if (!response.ok) {
+      return {
+        available: false,
+        count: null,
+        orders: [],
+        source: 'alpaca',
+        reason: `http_${response.status}`,
+      };
+    }
+    const orders = Array.isArray(body) ? body : body?.orders || body?.data || [];
+    return {
+      available: true,
+      count: orders.length,
+      orders,
+      source: 'alpaca',
+      reason: null,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      count: null,
+      orders: [],
+      source: 'alpaca',
+      reason: error.message,
+    };
+  }
+}
+
+function buildEnvLocalChangedAfterStartWarning({ repoRoot = process.cwd(), startedAt = null } = {}) {
+  const envLocalPath = path.resolve(repoRoot, '.env.local');
+  let stat = null;
+  try {
+    stat = fs.statSync(envLocalPath);
+  } catch {
+    return {
+      changed_after_start: false,
+      reason_code: null,
+      path: envLocalPath,
+      mtime: null,
+      started_at: startedAt,
+    };
+  }
+  const startedMs = new Date(startedAt || 0).getTime();
+  const changedAfterStart = Number.isFinite(startedMs) && stat.mtimeMs > startedMs;
+  return {
+    changed_after_start: changedAfterStart,
+    reason_code: changedAfterStart ? 'ENV_CHANGED_AFTER_START_RESTART_REQUIRED' : null,
+    path: envLocalPath,
+    mtime: stat.mtime.toISOString(),
+    started_at: startedAt,
+  };
 }
 
 async function resolveTraderBaseUrl({ env, fetchImpl, preferredBaseUrl, candidatePorts }) {
@@ -1057,7 +1180,7 @@ function buildSourceHealth(endpointResults, fileResults) {
   return sources;
 }
 
-function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement }) {
+function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null }) {
   const alerts = [];
   const workflow = control?.workflow || {};
   const scanner = control?.scanner || {};
@@ -1110,6 +1233,46 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
       kind: 'critical',
       title: 'Policy/config drift detected',
       message: configDrift.items.map((item) => `${item.field}: active ${item.active_display}, local ${item.expected_display}`).join('; '),
+    });
+  }
+  if (envLocalWarning?.changed_after_start) {
+    alerts.push({
+      severity: 'warning',
+      code: 'ENV_CHANGED_AFTER_START_RESTART_REQUIRED',
+      title: '.env.local changed after start',
+      message: 'Restart the workflow so the running trader and scanner pick up the latest local environment.',
+    });
+  }
+  if (preflight?.status === 'NO_GO') {
+    alerts.push({
+      severity: 'critical',
+      code: 'PREFLIGHT_NO_GO',
+      title: 'Live preflight is NO-GO',
+      message: (preflight.critical_failures || []).join(', ') || 'Preflight reported critical failures.',
+    });
+  } else if (preflight?.status === 'WARN') {
+    alerts.push({
+      severity: 'warning',
+      code: 'PREFLIGHT_WARN',
+      title: 'Live preflight has warnings',
+      message: (preflight.warnings || []).slice(0, 3).join(', ') || 'Preflight reported warnings.',
+    });
+  }
+  if (policyHealth && (policyHealth.warnings?.length || policyHealth.critical_failures?.length)) {
+    alerts.push({
+      severity: policyHealth.critical_failures?.length ? 'critical' : 'warning',
+      code: 'POLICY_HEALTH_WARNING',
+      title: 'Policy health needs review',
+      message: [...(policyHealth.critical_failures || []), ...(policyHealth.warnings || [])].slice(0, 4).join(', '),
+    });
+  }
+  const unprotectedPositions = (Array.isArray(exitProtection) ? exitProtection : []).filter((item) => item.classification === 'none');
+  if (unprotectedPositions.length) {
+    alerts.push({
+      severity: 'critical',
+      code: 'EXIT_MANAGER_REQUIRED',
+      title: 'Open position lacks confirmed exit protection',
+      message: `${unprotectedPositions.map((item) => item.symbol).join(', ')} has no broker-native protective order or fresh scanner exit manager record.`,
     });
   }
   if (livePositions?.available && Number(livePositions.count) === 0 && Array.isArray(recentEntries?.openPositions) && recentEntries.openPositions.length > 0) {
@@ -1180,7 +1343,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1195,6 +1358,8 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
   const accountCash = safeNumber(liveAccount?.data?.cash ?? null, null);
   return {
     trader_status: control?.trader?.status || status?.status || 'unknown',
+    preflight_status: preflight?.status || null,
+    preflight_checked_at: preflight?.checked_at || null,
     workflow_state: control?.workflow?.status || 'unknown',
     scanner_profile: control?.scanner?.profile || control?.workflow?.desired_scanner_profile || null,
     trader_mode: status?.mode || null,
@@ -1240,7 +1405,7 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
     minBuyNotional: safeNumber(runtimeEnv.MIN_BUY_NOTIONAL, null),
-    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,ABSI,VIX,AMO,SNDK,VTAK'),
+    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,APGE,NVDA,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,VIX,AMO,SNDK,VTAK'),
     positionStopLossDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_DOLLARS, null),
     positionStopLossNotionalPct: safeNumber(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT, null),
     positionStopLossMaxDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS, null),
@@ -1424,7 +1589,8 @@ function unwrapPolicyEffectiveness(payload) {
 function resolveLiveMarketRules(env = {}) {
   return {
     workflow: 'Live Market',
-    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,ABSI,VIX,AMO,SNDK,VTAK'),
+    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,APGE,NVDA,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,VIX,AMO,SNDK,VTAK'),
+    excluded_buy_symbols: parseCsvForDrift(env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS || ''),
     max_open_positions: safeNumber(env.MAX_OPEN_POSITIONS, 1),
     buy_notional_target: safeNumber(env.BUY_NOTIONAL_TARGET, 150),
     min_buy_notional: safeNumber(env.MIN_BUY_NOTIONAL, 25),
@@ -1550,6 +1716,27 @@ function resolvePreferredDashboardPort(env = process.env) {
 
 function resolveDashboardSnapshotPath() {
   return path.resolve(process.cwd(), 'data', 'logs', 'overnight-status.json');
+}
+
+function getFileStat(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    return {
+      path: filePath,
+      exists: true,
+      mtime: stat.mtime.toISOString(),
+      mtime_ms: stat.mtimeMs,
+      size: stat.size,
+    };
+  } catch {
+    return {
+      path: filePath,
+      exists: false,
+      mtime: null,
+      mtime_ms: null,
+      size: 0,
+    };
+  }
 }
 
 module.exports = {

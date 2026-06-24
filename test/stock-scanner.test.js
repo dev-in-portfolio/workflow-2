@@ -4,6 +4,7 @@ const http = require('http');
 const {
   buildStockCandidateForSymbol,
   calculateEffectiveStopLossDollars,
+  calculateSpreadRankPenalty,
   createStockScanner,
   normalizeRecentTradePenaltyMap,
 } = require('../src');
@@ -84,6 +85,7 @@ test('stock scanner still builds candidates when the move is tiny and the spread
     runId: 'stock-test-wide',
     assetType: 'stock',
     allowContrarianEntries: true,
+    maxBuyRiskScore: 100,
   });
 
   assert(candidate);
@@ -260,15 +262,170 @@ test('stock scanner stacks losing sell penalty with the normal recent sell timer
     penalty: 20,
     lossWindowMinutes: 10,
     lossPenalty: 60,
+    stopWindowMinutes: 30,
+    stopPenalty: 80,
   });
 
   const penalty = penalties.get('MU');
   assert(penalty);
-  assert.equal(penalty.penalty, 80);
-  assert.equal(penalty.reason, 'compound_recent_sell_and_loss');
+  assert.equal(penalty.penalty, 160);
+  assert.equal(penalty.reason, 'compound_recent_sell_loss_and_stop');
   assert.equal(penalty.loss_exit, true);
+  assert.equal(penalty.stop_exit, true);
   assert.equal(penalty.exit_reason, 'STOP_LOSS_DOLLARS');
-  assert.deepEqual(penalty.components.map((component) => component.reason).sort(), ['recent_loss_exit', 'recent_sell']);
+  assert.deepEqual(penalty.components.map((component) => component.reason).sort(), ['recent_loss_exit', 'recent_sell', 'recent_stop_exit']);
+});
+
+test('stock scanner temporarily skips buys after clustered stop exits in the same symbol', () => {
+  const skips = [];
+  const penalties = normalizeRecentTradePenaltyMap([
+    stopExitRecord('ABSI', '2026-06-16T19:58:01.000Z', -1.25, 'stop-1'),
+    stopExitRecord('ABSI', '2026-06-16T19:53:01.000Z', -1.35, 'stop-2'),
+  ], {
+    now: '2026-06-16T20:00:01.000Z',
+    windowMinutes: 15,
+    penalty: 20,
+    lossWindowMinutes: 10,
+    lossPenalty: 60,
+    stopWindowMinutes: 30,
+    stopPenalty: 80,
+  });
+  const candidate = buildStockCandidateForSymbol('ABSI', rankedSnapshot({
+    bid: 10.18,
+    ask: 10.20,
+    previousClose: 7.37,
+    volume: 350000,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), { bp: 10.18, ap: 10.20, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    recentTradePenalty: penalties.get('ABSI'),
+    stopoutClusterBlockMinutes: 30,
+    stopoutClusterBlockCount: 2,
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  });
+
+  assert.equal(candidate, null);
+  assert.equal(skips[0].reason, 'RECENT_STOPOUT_CLUSTER');
+  assert.equal(skips[0].details.stop_exit_count, 2);
+  assert.equal(skips[0].details.required_count, 2);
+});
+
+test('stock scanner keeps a symbol eligible with only one recent stop exit', () => {
+  const penalties = normalizeRecentTradePenaltyMap([
+    stopExitRecord('ABSI', '2026-06-16T19:58:01.000Z', -1.25, 'stop-1'),
+  ], {
+    now: '2026-06-16T20:00:01.000Z',
+    windowMinutes: 15,
+    penalty: 20,
+    lossWindowMinutes: 10,
+    lossPenalty: 60,
+    stopWindowMinutes: 30,
+    stopPenalty: 80,
+  });
+  const candidate = buildStockCandidateForSymbol('ABSI', rankedSnapshot({
+    bid: 10.18,
+    ask: 10.20,
+    previousClose: 7.37,
+    volume: 350000,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), { bp: 10.18, ap: 10.20, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    recentTradePenalty: penalties.get('ABSI'),
+    stopoutClusterBlockMinutes: 30,
+    stopoutClusterBlockCount: 2,
+  });
+
+  assert(candidate);
+  assert.equal(candidate.payload.symbol, 'ABSI');
+});
+
+test('stock scanner skips buy candidates above the scanner risk limit before posting', () => {
+  const skips = [];
+  const candidate = buildStockCandidateForSymbol('VTAK', rankedSnapshot({
+    bid: 1.23,
+    ask: 1.39,
+    previousClose: 0.942,
+    volume: 64544,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), { bp: 1.23, ap: 1.39, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    maxBuyRiskScore: 70,
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  });
+
+  assert.equal(candidate, null);
+  assert.equal(skips[0].reason, 'BUY_RISK_SCORE_ABOVE_SCANNER_LIMIT');
+  assert(skips[0].details.risk_score > 70);
+});
+
+test('stock scanner skips excluded buy symbols without affecting exit handling', () => {
+  const skips = [];
+  const buyCandidate = buildStockCandidateForSymbol('ABSI', rankedSnapshot({
+    bid: 10.18,
+    ask: 10.20,
+    previousClose: 7.37,
+    volume: 350000,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), { bp: 10.18, ap: 10.20, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    excludedBuySymbols: ['ABSI'],
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  });
+  const sellCandidate = buildStockCandidateForSymbol('ABSI', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    position: { symbol: 'ABSI', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    excludedBuySymbols: ['ABSI'],
+    stopLossDollars: 1,
+    trailingProfitStartDollars: 0.5,
+    trailingProfitGivebackDollars: 0.3,
+    trailingState: { positions: {} },
+  });
+
+  assert.equal(buyCandidate, null);
+  assert.equal(skips[0].reason, 'SYMBOL_EXCLUDED_FROM_BUYS');
+  assert(sellCandidate);
+  assert.equal(sellCandidate.payload.side, 'sell');
+});
+
+test('stock scanner applies capped spread rank pressure without hard-blocking buys', () => {
+  const timestamp = '2026-06-16T20:00:00.000Z';
+  const tight = buildStockCandidateForSymbol('DFTX', rankedSnapshot({
+    bid: 43.95,
+    ask: 44.05,
+    previousClose: 36.17,
+    volume: 241651,
+    timestamp,
+  }), { bp: 43.95, ap: 44.05, t: timestamp }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+  });
+  const wide = buildStockCandidateForSymbol('DFTX', rankedSnapshot({
+    bid: 43.61,
+    ask: 44.60,
+    previousClose: 36.17,
+    volume: 241651,
+    timestamp,
+  }), { bp: 43.61, ap: 44.60, t: timestamp }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+  });
+
+  assert(tight);
+  assert(wide);
+  assert(wide.spreadRankPenalty > tight.spreadRankPenalty);
+  assert(wide.rankScore < wide.baseRankScore - wide.recentTradeRankPenalty);
+  assert.equal(wide.payload.market_context.scanner.spread_rank_penalty, Number(wide.spreadRankPenalty.toFixed(3)));
+  assert.equal(calculateSpreadRankPenalty(10, { thresholdPct: 0.75, penaltyPerPct: 25, cap: 80 }), 80);
 });
 
 test('stock scanner defaults to simplified live-market rules', () => {
@@ -292,6 +449,15 @@ test('stock scanner defaults to simplified live-market rules', () => {
   assert.equal(scanner.config.recentTradeRankPenalty, 20);
   assert.equal(scanner.config.recentLossPenaltyMinutes, 10);
   assert.equal(scanner.config.recentLossRankPenalty, 60);
+  assert.equal(scanner.config.recentStopExitPenaltyMinutes, 30);
+  assert.equal(scanner.config.recentStopExitRankPenalty, 80);
+  assert.equal(scanner.config.stopoutClusterBlockMinutes, 30);
+  assert.equal(scanner.config.stopoutClusterBlockCount, 2);
+  assert.equal(scanner.config.maxBuyRiskScore, 70);
+  assert.deepEqual(scanner.config.excludedBuySymbols, []);
+  assert.equal(scanner.config.spreadRankPenaltyThresholdPct, 0.75);
+  assert.equal(scanner.config.spreadRankPenaltyPerPct, 25);
+  assert.equal(scanner.config.spreadRankPenaltyCap, 80);
   scanner.stop();
 });
 
@@ -330,6 +496,9 @@ test('stock scanner posts candidates to the local paper order endpoint', async (
       }
       if (url.includes('/v2/orders?status=open')) {
         return buildResponse([]);
+      }
+      if (url.includes('/v2/account')) {
+        return buildResponse({ cash: '267.11', buying_power: '267.11' });
       }
       if (url.includes('/v2/stocks/snapshots?')) {
         return buildResponse({
@@ -1004,6 +1173,31 @@ function rankedSnapshot({ bid, ask, previousClose, volume, timestamp }) {
     latestTrade: { p: midpoint, t: timestamp },
     minuteBar: { v: 50, h: midpoint + 0.5, l: midpoint - 0.5, t: timestamp },
     prevDailyBar: { c: previousClose, v: volume },
+  };
+}
+
+function stopExitRecord(symbol, filledAt, pnl, orderId) {
+  return {
+    entry_type: 'paper_outcome',
+    record: {
+      symbol,
+      side: 'sell',
+      pnl,
+      recorded_at: filledAt,
+      paper_result: {
+        status: 'filled',
+        filled_at: filledAt,
+        order_id: orderId,
+      },
+      original_signal: {
+        market_context: {
+          exit_state: {
+            exit_reason: 'STOP_LOSS_DOLLARS',
+            unrealized_pl: pnl,
+          },
+        },
+      },
+    },
   };
 }
 
