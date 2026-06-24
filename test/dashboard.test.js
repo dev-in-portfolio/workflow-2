@@ -55,6 +55,20 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       },
     },
   }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'broker-local-reconciliation-latest.json'), JSON.stringify({
+    status: 'WARN',
+    checked_at: '2026-06-19T15:00:30.000Z',
+    warnings: ['STALE_TRAILING_STATE'],
+    critical_failures: [],
+    mismatches: [{ type: 'STALE_TRAILING_STATE', symbol: 'AAPL', severity: 'warning' }],
+    local_phantom_positions: [],
+    broker_positions_missing_locally: [],
+    quantity_mismatches: [],
+    open_order_mismatches: [],
+    trailing_state_mismatches: [{ type: 'STALE_TRAILING_STATE', symbol: 'AAPL' }],
+    pnl_mismatches: [],
+    recommended_actions: ['Refresh scanner/trailing runtime state so exits remain explainable.'],
+  }, null, 2));
 
   const trader = http.createServer((req, res) => {
     const payloads = {
@@ -110,7 +124,12 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.preflight.status, 'WARN');
   assert.equal(snapshot.live.policy_health.status, 'WARN');
   assert.equal(snapshot.summary.preflight_status, 'WARN');
+  assert.equal(snapshot.live.broker_local_reconciliation.status, 'WARN');
+  assert.equal(snapshot.live.reconciliation_summary.mismatch_count, 1);
+  assert.equal(snapshot.summary.reconciliation_status, 'WARN');
+  assert.equal(snapshot.summary.reconciliation_mismatch_count, 1);
   assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
+  assert.equal(snapshot.file_snapshots.broker_local_reconciliation.exists, true);
   assert.equal(typeof snapshot.live.config_drift.has_drift, 'boolean');
   assert.equal(snapshot.summary.trader_status, 'ok');
   assert.equal(snapshot.summary.paper_pnl, 2.5);

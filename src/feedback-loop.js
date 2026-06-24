@@ -3,6 +3,7 @@ const path = require('path');
 const { computePaperOutcome } = require('./paper-outcomes');
 const { calculateDrawdown, generateDailyLiveResultsReport, summarizeFillQuality } = require('./metrics');
 const { buildThresholdProposal } = require('./performance-tuning');
+const { assertPerformanceRecord } = require('./module-contracts');
 const { nowIso, safeNumber } = require('./util');
 
 class PerformanceStore {
@@ -241,6 +242,7 @@ class PerformanceStore {
 
   appendHistoryRecord(entryType, record) {
     if (!this.historyPath) return;
+    assertPerformanceRecord({ entry_type: entryType, record });
     fs.mkdirSync(path.dirname(this.historyPath), { recursive: true });
     const payload = JSON.stringify({
       entry_type: entryType,

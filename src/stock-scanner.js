@@ -8,6 +8,7 @@ const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-all
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
+const { assertSignalCandidate } = require('./module-contracts');
 
 function createStockScanner(options = {}) {
   const env = options.env || process.env;
@@ -220,6 +221,7 @@ function createStockScanner(options = {}) {
 
       const results = [];
       for (const candidate of candidates) {
+        assertSignalCandidate(candidate.payload);
         const response = await localFetch(`${localBaseUrl}/${candidate.endpoint || 'paper-order'}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

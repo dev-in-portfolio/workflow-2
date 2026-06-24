@@ -4,6 +4,12 @@ const { deriveMarketActivitySignal } = require('./market-activity');
 const { allocateBuyNotional } = require('./portfolio-allocation');
 const { evaluateRiskGate } = require('./risk-gate');
 const { buildPaperOrderRequestFromSignal, resolveBuyOrderSizing, validatePaperOrderWebhookPayload } = require('./webhooks');
+const {
+  assertExecutionRequest,
+  assertExecutionResult,
+  assertRiskDecision,
+  assertSignalCandidate,
+} = require('./module-contracts');
 const { nowIso, safeNumber } = require('./util');
 
 function normalizeOrderStatus(order) {
@@ -32,6 +38,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
       market_context: marketContext,
     };
   }
+  assertSignalCandidate(signal);
 
   const brokerReconciliation = await reconcileBrokerPortfolio({
     executionAdapter: options.executionAdapter,
@@ -46,6 +53,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
   };
 
   const riskDecision = evaluateRiskGate(signal, portfolio, policy, reconciledMarketContext);
+  assertRiskDecision(riskDecision);
   if (performance?.recordSignal) {
     performance.recordSignal(signal);
   }
@@ -112,6 +120,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     paperOrderRequest.min_buy_notional = minBuyNotional;
     if (strictBrokerCash) paperOrderRequest.require_idempotency = true;
   }
+  if (paperOrderRequest) assertExecutionRequest(paperOrderRequest);
   if (!paperOrderRequest) {
     if (isBuySignal(signal)) {
       const buySizing = resolveBuyOrderSizing(signal, {
@@ -159,6 +168,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     market: reconciledMarketContext,
     requireHumanApproval: policy.requireHumanApproval,
   });
+  assertExecutionResult(paperOrder);
 
   const confirmation = await confirmBrokerOrder(options.executionAdapter, paperOrder.order_id, {
     attempts: options.confirmationAttempts,

@@ -21,6 +21,8 @@ module.exports = {
   ...require('./runtime-env'),
   ...require('./policy-health'),
   ...require('./live-preflight'),
+  ...require('./module-contracts'),
+  ...require('./broker-local-reconciliation'),
   ...require('./signals'),
   ...require('./server'),
   ...require('./server-cli'),

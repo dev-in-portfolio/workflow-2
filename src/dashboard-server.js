@@ -211,6 +211,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const scannerRuntimeFileMeta = fileMeta(scannerRuntimeFilePath, scannerRuntimeFile);
   const preflightLatestPath = path.join(dataDir, 'runtime', 'live-preflight-latest.json');
   const preflightLatest = readJsonFileIfPresent(preflightLatestPath);
+  const brokerLocalReconciliationPath = path.join(dataDir, 'runtime', 'broker-local-reconciliation-latest.json');
+  const brokerLocalReconciliation = readJsonFileIfPresent(brokerLocalReconciliationPath);
   const livePolicyFile = readJsonFileIfPresent(path.join(dataDir, 'live-policy.json'));
   const performanceHistory = readJsonlTail(path.join(dataDir, 'performance-history.jsonl'), 512);
   const policyHistory = readJsonlTail(path.join(dataDir, 'policy-history.jsonl'), DEFAULT_RECENT_ENTRY_LIMIT);
@@ -286,6 +288,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     envLocalWarning,
     preflight: preflightLatest,
     policyHealth,
+    brokerLocalReconciliation,
   });
 
   return {
@@ -332,6 +335,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       config_drift: configDrift,
       preflight: preflightLatest || null,
       policy_health: policyHealth,
+      broker_local_reconciliation: brokerLocalReconciliation || null,
+      reconciliation_summary: summarizeBrokerLocalReconciliation(brokerLocalReconciliation),
       exit_management: exitManagement,
       exit_protection: exitProtection,
       broker_state_availability: {
@@ -374,6 +379,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       policy_history: fileMeta(path.join(dataDir, 'policy-history.jsonl'), policyHistory.meta),
       live_policy: fileMeta(path.join(dataDir, 'live-policy.json'), livePolicyFile),
       live_preflight: fileMeta(preflightLatestPath, preflightLatest),
+      broker_local_reconciliation: fileMeta(brokerLocalReconciliationPath, brokerLocalReconciliation),
     },
     source_health: sourceHealth,
     alerts,
@@ -388,6 +394,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       liveAccount,
       control: controlState,
       preflight: preflightLatest,
+      brokerLocalReconciliation,
     }),
     timestamp: now,
   };
@@ -1180,7 +1187,7 @@ function buildSourceHealth(endpointResults, fileResults) {
   return sources;
 }
 
-function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null }) {
+function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null }) {
   const alerts = [];
   const workflow = control?.workflow || {};
   const scanner = control?.scanner || {};
@@ -1266,6 +1273,21 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
       message: [...(policyHealth.critical_failures || []), ...(policyHealth.warnings || [])].slice(0, 4).join(', '),
     });
   }
+  if (brokerLocalReconciliation?.status === 'CRITICAL') {
+    alerts.push({
+      severity: 'critical',
+      code: 'BROKER_LOCAL_RECONCILIATION_CRITICAL',
+      title: 'Broker/local state mismatch',
+      message: (brokerLocalReconciliation.critical_failures || []).slice(0, 4).join(', ') || 'Reconciliation reported critical mismatches.',
+    });
+  } else if (brokerLocalReconciliation?.status === 'WARN') {
+    alerts.push({
+      severity: 'warning',
+      code: 'BROKER_LOCAL_RECONCILIATION_WARN',
+      title: 'Broker/local reconciliation warning',
+      message: (brokerLocalReconciliation.warnings || []).slice(0, 4).join(', ') || 'Reconciliation reported warnings.',
+    });
+  }
   const unprotectedPositions = (Array.isArray(exitProtection) ? exitProtection : []).filter((item) => item.classification === 'none');
   if (unprotectedPositions.length) {
     alerts.push({
@@ -1343,7 +1365,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1360,6 +1382,10 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     trader_status: control?.trader?.status || status?.status || 'unknown',
     preflight_status: preflight?.status || null,
     preflight_checked_at: preflight?.checked_at || null,
+    reconciliation_status: brokerLocalReconciliation?.status || null,
+    reconciliation_checked_at: brokerLocalReconciliation?.checked_at || null,
+    reconciliation_mismatch_count: Array.isArray(brokerLocalReconciliation?.mismatches) ? brokerLocalReconciliation.mismatches.length : null,
+    reconciliation_critical_count: Array.isArray(brokerLocalReconciliation?.critical_failures) ? brokerLocalReconciliation.critical_failures.length : null,
     workflow_state: control?.workflow?.status || 'unknown',
     scanner_profile: control?.scanner?.profile || control?.workflow?.desired_scanner_profile || null,
     trader_mode: status?.mode || null,
@@ -1716,6 +1742,23 @@ function resolvePreferredDashboardPort(env = process.env) {
 
 function resolveDashboardSnapshotPath() {
   return path.resolve(process.cwd(), 'data', 'logs', 'overnight-status.json');
+}
+
+function summarizeBrokerLocalReconciliation(reconciliation = null) {
+  if (!reconciliation) return null;
+  return {
+    status: reconciliation.status || null,
+    checked_at: reconciliation.checked_at || null,
+    mismatch_count: Array.isArray(reconciliation.mismatches) ? reconciliation.mismatches.length : 0,
+    critical_mismatch_count: Array.isArray(reconciliation.critical_failures) ? reconciliation.critical_failures.length : 0,
+    local_phantom_positions: reconciliation.local_phantom_positions || [],
+    broker_positions_missing_locally: reconciliation.broker_positions_missing_locally || [],
+    quantity_mismatches: reconciliation.quantity_mismatches || [],
+    open_order_mismatches: reconciliation.open_order_mismatches || [],
+    stale_trailing_state: (reconciliation.trailing_state_mismatches || []).filter((item) => item.type === 'STALE_TRAILING_STATE'),
+    pnl_mismatches: reconciliation.pnl_mismatches || [],
+    recommended_actions: reconciliation.recommended_actions || [],
+  };
 }
 
 function getFileStat(filePath) {
