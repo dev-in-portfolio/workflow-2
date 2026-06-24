@@ -73,7 +73,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       MAX_OPEN_POSITIONS: '1',
       BUY_NOTIONAL_TARGET: '150',
       MIN_BUY_NOTIONAL: '25',
-      STOCK_SCANNER_SYMBOLS: 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL',
+      STOCK_SCANNER_SYMBOLS: 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,ABSI,VIX,AMO,SNDK,VTAK',
       POSITION_STOP_LOSS_DOLLARS: '1',
       POSITION_STOP_LOSS_NOTIONAL_PCT: '0.75',
       POSITION_STOP_LOSS_MAX_DOLLARS: '2.50',
@@ -98,7 +98,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.blocked_count, 1);
   assert.equal(snapshot.summary.approved_count, 3);
   assert.equal(snapshot.regime.workflow, 'Live Market');
-  assert.deepEqual(snapshot.regime.approved_symbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'DFTX', 'APGE', 'NVDA', 'WDC', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL']);
+  assert.deepEqual(snapshot.regime.approved_symbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'DFTX', 'APGE', 'NVDA', 'WDC', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'ABSI', 'VIX', 'AMO', 'SNDK', 'VTAK']);
   assert.equal(snapshot.regime.stop_loss_dollars, 1);
   assert.equal(snapshot.regime.stop_loss_notional_pct, 0.75);
   assert.equal(snapshot.regime.stop_loss_max_dollars, 2.5);

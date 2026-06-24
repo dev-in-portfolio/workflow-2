@@ -61,7 +61,7 @@ function render(snapshot) {
   $('workflowState').textContent = String(workflowState).toUpperCase();
   $('workflowHint').textContent = 'Live Market';
   $('todayPnl').textContent = formatSignedCurrency(dailyChange);
-  $('todayPnl').className = Number.isFinite(dailyChange) && dailyChange >= 0 ? 'ok-text' : 'warn-text';
+  $('todayPnl').className = Number.isFinite(dailyChange) && dailyChange >= 0 ? 'ok-text' : 'loss-text';
   $('buyingPower').textContent = formatCurrency(summary.account_buying_power ?? summary.account_cash);
   $('buyingPowerHint').textContent = Number.isFinite(Number(summary.account_cash)) ? `Cash ${formatCurrency(summary.account_cash)}` : 'Alpaca account';
   $('profitSummary').textContent = buildProfitNote(dailyChange, summary, snapshot);

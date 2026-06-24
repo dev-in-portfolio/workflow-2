@@ -358,6 +358,11 @@ h1 {
   color: var(--green);
 }
 
+.focus-card:first-child strong.loss-text {
+  color: var(--red);
+  text-shadow: 0 0 28px rgba(255, 107, 139, 0.22);
+}
+
 .focus-card:first-child small {
   color: var(--muted);
 }
@@ -1015,6 +1020,10 @@ h1 {
 
 .warn-text {
   color: var(--amber);
+}
+
+.loss-text {
+  color: var(--red);
 }
 
 .position-status {

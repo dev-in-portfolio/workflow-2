@@ -1240,7 +1240,7 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
     minBuyNotional: safeNumber(runtimeEnv.MIN_BUY_NOTIONAL, null),
-    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL'),
+    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,ABSI,VIX,AMO,SNDK,VTAK'),
     positionStopLossDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_DOLLARS, null),
     positionStopLossNotionalPct: safeNumber(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT, null),
     positionStopLossMaxDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS, null),
@@ -1424,7 +1424,7 @@ function unwrapPolicyEffectiveness(payload) {
 function resolveLiveMarketRules(env = {}) {
   return {
     workflow: 'Live Market',
-    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL'),
+    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,DFTX,APGE,NVDA,WDC,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,ABSI,VIX,AMO,SNDK,VTAK'),
     max_open_positions: safeNumber(env.MAX_OPEN_POSITIONS, 1),
     buy_notional_target: safeNumber(env.BUY_NOTIONAL_TARGET, 150),
     min_buy_notional: safeNumber(env.MIN_BUY_NOTIONAL, 25),
