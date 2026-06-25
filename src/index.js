@@ -28,6 +28,8 @@ module.exports = {
   ...require('./module-contracts'),
   ...require('./broker-local-reconciliation'),
   ...require('./signals'),
+  ...require('./setup-fatigue'),
+  ...require('./session-guards'),
   ...require('./server'),
   ...require('./server-cli'),
   ...require('./minimal-server'),

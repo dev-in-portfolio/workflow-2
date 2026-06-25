@@ -86,6 +86,30 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       },
     },
   }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'setup-fatigue-state.json'), JSON.stringify({
+    version: '2026-06-25.setup-fatigue-state.1',
+    updated_at: '2026-06-19T15:05:00.000Z',
+    last_reconciled_at: '2026-06-19T15:05:00.000Z',
+    setups: {
+      'mu-breakout': {
+        setup_key: 'mu-breakout',
+        recent_trades: 4,
+        recent_losses: 3,
+        recent_stopouts: 2,
+        recent_wins: 1,
+        net_pnl: -2.4,
+        last_failure_at: '2026-06-19T15:04:00.000Z',
+        last_success_at: '2026-06-19T14:30:00.000Z',
+        fatigue_score: 72,
+        paused_until: '2026-06-19T15:35:00.000Z',
+        active: true,
+        reason_codes: ['SETUP_FATIGUE_RECENT_LOSS', 'SETUP_FATIGUE_ACTIVE'],
+        explanation: 'Setup fatigue score 72 of threshold 60.',
+        warnings: [],
+        recent_outcomes: [],
+      },
+    },
+  }, null, 2));
   fs.writeFileSync(path.join(dataDir, 'policy-history.jsonl'), JSON.stringify({
     source: 'startup-config',
     captured_at: '2026-06-19T14:46:40.126Z',
@@ -163,6 +187,66 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
         structure_stop: { accepted: true, method: 'swing_low', stop_distance: 0.5 },
       }],
     },
+    setup_fatigue_summary: {
+      setup_count: 1,
+      active_setup_count: 1,
+      paused_setup_count: 1,
+      active_setups: [{
+        setup_key: 'mu-breakout',
+        fatigue_score: 72,
+        paused_until: '2026-06-19T15:35:00.000Z',
+        active: true,
+        reason_codes: ['SETUP_FATIGUE_ACTIVE'],
+      }],
+      paused_setups: [{
+        setup_key: 'mu-breakout',
+        fatigue_score: 72,
+        paused_until: '2026-06-19T15:35:00.000Z',
+        active: true,
+        reason_codes: ['SETUP_FATIGUE_ACTIVE'],
+      }],
+      warnings: ['SETUP_FATIGUE_ACTIVE'],
+      recommended_actions: ['Avoid new buys in setups flagged by setup fatigue until pauses clear.'],
+      last_reconciled_at: '2026-06-19T15:05:00.000Z',
+    },
+    session_guards: {
+      status: 'ACTIVE',
+      active_guards: [{
+        guard: 'setup_fatigue',
+        active: true,
+        expires_at: '2026-06-19T15:35:00.000Z',
+        reason_codes: ['SETUP_FATIGUE_ACTIVE'],
+        explanation: 'Setup fatigue is active.',
+      }],
+      buy_blocked: true,
+      sells_allowed: true,
+      manage_only: true,
+      reason_codes: ['SETUP_FATIGUE_ACTIVE', 'MANAGE_ONLY_MODE_ACTIVE'],
+      expires_at: '2026-06-19T15:35:00.000Z',
+      explanation: 'Setup fatigue is active.',
+      intraday_regime: {
+        regime: 'opening_noise',
+        market_open: true,
+        manage_only: true,
+        buys_allowed: false,
+        sells_allowed: true,
+        reason_code: 'OPENING_NOISE_MANAGE_ONLY',
+      },
+      metrics: {
+        recent_trade_count: 2,
+        daily_pnl: -2.6,
+        rolling_drawdown: -2.6,
+        consecutive_losses: 2,
+        stopout_count: 2,
+        win_rate: 0,
+        churn_score: 2,
+      },
+      setup_fatigue_summary: {
+        setup_count: 1,
+        active_setup_count: 1,
+        paused_setup_count: 1,
+      },
+    },
   }, null, 2));
 
   const trader = http.createServer((req, res) => {
@@ -234,6 +318,9 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.anti_churn_summary.active_churn_guard, true);
   assert.equal(snapshot.live.anti_churn_summary.symbols_under_cooldown.length, 0);
   assert.equal(snapshot.live.anti_churn_summary.recent_winner_protection.length, 1);
+  assert.equal(snapshot.live.setup_fatigue_summary.active_setup_count, 1);
+  assert.equal(snapshot.live.session_guards.buy_blocked, true);
+  assert.equal(snapshot.live.session_guards.manage_only, true);
   assert.equal(snapshot.live.risk_budget_sizing.config.enabled, true);
   assert.equal(snapshot.live.risk_budget_sizing.config.max_risk_per_trade_dollars, 1);
   assert.equal(snapshot.live.risk_budget_sizing.runtime.enabled, true);
@@ -243,12 +330,15 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.partial_fill_count, 1);
   assert.equal(snapshot.summary.anti_churn_active, true);
   assert.equal(snapshot.summary.anti_churn_reason_codes[0], 'CHURN_RATE_GUARD_ACTIVE');
+  assert.equal(snapshot.summary.setup_fatigue_active_count, 1);
+  assert.equal(snapshot.summary.session_guard_buy_blocked, true);
   assert.equal(snapshot.summary.risk_budget_sizing_enabled, true);
   assert.equal(snapshot.summary.risk_budget_latest_candidate_count, 1);
   assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
   assert.equal(snapshot.file_snapshots.broker_local_reconciliation.exists, true);
   assert.equal(snapshot.file_snapshots.partial_fill_state.exists, true);
   assert.equal(snapshot.file_snapshots.anti_churn_state.exists, true);
+  assert.equal(snapshot.file_snapshots.setup_fatigue_state.exists, true);
   assert.equal(typeof snapshot.live.config_drift.has_drift, 'boolean');
   assert.equal(snapshot.summary.trader_status, 'ok');
   assert.equal(snapshot.summary.paper_pnl, 2.5);

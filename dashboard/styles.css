@@ -890,6 +890,16 @@ h1 {
   gap: 12px;
 }
 
+.guard-list {
+  display: grid;
+  gap: 12px;
+}
+
+.guard-card {
+  border-radius: 18px;
+  padding: 14px 16px;
+}
+
 .trade-card {
   padding: 16px 18px;
   border-radius: 18px;

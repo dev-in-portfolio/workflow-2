@@ -15,6 +15,8 @@ const { resolveLiveMarketAutomationSchedule } = require('./live-market-schedule'
 const { evaluatePolicyHealth } = require('./policy-health');
 const { summarizePartialFillState } = require('./partial-fill-state');
 const { loadAntiChurnState, summarizeAntiChurnState } = require('./anti-churn-engine');
+const { loadSetupFatigueState, summarizeSetupFatigueState } = require('./setup-fatigue');
+const { summarizeSessionGuards } = require('./session-guards');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -252,10 +254,14 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const brokerLocalReconciliation = readJsonFileIfPresent(brokerLocalReconciliationPath);
   const partialFillStatePath = path.join(dataDir, 'runtime', 'partial-fill-state.json');
   const partialFillState = readJsonFileIfPresent(partialFillStatePath);
+  const setupFatigueStatePath = path.join(dataDir, 'runtime', 'setup-fatigue-state.json');
+  const setupFatigueState = readJsonFileIfPresent(setupFatigueStatePath) || loadSetupFatigueState(setupFatigueStatePath);
   const antiChurnStatePath = path.join(dataDir, 'runtime', 'anti-churn-state.json');
   const antiChurnState = readJsonFileIfPresent(antiChurnStatePath) || loadAntiChurnState(antiChurnStatePath);
   const antiChurnSummary = summarizeAntiChurnState(antiChurnState || {});
   const partialFillSummary = summarizePartialFillState(partialFillState || {});
+  const setupFatigueSummary = summarizeSetupFatigueState(setupFatigueState || {});
+  const sessionGuards = summarizeSessionGuards(scannerRuntimeFile?.session_guards || null) || null;
   const livePolicyFile = readJsonFileIfPresent(path.join(dataDir, 'live-policy.json'));
   const performanceHistory = readJsonlTail(path.join(dataDir, 'performance-history.jsonl'), 512);
   const policyHistory = readJsonlTail(path.join(dataDir, 'policy-history.jsonl'), DEFAULT_RECENT_ENTRY_LIMIT);
@@ -333,6 +339,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     policyHealth,
     brokerLocalReconciliation,
     partialFillSummary,
+    setupFatigueSummary,
+    sessionGuards,
   });
 
   return {
@@ -386,6 +394,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       partial_fill_summary: partialFillSummary,
       anti_churn_state: antiChurnState || null,
       anti_churn_summary: antiChurnSummary,
+      setup_fatigue_state: setupFatigueState || null,
+      setup_fatigue_summary: setupFatigueSummary,
+      session_guards: sessionGuards,
       risk_budget_sizing: {
         config: liveMarketRules.risk_budget_sizing,
         runtime: scannerRuntimeFile?.risk_budget_sizing || null,
@@ -436,6 +447,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       broker_local_reconciliation: fileMeta(brokerLocalReconciliationPath, brokerLocalReconciliation),
       partial_fill_state: fileMeta(partialFillStatePath, partialFillState),
       anti_churn_state: fileMeta(antiChurnStatePath, antiChurnState),
+      setup_fatigue_state: fileMeta(setupFatigueStatePath, setupFatigueState),
     },
     source_health: sourceHealth,
     alerts,
@@ -453,6 +465,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       brokerLocalReconciliation,
       partialFillSummary,
       antiChurnSummary,
+      setupFatigueSummary,
+      sessionGuards,
       scannerRuntime: scannerRuntimeFile,
     }),
     timestamp: now,
@@ -1246,7 +1260,7 @@ function buildSourceHealth(endpointResults, fileResults) {
   return sources;
 }
 
-function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null }) {
+function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null, setupFatigueSummary = null, sessionGuards = null }) {
   const alerts = [];
   const workflow = control?.workflow || {};
   const scanner = control?.scanner || {};
@@ -1355,6 +1369,22 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
       message: `${partialFillSummary.count} active partial fill(s); blocked symbols: ${(partialFillSummary.blocked_symbols || []).join(', ') || 'none'}.`,
     });
   }
+  if (sessionGuards?.buy_blocked) {
+    alerts.push({
+      severity: 'warning',
+      code: 'SESSION_GUARDS_ACTIVE',
+      title: 'Session guard is active',
+      message: `${(sessionGuards.reason_codes || []).slice(0, 4).join(', ') || 'A session guard is blocking buys.'}`,
+    });
+  }
+  if (setupFatigueSummary?.active_setup_count > 0) {
+    alerts.push({
+      severity: 'warning',
+      code: 'SETUP_FATIGUE_ACTIVE',
+      title: 'Setup fatigue is active',
+      message: `${setupFatigueSummary.active_setup_count} setup(s) are paused for fatigue.`,
+    });
+  }
   const unprotectedPositions = (Array.isArray(exitProtection) ? exitProtection : []).filter((item) => item.classification === 'none');
   if (unprotectedPositions.length) {
     alerts.push({
@@ -1432,7 +1462,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, antiChurnSummary = null, scannerRuntime = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, antiChurnSummary = null, setupFatigueSummary = null, sessionGuards = null, scannerRuntime = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1462,6 +1492,13 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     anti_churn_setup_cooldown_count: safeNumber(antiChurnSummary?.setup_cooldown_count, 0),
     anti_churn_recent_exit_count: safeNumber(antiChurnSummary?.recent_exit_count, 0),
     anti_churn_reason_codes: antiChurnSummary?.reason_codes || [],
+    setup_fatigue_active_count: safeNumber(setupFatigueSummary?.active_setup_count, 0),
+    setup_fatigue_paused_count: safeNumber(setupFatigueSummary?.paused_setup_count, 0),
+    setup_fatigue_total_count: safeNumber(setupFatigueSummary?.setup_count, 0),
+    session_guard_active_count: safeNumber(sessionGuards?.active_guard_count, 0),
+    session_guard_buy_blocked: Boolean(sessionGuards?.buy_blocked),
+    session_guard_manage_only: Boolean(sessionGuards?.manage_only),
+    session_guard_reason_codes: sessionGuards?.reason_codes || [],
     risk_budget_sizing_enabled: Boolean(liveMarketRules.risk_budget_sizing?.enabled),
     risk_budget_latest_candidate_count: Array.isArray(scannerRuntime?.risk_budget_sizing?.latest_candidates) ? scannerRuntime.risk_budget_sizing.latest_candidates.length : 0,
     workflow_state: control?.workflow?.status || 'unknown',

@@ -83,6 +83,7 @@ function render(snapshot) {
   renderPositionCard($('positionOne'), exitPositions[0], snapshot, { primary: true, slotLabel: 'Primary position' });
   renderPositionCard($('positionTwo'), exitPositions[1], snapshot, { primary: false, slotLabel: 'Secondary position' });
   renderRecentTrades(recentTrades, summary.last_trade_at);
+  renderGuards(live?.session_guards, live?.setup_fatigue_summary);
 }
 
 function updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus }) {
@@ -194,6 +195,45 @@ function renderRecentTrades(recentTrades, lastTradeAt) {
       </div>
     </article>
   `).join('');
+}
+
+function renderGuards(sessionGuards, setupFatigueSummary) {
+  const target = $('guardList');
+  const meta = $('guardMeta');
+  if (!target || !meta) return;
+  const activeGuards = Array.isArray(sessionGuards?.active_guards) ? sessionGuards.active_guards : [];
+  const pausedSetups = Array.isArray(setupFatigueSummary?.paused_setups) ? setupFatigueSummary.paused_setups : [];
+  if (!activeGuards.length && !pausedSetups.length) {
+    meta.textContent = 'No active guards';
+    target.innerHTML = '<div class="empty-state">No guard state is currently active.</div>';
+    return;
+  }
+  meta.textContent = `${activeGuards.length} guard(s), ${pausedSetups.length} paused setup(s)`;
+  const guardCards = activeGuards.map((guard) => `
+    <article class="trade-card guard-card">
+      <div class="trade-card-top">
+        <strong>${escapeHtml(guard.guard || 'guard')}</strong>
+        <span class="trade-pnl warn">${escapeHtml((guard.expires_at ? `until ${formatClock(guard.expires_at)}` : 'active'))}</span>
+      </div>
+      <div class="trade-card-grid">
+        <span><b>Reason</b> ${escapeHtml((guard.reason_codes || []).join(', ') || 'none')}</span>
+        <span><b>Explan.</b> ${escapeHtml(guard.explanation || 'Active guard')}</span>
+      </div>
+    </article>
+  `);
+  const fatigueCards = pausedSetups.slice(0, 3).map((setup) => `
+    <article class="trade-card guard-card">
+      <div class="trade-card-top">
+        <strong><code>${escapeHtml(setup.setup_key || missingText)}</code></strong>
+        <span class="trade-pnl ${setup.active ? 'warn' : 'ok'}">${escapeHtml(formatSignedCurrency(setup.fatigue_score || 0))}</span>
+      </div>
+      <div class="trade-card-grid">
+        <span><b>Pause</b> ${escapeHtml(setup.paused_until ? formatClock(setup.paused_until) : missingText)}</span>
+        <span><b>Trades</b> ${escapeHtml(formatCount(setup.recent_trades))}</span>
+      </div>
+    </article>
+  `);
+  target.innerHTML = [...guardCards, ...fatigueCards].join('');
 }
 
 function formatSignedCurrency(value) {

@@ -323,6 +323,51 @@ test('stock scanner stacks losing sell penalty with the normal recent sell timer
   assert.deepEqual(penalty.components.map((component) => component.reason).sort(), ['recent_loss_exit', 'recent_sell', 'recent_stop_exit']);
 });
 
+test('stock scanner blocks buys for fatigued setups but still allows sells', () => {
+  const blockedBuy = buildStockCandidateForSymbol('MU', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    setupKey: 'mu-breakout',
+    setupFatigueState: {
+      setups: {
+        'mu-breakout': {
+          setup_key: 'mu-breakout',
+          fatigue_score: 72,
+          active: true,
+          paused_until: '2026-06-16T20:30:00.000Z',
+          reason_codes: ['SETUP_FATIGUE_ACTIVE'],
+          recent_trades: 4,
+          recent_losses: 3,
+          recent_stopouts: 2,
+          recent_wins: 1,
+        },
+      },
+    },
+  });
+  const sellCandidate = buildStockCandidateForSymbol('MU', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    allowContrarianEntries: true,
+    setupKey: 'mu-breakout',
+    sessionGuards: {
+      buy_blocked: true,
+      sells_allowed: true,
+      manage_only: true,
+      reason_codes: ['SETUP_FATIGUE_ACTIVE'],
+      active_guards: [{ guard: 'setup_fatigue', reason_codes: ['SETUP_FATIGUE_ACTIVE'] }],
+    },
+    position: {
+      qty: 1,
+      avg_entry_price: 100,
+      unrealized_pl: -20,
+    },
+  });
+
+  assert.equal(blockedBuy, null);
+  assert(sellCandidate);
+  assert.equal(sellCandidate.payload.side, 'sell');
+});
+
 test('stock scanner temporarily skips buys after clustered stop exits in the same symbol', () => {
   const skips = [];
   const penalties = normalizeRecentTradePenaltyMap([

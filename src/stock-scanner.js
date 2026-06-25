@@ -11,6 +11,16 @@ const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market
 const { assertSignalCandidate } = require('./module-contracts');
 const { loadPartialFillState, summarizePartialFillState } = require('./partial-fill-state');
 const {
+  SetupFatigueReason,
+  loadSetupFatigueState,
+  reconcileSetupFatigueState,
+  saveSetupFatigueState,
+  normalizeSetupFatigueState,
+  summarizeSetupFatigueState,
+  evaluateSetupFatigueCandidate,
+} = require('./setup-fatigue');
+const { evaluateSessionGuards, summarizeSessionGuards } = require('./session-guards');
+const {
   loadAntiChurnState,
   reconcileAntiChurnState,
   saveAntiChurnState,
@@ -80,6 +90,16 @@ function createStockScanner(options = {}) {
   const antiChurnGuardRoundTripCount = Math.max(0, safeNumber(options.antiChurnGuardRoundTripCount ?? env.ANTI_CHURN_GUARD_ROUND_TRIP_COUNT, 2));
   const antiChurnGuardSymbolLoopCount = Math.max(0, safeNumber(options.antiChurnGuardSymbolLoopCount ?? env.ANTI_CHURN_GUARD_SYMBOL_LOOP_COUNT, 3));
   const antiChurnGuardSetupLoopCount = Math.max(0, safeNumber(options.antiChurnGuardSetupLoopCount ?? env.ANTI_CHURN_GUARD_SETUP_LOOP_COUNT, 3));
+  const setupFatigueEnabled = options.setupFatigueEnabled ?? parseBool(env.SETUP_FATIGUE_ENABLED, true);
+  const setupFatigueThreshold = Math.max(0, safeNumber(options.setupFatigueThreshold ?? env.SETUP_FATIGUE_THRESHOLD, 60));
+  const setupFatigueDecayPerHour = Math.max(0, safeNumber(options.setupFatigueDecayPerHour ?? env.SETUP_FATIGUE_DECAY_PER_HOUR, 8));
+  const setupFatigueStopoutPoints = Math.max(0, safeNumber(options.setupFatigueStopoutPoints ?? env.SETUP_FATIGUE_STOPOUT_POINTS, 28));
+  const setupFatigueBadLossPoints = Math.max(0, safeNumber(options.setupFatigueBadLossPoints ?? env.SETUP_FATIGUE_BAD_LOSS_POINTS, 16));
+  const setupFatigueGoodLossPoints = Math.max(0, safeNumber(options.setupFatigueGoodLossPoints ?? env.SETUP_FATIGUE_GOOD_LOSS_POINTS, 6));
+  const setupFatigueCleanWinRecoveryPoints = Math.max(0, safeNumber(options.setupFatigueCleanWinRecoveryPoints ?? env.SETUP_FATIGUE_CLEAN_WIN_RECOVERY_POINTS, 10));
+  const setupFatiguePauseSeconds = Math.max(0, safeNumber(options.setupFatiguePauseSeconds ?? env.SETUP_FATIGUE_PAUSE_SECONDS, 15 * 60));
+  const setupFatigueMaxPauseSeconds = Math.max(0, safeNumber(options.setupFatigueMaxPauseSeconds ?? env.SETUP_FATIGUE_MAX_PAUSE_SECONDS, 90 * 60));
+  const sessionGuardsEnabled = options.sessionGuardsEnabled ?? parseBool(env.SESSION_GUARDS_ENABLED, false);
   const stopoutClusterBlockMinutes = Math.max(0, safeNumber(options.stopoutClusterBlockMinutes ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_MINUTES, 30));
   const stopoutClusterBlockCount = Math.max(0, Math.floor(safeNumber(options.stopoutClusterBlockCount ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_COUNT, 2)));
   const maxBuyRiskScore = Math.max(0, safeNumber(options.maxBuyRiskScore ?? env.STOCK_SCANNER_MAX_BUY_RISK_SCORE, 70));
@@ -202,6 +222,68 @@ function createStockScanner(options = {}) {
         saveAntiChurnState(antiChurnState, { env, repoRoot: process.cwd() });
       }
       const antiChurnSummary = summarizeAntiChurnState(antiChurnState);
+      const performanceHistoryPath = resolvePerformanceHistoryPath(env, process.cwd());
+      const previousSetupFatigueState = options.setupFatigueState || loadSetupFatigueState({ env, repoRoot: process.cwd() });
+      let setupFatigueState = normalizeSetupFatigueState(previousSetupFatigueState);
+      if (!options.setupFatigueState) {
+        try {
+          setupFatigueState = await reconcileSetupFatigueState({
+            previousState: previousSetupFatigueState,
+            performanceHistoryPath,
+            now: receivedAt,
+            env,
+            repoRoot: process.cwd(),
+            setupFatigueEnabled,
+            threshold: setupFatigueThreshold,
+            decayPerHour: setupFatigueDecayPerHour,
+            stopoutPoints: setupFatigueStopoutPoints,
+            badLossPoints: setupFatigueBadLossPoints,
+            goodLossPoints: setupFatigueGoodLossPoints,
+            cleanWinRecoveryPoints: setupFatigueCleanWinRecoveryPoints,
+            pauseSeconds: setupFatiguePauseSeconds,
+            maxPauseSeconds: setupFatigueMaxPauseSeconds,
+          });
+        } catch (error) {
+          setupFatigueState = normalizeSetupFatigueState(previousSetupFatigueState);
+          if (typeof options.logger === 'function') {
+            options.logger({ level: 'warn', event: 'setup_fatigue_state_reconcile_failed', message: error.message });
+          }
+        }
+      }
+      if (!options.setupFatigueState) {
+        saveSetupFatigueState(setupFatigueState, { env, repoRoot: process.cwd() });
+      }
+      const setupFatigueSummary = summarizeSetupFatigueState(setupFatigueState);
+      const computedIntradayRegime = options.intradayRegime || resolveIntradayStockRegime(new Date(), {
+        openingNoiseMinutes,
+        nearCloseMinutes: nearCloseManageOnlyMinutes,
+      });
+      const sessionGuards = options.sessionGuards
+        || (sessionGuardsEnabled
+          ? await evaluateSessionGuards({
+            now: receivedAt,
+            env,
+            repoRoot: process.cwd(),
+            performanceHistoryPath,
+            setupFatigueState,
+            setupFatigueSummary,
+            intradayRegime: computedIntradayRegime,
+            openingNoiseMinutes,
+            nearCloseManageOnlyMinutes,
+          })
+          : {
+            status: 'CLEAR',
+            active_guards: [],
+            buy_blocked: false,
+            sells_allowed: true,
+            manage_only: false,
+            reason_codes: [],
+            expires_at: null,
+            explanation: 'Session guards disabled.',
+            intraday_regime: computedIntradayRegime,
+            metrics: {},
+            setup_fatigue_summary: setupFatigueSummary,
+          });
       const antiChurnActive = Boolean(
         antiChurnSummary.active_churn_guard
         || antiChurnSummary.symbol_cooldown_count
@@ -234,7 +316,7 @@ function createStockScanner(options = {}) {
         overrides: options.recentTradePenalties,
       });
       const recentTradePenalties = antiChurnActive ? antiChurnState.symbol_cooldowns : legacyRecentTradePenalties;
-      const intradayRegime = options.intradayRegime || resolveIntradayStockRegime(new Date(), {
+      const intradayRegime = sessionGuards.intraday_regime || computedIntradayRegime || options.intradayRegime || resolveIntradayStockRegime(new Date(), {
         openingNoiseMinutes,
         nearCloseMinutes: nearCloseManageOnlyMinutes,
       });
@@ -261,6 +343,11 @@ function createStockScanner(options = {}) {
       if (brokerState.strict_buy_blocked) {
         for (const reason of brokerState.reason_codes) {
           skipTracker.record(reason, { symbol: '*', broker_state_required: true });
+        }
+      }
+      if (sessionGuards.buy_blocked) {
+        for (const reason of sessionGuards.reason_codes || []) {
+          skipTracker.record(reason, { symbol: '*', session_guard: true });
         }
       }
       const previousTrailingState = loadTrailingState({ env, repoRoot: process.cwd() });
@@ -306,6 +393,11 @@ function createStockScanner(options = {}) {
         antiChurnRecentWinnerProtectionEnabled,
         antiChurnTinyExitDollars,
         antiChurnRapidRoundTripSeconds,
+        setupFatigueState,
+        setupFatigueSummary,
+        setupFatigueEnabled,
+        setupFatigueThreshold,
+        sessionGuards,
         minAdjustedRankScore,
         brokerState,
         partialFillSummary,
@@ -375,6 +467,9 @@ function createStockScanner(options = {}) {
         allocation,
         antiChurnState,
         antiChurnSummary,
+        setupFatigueState,
+        setupFatigueSummary,
+        sessionGuards,
         trailingState,
         partialFillSummary,
         skipSummary: skipTracker.summary(),
@@ -515,7 +610,7 @@ function createStockScanner(options = {}) {
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, antiChurnState = null, antiChurnSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     writeScannerRuntimeState({
       scanner: 'stock-scanner',
@@ -534,6 +629,9 @@ function createStockScanner(options = {}) {
       recent_trade_rank_penalties: summarizeRecentTradePenalties(recentTradePenalties),
       anti_churn_state: antiChurnState || null,
       anti_churn_summary: antiChurnSummary || summarizeAntiChurnState(antiChurnState || {}),
+      setup_fatigue_state: setupFatigueState || null,
+      setup_fatigue_summary: setupFatigueSummary || summarizeSetupFatigueState(setupFatigueState || {}),
+      session_guards: sessionGuards || null,
       candidate_rank_details: candidates
         .filter((candidate) => candidate.payload?.side === 'buy')
         .map((candidate) => ({
@@ -553,6 +651,11 @@ function createStockScanner(options = {}) {
           anti_churn_recent_winner_protected: Boolean(candidate.payload?.market_context?.scanner?.anti_churn_recent_winner_protected),
           anti_churn_reason: candidate.recentTradePenalty?.reason || null,
           setup_trade_penalty_reason: candidate.setupPenalty?.reason || null,
+          setup_fatigue_score: candidate.setupFatigue?.fatigue_score ?? null,
+          setup_fatigue_active: Boolean(candidate.setupFatigue?.active),
+          setup_fatigue_paused_until: candidate.setupFatigue?.paused_until || null,
+          setup_fatigue_reason_codes: candidate.setupFatigue?.reason_codes || [],
+          session_guard_blocked: Boolean(sessionGuards?.buy_blocked),
         })),
       skip_summary: skipSummary || {
         allocation_block: allocation?.accepted === false ? 1 : 0,
@@ -614,6 +717,13 @@ function createStockScanner(options = {}) {
         setup_cooldown_count: Object.keys(antiChurnState.setup_cooldowns || {}).length,
         recent_exit_count: Array.isArray(antiChurnState.recent_classifications) ? antiChurnState.recent_classifications.length : 0,
       } : null,
+      setup_fatigue_overview: setupFatigueSummary ? {
+        setup_count: setupFatigueSummary.setup_count,
+        active_setup_count: setupFatigueSummary.active_setup_count,
+        paused_setup_count: setupFatigueSummary.paused_setup_count,
+        active_setups: setupFatigueSummary.active_setups,
+        paused_setups: setupFatigueSummary.paused_setups,
+      } : null,
       position_exit_state: candidates
         .filter((candidate) => candidate.exitState)
         .map((candidate) => candidate.exitState),
@@ -621,6 +731,7 @@ function createStockScanner(options = {}) {
         updated_at: trailingState.updated_at,
         positions: trailingState.positions,
       } : null,
+      session_guard_overview: summarizeSessionGuards(sessionGuards),
     }, { env, repoRoot: process.cwd() });
   }
 
@@ -870,6 +981,11 @@ function buildCandidates(bundle, options = {}) {
       antiChurnRecentWinnerProtectionEnabled: options.antiChurnRecentWinnerProtectionEnabled,
       antiChurnTinyExitDollars: options.antiChurnTinyExitDollars,
       antiChurnRapidRoundTripSeconds: options.antiChurnRapidRoundTripSeconds,
+      setupFatigueState: options.setupFatigueState,
+      setupFatigueSummary: options.setupFatigueSummary,
+      setupFatigueEnabled: options.setupFatigueEnabled,
+      setupFatigueThreshold: options.setupFatigueThreshold,
+      sessionGuards: options.sessionGuards,
       position_avg_entry_price: safeNumber(positionsBySymbol.get(symbol)?.avg_entry_price ?? positionsBySymbol.get(symbol)?.avgEntryPrice ?? null),
       position_qty_available: safeNumber(positionsBySymbol.get(symbol)?.qty ?? positionsBySymbol.get(symbol)?.quantity ?? positionsBySymbol.get(symbol)?.qty_available ?? null),
     });
@@ -933,6 +1049,27 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   }
   const nowMs = new Date(options.receivedAt || nowIso()).getTime();
   const antiChurnState = options.antiChurnState || null;
+  const setupFatigue = evaluateSetupFatigueCandidate({
+    setupFatigueState: options.setupFatigueState,
+    setupKey: options.setupKey,
+    now: options.receivedAt || nowIso(),
+  });
+  if (setupFatigue?.active) {
+    return skip(SetupFatigueReason.SETUP_FATIGUE_ACTIVE, {
+      setup_key: setupFatigue.setup_key,
+      fatigue_score: setupFatigue.fatigue_score,
+      paused_until: setupFatigue.paused_until,
+      reason_codes: setupFatigue.reason_codes || [],
+      explanation: setupFatigue.explanation || null,
+    });
+  }
+  if (options.sessionGuards?.buy_blocked) {
+    return skip(options.sessionGuards.reason_codes?.[0] || 'MANAGE_ONLY_MODE_ACTIVE', {
+      reason_codes: options.sessionGuards.reason_codes || [],
+      explanation: options.sessionGuards.explanation || null,
+      expires_at: options.sessionGuards.expires_at || null,
+    });
+  }
   const symbolCooldown = getRecentTradePenalty(antiChurnState?.symbol_cooldowns || null, symbol);
   const setupCooldown = options.setupKey ? getRecentTradePenalty(antiChurnState?.setup_cooldowns || null, options.setupKey) : null;
   if (antiChurnState?.churn_guard?.active) {
@@ -1344,6 +1481,8 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     options,
     quantity: Number(Math.abs(positionQty).toFixed(6)),
     notional: null,
+    setupFatigue: null,
+    sessionGuards: options.sessionGuards || null,
     exitState,
   });
 }
@@ -1359,6 +1498,11 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   const baseRankScore = Math.abs(movePct) * 10 + volumeScore - (spreadPct * 3);
   const recentPenalty = options.recentTradePenalty || null;
   const setupPenalty = options.setupPenalty || null;
+  const setupFatigue = evaluateSetupFatigueCandidate({
+    setupFatigueState: options.setupFatigueState,
+    setupKey: options.setupKey,
+    now: options.receivedAt || nowIso(),
+  });
   const stopoutCluster = getStopoutClusterBlock(recentPenalty, {
     blockMinutes: options.stopoutClusterBlockMinutes,
     blockCount: options.stopoutClusterBlockCount,
@@ -1493,6 +1637,8 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     totalRankPenalty,
     recentTradePenalty: recentPenalty,
     setupPenalty,
+    setupFatigue,
+    sessionGuards: options.sessionGuards || null,
   });
   const maxBuyRiskScore = safeNumber(options.maxBuyRiskScore, 70);
   const candidateRiskScore = safeNumber(candidate?.payload?.risk_score, null);
@@ -1550,7 +1696,7 @@ function getStopoutClusterBlock(recentPenalty, { blockMinutes = 30, blockCount =
   };
 }
 
-function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, exitState = null }) {
+function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, setupFatigue = null, sessionGuards = null, exitState = null }) {
   const receivedAt = options.receivedAt || nowIso();
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
@@ -1611,9 +1757,16 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       setup_trade_at: side === 'buy' ? setupPenalty?.last_traded_at || null : null,
       setup_trade_penalty_reason: side === 'buy' ? setupPenalty?.reason || null : null,
       anti_churn_recent_winner_protected: side === 'buy' ? Boolean(recentTradePenalty?.recent_winner_protected || setupPenalty?.recent_winner_protected) : false,
+      setup_fatigue_score: side === 'buy' ? roundScore(setupFatigue?.fatigue_score || 0) : null,
+      setup_fatigue_active: side === 'buy' ? Boolean(setupFatigue?.active) : false,
+      setup_fatigue_paused_until: side === 'buy' ? setupFatigue?.paused_until || null : null,
+      setup_fatigue_reason_codes: side === 'buy' ? setupFatigue?.reason_codes || [] : [],
+      session_guard_blocked: side === 'buy' ? Boolean(sessionGuards?.buy_blocked) : false,
       sizing_method: side === 'buy' ? sizingMethod : null,
       risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
       structure_stop: side === 'buy' ? structureStop : null,
+      setup_fatigue: side === 'buy' ? setupFatigue : null,
+      session_guards: side === 'buy' ? summarizeSessionGuards(sessionGuards) : null,
     },
     volume,
     alpaca_quote: normalizedPrimary,
@@ -1690,6 +1843,8 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     edge_score: clamp(78 + Math.min(12, Math.abs(movePct) * 2), 0, 100),
     volume,
     market_context: marketContext,
+    setup_fatigue: side === 'buy' ? setupFatigue : null,
+    session_guards: side === 'buy' ? summarizeSessionGuards(sessionGuards) : null,
   };
   return {
     symbol,
@@ -1703,6 +1858,8 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     totalRankPenalty,
     recentTradePenalty,
     setupPenalty,
+    setupFatigue,
+    sessionGuards: options.sessionGuards || null,
     endpoint: 'paper-order',
     payload,
     exitState,
