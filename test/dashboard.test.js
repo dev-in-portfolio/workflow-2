@@ -31,6 +31,61 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
     JSON.stringify({ entry_type: 'paper_outcome', record: { symbol: 'AAPL', side: 'sell', quantity: 1, paper_result: { filled_quantity: 1, average_fill_price: 102.5, filled_at: '2026-06-19T15:04:01.000Z', order_id: 'ord-2', status: 'filled' }, pnl: 0.25, adjusted_pnl: 0.2, execution_drag: 0.05, win_loss: 'win', calibration_bucket: '80-89', recorded_at: '2026-06-19T15:04:01.000Z' } }),
     JSON.stringify({ entry_type: 'risk_decision', record: { decision: 'BLOCKED', reason_codes: ['LOW_CONFIDENCE'], recorded_at: '2026-06-19T15:00:02.000Z' } }),
   ].join('\n'));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'anti-churn-state.json'), JSON.stringify({
+    version: '2026-06-25.anti-churn-state.1',
+    updated_at: '2026-06-19T15:05:00.000Z',
+    last_reconciled_at: '2026-06-19T15:05:00.000Z',
+    symbol_cooldowns: {
+      AAPL: {
+        symbol: 'AAPL',
+        classification: 'clean_win',
+        severity: 'low',
+        penalty_points: 0,
+        penalty: 0,
+        cooldown_seconds: 0,
+        cooldown_until: null,
+        expires_at: null,
+        remaining_seconds: 0,
+        reason: 'CLEAN_WIN_NO_PENALTY',
+        reason_codes: ['RECENT_WINNER_PROTECTED', 'CLEAN_WIN_NO_PENALTY'],
+        recent_winner_protected: true,
+        components: [],
+      },
+    },
+    setup_cooldowns: {},
+    recent_classifications: [
+      {
+        symbol: 'AAPL',
+        classification: 'clean_win',
+        penalty_points: 0,
+        cooldown_seconds: 0,
+        cooldown_until: null,
+        reason_codes: ['RECENT_WINNER_PROTECTED', 'CLEAN_WIN_NO_PENALTY'],
+        recent_winner_protected: true,
+      },
+    ],
+    churn_guard: {
+      active: true,
+      triggered_at: '2026-06-19T15:05:00.000Z',
+      expires_at: '2026-06-19T15:35:00.000Z',
+      window_seconds: 1800,
+      trade_count: 4,
+      churn_score: 88,
+      reason_codes: ['CHURN_RATE_GUARD_ACTIVE', 'RAPID_ROUND_TRIP_CHURN'],
+      explanation: 'Churn guard active.',
+      indicators: { rapid_round_trip_count: 3 },
+    },
+    recent_winner_protection: {
+      AAPL: {
+        symbol: 'AAPL',
+        cooldown_until: null,
+        remaining_seconds: 0,
+        penalty: 0,
+        reason_codes: ['RECENT_WINNER_PROTECTED', 'CLEAN_WIN_NO_PENALTY'],
+        recent_winner_protected: true,
+      },
+    },
+  }, null, 2));
   fs.writeFileSync(path.join(dataDir, 'policy-history.jsonl'), JSON.stringify({
     source: 'startup-config',
     captured_at: '2026-06-19T14:46:40.126Z',
@@ -176,6 +231,9 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.reconciliation_summary.mismatch_count, 1);
   assert.equal(snapshot.live.partial_fill_summary.count, 1);
   assert.deepEqual(snapshot.live.partial_fill_summary.blocked_symbols, ['AAPL']);
+  assert.equal(snapshot.live.anti_churn_summary.active_churn_guard, true);
+  assert.equal(snapshot.live.anti_churn_summary.symbols_under_cooldown.length, 0);
+  assert.equal(snapshot.live.anti_churn_summary.recent_winner_protection.length, 1);
   assert.equal(snapshot.live.risk_budget_sizing.config.enabled, true);
   assert.equal(snapshot.live.risk_budget_sizing.config.max_risk_per_trade_dollars, 1);
   assert.equal(snapshot.live.risk_budget_sizing.runtime.enabled, true);
@@ -183,11 +241,14 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.reconciliation_status, 'WARN');
   assert.equal(snapshot.summary.reconciliation_mismatch_count, 1);
   assert.equal(snapshot.summary.partial_fill_count, 1);
+  assert.equal(snapshot.summary.anti_churn_active, true);
+  assert.equal(snapshot.summary.anti_churn_reason_codes[0], 'CHURN_RATE_GUARD_ACTIVE');
   assert.equal(snapshot.summary.risk_budget_sizing_enabled, true);
   assert.equal(snapshot.summary.risk_budget_latest_candidate_count, 1);
   assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
   assert.equal(snapshot.file_snapshots.broker_local_reconciliation.exists, true);
   assert.equal(snapshot.file_snapshots.partial_fill_state.exists, true);
+  assert.equal(snapshot.file_snapshots.anti_churn_state.exists, true);
   assert.equal(typeof snapshot.live.config_drift.has_drift, 'boolean');
   assert.equal(snapshot.summary.trader_status, 'ok');
   assert.equal(snapshot.summary.paper_pnl, 2.5);

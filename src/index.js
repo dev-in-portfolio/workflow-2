@@ -11,6 +11,7 @@ module.exports = {
   ...require('./stock-scanner'),
   ...require('./position-trailing-state'),
   ...require('./partial-fill-state'),
+  ...require('./anti-churn-engine'),
   ...require('./risk-budget-sizing'),
   ...require('./structure-stops'),
   ...require('./feedback-loop'),

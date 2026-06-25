@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
 const http = require('http');
+const os = require('os');
+const path = require('path');
 const {
   buildStockCandidateForSymbol,
   calculateEffectiveStopLossDollars,
@@ -977,6 +980,212 @@ test('stock scanner rotates away from stacked recent sells when another rank is 
   assert.equal(result.accepted, true);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].symbol, 'WDC');
+});
+
+test('stock scanner keeps a recent winner eligible when it remains the strongest rank', async () => {
+  const requests = [];
+  const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
+  const antiChurnState = {
+    version: '2026-06-25.anti-churn-state.1',
+    updated_at: '2026-06-25T14:00:00.000Z',
+    last_reconciled_at: '2026-06-25T14:00:00.000Z',
+    symbol_cooldowns: {
+      MU: {
+        symbol: 'MU',
+        classification: 'clean_win',
+        severity: 'low',
+        penalty_points: 0,
+        penalty: 0,
+        cooldown_seconds: 0,
+        cooldown_until: null,
+        expires_at: null,
+        remaining_seconds: 0,
+        reason: 'CLEAN_WIN_NO_PENALTY',
+        reason_codes: ['RECENT_WINNER_PROTECTED', 'CLEAN_WIN_NO_PENALTY'],
+        recent_winner_protected: true,
+        components: [],
+      },
+    },
+    setup_cooldowns: {},
+    recent_classifications: [],
+    churn_guard: { active: false, triggered_at: null, expires_at: null, window_seconds: 3600, trade_count: 0, churn_score: 0, reason_codes: [], explanation: '' },
+    recent_winner_protection: {
+      MU: {
+        symbol: 'MU',
+        cooldown_until: null,
+        remaining_seconds: 0,
+        penalty: 0,
+        reason_codes: ['RECENT_WINNER_PROTECTED', 'CLEAN_WIN_NO_PENALTY'],
+        recent_winner_protected: true,
+      },
+    },
+  };
+  const scanner = createStockScanner({
+    enabled: true,
+    baseUrl: 'https://data.alpaca.markets',
+    localBaseUrl: 'http://127.0.0.1:65535',
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    symbols: ['MU', 'WDC'],
+    intervalMs: 60_000,
+    maxCandidatesPerRun: 1,
+    maxOpenPositions: 1,
+    marketOpen: true,
+    antiChurnState,
+    marketFetch: async (url) => {
+      if (url.includes('/v2/positions')) return buildResponse([]);
+      if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+      if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+      if (url.includes('/v2/stocks/snapshots?')) {
+        return buildResponse({
+          snapshots: {
+            MU: rankedSnapshot({ bid: 119.9, ask: 120.1, previousClose: 100, volume: 100000, timestamp: alpacaTimestamp }),
+            WDC: rankedSnapshot({ bid: 104.9, ask: 105.1, previousClose: 100, volume: 100000, timestamp: alpacaTimestamp }),
+          },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    localFetch: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      return buildResponse({ accepted: true, final_decision: 'APPROVED_FOR_PAPER' });
+    },
+  });
+
+  const result = await scanner.runOnce({ runId: 'recent-winner-eligible' });
+  scanner.stop();
+
+  assert.equal(result.accepted, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].symbol, 'MU');
+  assert.equal(requests[0].market_context.scanner.recent_trade_rank_penalty, 0);
+});
+
+test('stock scanner blocks buy churn but still allows sell exits', () => {
+  const antiChurnState = {
+    churn_guard: {
+      active: true,
+      triggered_at: '2026-06-25T14:00:00.000Z',
+      expires_at: '2026-06-25T14:30:00.000Z',
+      window_seconds: 1800,
+      trade_count: 4,
+      churn_score: 90,
+      reason_codes: ['CHURN_RATE_GUARD_ACTIVE'],
+      explanation: 'Churn guard active',
+    },
+    symbol_cooldowns: {
+      MU: {
+        symbol: 'MU',
+        penalty: 0,
+        remaining_seconds: 0,
+        cooldown_until: null,
+        reason: 'CLEAN_WIN_NO_PENALTY',
+        reason_codes: ['CLEAN_WIN_NO_PENALTY'],
+        components: [],
+      },
+    },
+    setup_cooldowns: {},
+  };
+  const buyCandidate = buildStockCandidateForSymbol('MU', rankedSnapshot({
+    bid: 119.9,
+    ask: 120.1,
+    previousClose: 100,
+    volume: 100000,
+    timestamp: '2026-06-25T14:00:01.000Z',
+  }), stockQuote(), {
+    receivedAt: '2026-06-25T14:00:01.000Z',
+    antiChurnState,
+    setupKey: null,
+    maxOpenPositions: 1,
+    portfolio: { remaining_position_slots: 1 },
+    allowContrarianEntries: true,
+  });
+  const sellCandidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-25T14:00:01.000Z',
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    antiChurnState,
+    stopLossDollars: 1,
+    trailingProfitStartDollars: 0.5,
+    trailingProfitGivebackDollars: 0.3,
+    trailingState: { positions: {} },
+  });
+
+  assert.equal(buyCandidate, null);
+  assert(sellCandidate);
+  assert.equal(sellCandidate.payload.side, 'sell');
+});
+
+test('stock scanner runtime snapshot includes anti-churn details', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stock-scanner-anti-churn-'));
+  const runtimePath = path.join(tempDir, 'scanner-runtime.json');
+  const scanner = createStockScanner({
+    enabled: true,
+    baseUrl: 'https://data.alpaca.markets',
+    localBaseUrl: 'http://127.0.0.1:65535',
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    symbols: ['MU'],
+    intervalMs: 60_000,
+    maxCandidatesPerRun: 1,
+    maxOpenPositions: 1,
+    marketOpen: true,
+    antiChurnState: {
+      symbol_cooldowns: {
+        MU: {
+          symbol: 'MU',
+          penalty: 5,
+          penalty_points: 5,
+          remaining_seconds: 600,
+          cooldown_until: '2026-06-25T14:10:00.000Z',
+          reason: 'TRAILING_WIN_LIGHT_PENALTY',
+          reason_codes: ['RECENT_WINNER_PROTECTED', 'TRAILING_WIN_LIGHT_PENALTY'],
+          recent_winner_protected: true,
+          components: [
+            {
+              classification: 'trailing_win',
+              penalty_points: 5,
+              remaining_seconds: 600,
+              cooldown_seconds: 600,
+              cooldown_until: '2026-06-25T14:10:00.000Z',
+              reason_codes: ['RECENT_WINNER_PROTECTED', 'TRAILING_WIN_LIGHT_PENALTY'],
+              recent_winner_protected: true,
+            },
+          ],
+        },
+      },
+      setup_cooldowns: {},
+      recent_classifications: [],
+      churn_guard: { active: false, triggered_at: null, expires_at: null, window_seconds: 3600, trade_count: 0, churn_score: 0, reason_codes: [], explanation: '' },
+      recent_winner_protection: {},
+    },
+    env: {
+      SCANNER_RUNTIME_STATE_ENABLED: 'true',
+      SCANNER_RUNTIME_STATE_PATH: runtimePath,
+    },
+    marketFetch: async (url) => {
+      if (url.includes('/v2/positions')) return buildResponse([]);
+      if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+      if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+      if (url.includes('/v2/stocks/snapshots?')) {
+        return buildResponse({
+          snapshots: {
+            MU: rankedSnapshot({ bid: 119.9, ask: 120.1, previousClose: 100, volume: 100000, timestamp: '2026-06-25T14:00:01.000Z' }),
+          },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    localFetch: async () => buildResponse({ accepted: true, final_decision: 'APPROVED_FOR_PAPER' }),
+  });
+
+  const result = await scanner.runOnce({ runId: 'stock-runtime-anti-churn' });
+  scanner.stop();
+  const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+
+  assert.equal(result.accepted, true);
+  assert.equal(runtime.anti_churn_summary.symbol_cooldown_count, 1);
+  assert.equal(runtime.anti_churn_summary.recent_exit_count, 0);
+  assert.equal(runtime.anti_churn_state.symbol_cooldowns.MU.reason, 'TRAILING_WIN_LIGHT_PENALTY');
 });
 
 test('stock scanner batches large stock universes into multiple market-data requests', async () => {

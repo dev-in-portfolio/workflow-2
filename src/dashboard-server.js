@@ -14,6 +14,7 @@ const { calculateEffectiveStopLossDollars } = require('./stock-scanner');
 const { resolveLiveMarketAutomationSchedule } = require('./live-market-schedule');
 const { evaluatePolicyHealth } = require('./policy-health');
 const { summarizePartialFillState } = require('./partial-fill-state');
+const { loadAntiChurnState, summarizeAntiChurnState } = require('./anti-churn-engine');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -251,6 +252,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const brokerLocalReconciliation = readJsonFileIfPresent(brokerLocalReconciliationPath);
   const partialFillStatePath = path.join(dataDir, 'runtime', 'partial-fill-state.json');
   const partialFillState = readJsonFileIfPresent(partialFillStatePath);
+  const antiChurnStatePath = path.join(dataDir, 'runtime', 'anti-churn-state.json');
+  const antiChurnState = readJsonFileIfPresent(antiChurnStatePath) || loadAntiChurnState(antiChurnStatePath);
+  const antiChurnSummary = summarizeAntiChurnState(antiChurnState || {});
   const partialFillSummary = summarizePartialFillState(partialFillState || {});
   const livePolicyFile = readJsonFileIfPresent(path.join(dataDir, 'live-policy.json'));
   const performanceHistory = readJsonlTail(path.join(dataDir, 'performance-history.jsonl'), 512);
@@ -380,6 +384,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       reconciliation_summary: summarizeBrokerLocalReconciliation(brokerLocalReconciliation),
       partial_fill_state: partialFillState || null,
       partial_fill_summary: partialFillSummary,
+      anti_churn_state: antiChurnState || null,
+      anti_churn_summary: antiChurnSummary,
       risk_budget_sizing: {
         config: liveMarketRules.risk_budget_sizing,
         runtime: scannerRuntimeFile?.risk_budget_sizing || null,
@@ -429,6 +435,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       live_preflight: fileMeta(preflightLatestPath, preflightLatest),
       broker_local_reconciliation: fileMeta(brokerLocalReconciliationPath, brokerLocalReconciliation),
       partial_fill_state: fileMeta(partialFillStatePath, partialFillState),
+      anti_churn_state: fileMeta(antiChurnStatePath, antiChurnState),
     },
     source_health: sourceHealth,
     alerts,
@@ -445,6 +452,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       preflight: preflightLatest,
       brokerLocalReconciliation,
       partialFillSummary,
+      antiChurnSummary,
       scannerRuntime: scannerRuntimeFile,
     }),
     timestamp: now,
@@ -1424,7 +1432,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, scannerRuntime = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, antiChurnSummary = null, scannerRuntime = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1448,6 +1456,12 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     partial_fill_count: safeNumber(partialFillSummary?.count, 0),
     partial_fill_blocked_symbols: partialFillSummary?.blocked_symbols || [],
     partial_fill_reserved_buy_notional: safeNumber(partialFillSummary?.reserved_buy_notional, 0),
+    anti_churn_active: Boolean(antiChurnSummary?.active_churn_guard),
+    anti_churn_penalty_points: safeNumber(antiChurnSummary?.penalty_points, 0),
+    anti_churn_symbol_cooldown_count: safeNumber(antiChurnSummary?.symbol_cooldown_count, 0),
+    anti_churn_setup_cooldown_count: safeNumber(antiChurnSummary?.setup_cooldown_count, 0),
+    anti_churn_recent_exit_count: safeNumber(antiChurnSummary?.recent_exit_count, 0),
+    anti_churn_reason_codes: antiChurnSummary?.reason_codes || [],
     risk_budget_sizing_enabled: Boolean(liveMarketRules.risk_budget_sizing?.enabled),
     risk_budget_latest_candidate_count: Array.isArray(scannerRuntime?.risk_budget_sizing?.latest_candidates) ? scannerRuntime.risk_budget_sizing.latest_candidates.length : 0,
     workflow_state: control?.workflow?.status || 'unknown',

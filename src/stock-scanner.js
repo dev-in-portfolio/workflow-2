@@ -10,6 +10,13 @@ const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
 const { assertSignalCandidate } = require('./module-contracts');
 const { loadPartialFillState, summarizePartialFillState } = require('./partial-fill-state');
+const {
+  loadAntiChurnState,
+  reconcileAntiChurnState,
+  saveAntiChurnState,
+  normalizeAntiChurnState,
+  summarizeAntiChurnState,
+} = require('./anti-churn-engine');
 const { calculateRiskBudgetSize } = require('./risk-budget-sizing');
 const { calculateStructureAwareStop } = require('./structure-stops');
 
@@ -51,6 +58,28 @@ function createStockScanner(options = {}) {
   const recentLossRankPenalty = Math.max(0, safeNumber(options.recentLossRankPenalty ?? env.STOCK_SCANNER_RECENT_LOSS_RANK_PENALTY, 60));
   const recentStopExitPenaltyMinutes = Math.max(0, safeNumber(options.recentStopExitPenaltyMinutes ?? env.STOCK_SCANNER_RECENT_STOP_EXIT_PENALTY_MINUTES, 30));
   const recentStopExitRankPenalty = Math.max(0, safeNumber(options.recentStopExitRankPenalty ?? env.STOCK_SCANNER_RECENT_STOP_EXIT_RANK_PENALTY, 80));
+  const antiChurnEnabled = options.antiChurnEnabled ?? parseBool(env.ANTI_CHURN_ENABLED, true);
+  const antiChurnRetentionHours = Math.max(1, safeNumber(options.antiChurnRetentionHours ?? env.ANTI_CHURN_RETENTION_HOURS, 24));
+  const antiChurnCleanWinCooldownSeconds = Math.max(0, safeNumber(options.antiChurnCleanWinCooldownSeconds ?? env.ANTI_CHURN_CLEAN_WIN_COOLDOWN_SECONDS, 0));
+  const antiChurnTrailingWinCooldownSeconds = Math.max(0, safeNumber(options.antiChurnTrailingWinCooldownSeconds ?? env.ANTI_CHURN_TRAILING_WIN_COOLDOWN_SECONDS, 5 * 60));
+  const antiChurnSmallWinCooldownSeconds = Math.max(0, safeNumber(options.antiChurnSmallWinCooldownSeconds ?? env.ANTI_CHURN_SMALL_WIN_COOLDOWN_SECONDS, 5 * 60));
+  const antiChurnGoodLossCooldownSeconds = Math.max(0, safeNumber(options.antiChurnGoodLossCooldownSeconds ?? env.ANTI_CHURN_GOOD_LOSS_COOLDOWN_SECONDS, 15 * 60));
+  const antiChurnBadLossCooldownSeconds = Math.max(0, safeNumber(options.antiChurnBadLossCooldownSeconds ?? env.ANTI_CHURN_BAD_LOSS_COOLDOWN_SECONDS, 30 * 60));
+  const antiChurnHardStopoutCooldownSeconds = Math.max(0, safeNumber(options.antiChurnHardStopoutCooldownSeconds ?? env.ANTI_CHURN_HARD_STOPOUT_COOLDOWN_SECONDS, 45 * 60));
+  const antiChurnRepeatedStopoutMultiplier = Math.max(1, safeNumber(options.antiChurnRepeatedStopoutMultiplier ?? env.ANTI_CHURN_REPEATED_STOPOUT_MULTIPLIER, 2));
+  const antiChurnMaxCooldownSeconds = Math.max(0, safeNumber(options.antiChurnMaxCooldownSeconds ?? env.ANTI_CHURN_MAX_COOLDOWN_SECONDS, 90 * 60));
+  const antiChurnRecentWinnerProtectionEnabled = options.antiChurnRecentWinnerProtectionEnabled ?? parseBool(env.RECENT_WINNER_PROTECTION_ENABLED, true);
+  const antiChurnRecentWinnerWindowSeconds = Math.max(1, safeNumber(options.antiChurnRecentWinnerWindowSeconds ?? env.ANTI_CHURN_RECENT_WINNER_WINDOW_SECONDS, 30 * 60));
+  const antiChurnTinyExitDollars = Math.max(0, safeNumber(options.antiChurnTinyExitDollars ?? env.ANTI_CHURN_TINY_EXIT_DOLLARS, 0.5));
+  const antiChurnRapidRoundTripSeconds = Math.max(1, safeNumber(options.antiChurnRapidRoundTripSeconds ?? env.ANTI_CHURN_RAPID_ROUND_TRIP_SECONDS, 10 * 60));
+  const antiChurnWindowSeconds = Math.max(1, safeNumber(options.antiChurnWindowSeconds ?? env.ANTI_CHURN_WINDOW_SECONDS, 60 * 60));
+  const antiChurnGuardScoreThreshold = Math.max(1, safeNumber(options.antiChurnGuardScoreThreshold ?? env.ANTI_CHURN_GUARD_SCORE_THRESHOLD, 60));
+  const antiChurnGuardTradeCount = Math.max(0, safeNumber(options.antiChurnGuardTradeCount ?? env.ANTI_CHURN_GUARD_TRADE_COUNT, 4));
+  const antiChurnGuardStopoutCount = Math.max(0, safeNumber(options.antiChurnGuardStopoutCount ?? env.ANTI_CHURN_GUARD_STOPOUT_COUNT, 2));
+  const antiChurnGuardTinyExitCount = Math.max(0, safeNumber(options.antiChurnGuardTinyExitCount ?? env.ANTI_CHURN_GUARD_TINY_EXIT_COUNT, 2));
+  const antiChurnGuardRoundTripCount = Math.max(0, safeNumber(options.antiChurnGuardRoundTripCount ?? env.ANTI_CHURN_GUARD_ROUND_TRIP_COUNT, 2));
+  const antiChurnGuardSymbolLoopCount = Math.max(0, safeNumber(options.antiChurnGuardSymbolLoopCount ?? env.ANTI_CHURN_GUARD_SYMBOL_LOOP_COUNT, 3));
+  const antiChurnGuardSetupLoopCount = Math.max(0, safeNumber(options.antiChurnGuardSetupLoopCount ?? env.ANTI_CHURN_GUARD_SETUP_LOOP_COUNT, 3));
   const stopoutClusterBlockMinutes = Math.max(0, safeNumber(options.stopoutClusterBlockMinutes ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_MINUTES, 30));
   const stopoutClusterBlockCount = Math.max(0, Math.floor(safeNumber(options.stopoutClusterBlockCount ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_COUNT, 2)));
   const maxBuyRiskScore = Math.max(0, safeNumber(options.maxBuyRiskScore ?? env.STOCK_SCANNER_MAX_BUY_RISK_SCORE, 70));
@@ -129,6 +158,56 @@ function createStockScanner(options = {}) {
       const approvedPositions = filterApprovedPositions(positions, symbols);
       const partialFillState = options.partialFillState || loadPartialFillState({ env, repoRoot: process.cwd() });
       const partialFillSummary = summarizePartialFillState(partialFillState);
+      const previousAntiChurnState = options.antiChurnState || loadAntiChurnState({ env, repoRoot: process.cwd() });
+      let antiChurnState = normalizeAntiChurnState(previousAntiChurnState);
+      if (!options.antiChurnState) {
+        try {
+          antiChurnState = await reconcileAntiChurnState({
+            previousState: previousAntiChurnState,
+            performanceHistoryPath: resolvePerformanceHistoryPath(env, process.cwd()),
+            now: receivedAt,
+            env,
+            repoRoot: process.cwd(),
+            antiChurnEnabled,
+            retentionHours: antiChurnRetentionHours,
+            cleanWinCooldownSeconds: antiChurnCleanWinCooldownSeconds,
+            trailingWinCooldownSeconds: antiChurnTrailingWinCooldownSeconds,
+            smallWinCooldownSeconds: antiChurnSmallWinCooldownSeconds,
+            goodLossCooldownSeconds: antiChurnGoodLossCooldownSeconds,
+            badLossCooldownSeconds: antiChurnBadLossCooldownSeconds,
+            hardStopoutCooldownSeconds: antiChurnHardStopoutCooldownSeconds,
+            repeatedStopoutMultiplier: antiChurnRepeatedStopoutMultiplier,
+            maxCooldownSeconds: antiChurnMaxCooldownSeconds,
+            recentWinnerProtectionEnabled: antiChurnRecentWinnerProtectionEnabled,
+            recentWinnerWindowSeconds: antiChurnRecentWinnerWindowSeconds,
+            tinyExitDollars: antiChurnTinyExitDollars,
+            rapidRoundTripSeconds: antiChurnRapidRoundTripSeconds,
+            churnWindowSeconds: antiChurnWindowSeconds,
+            churnGuardScoreThreshold: antiChurnGuardScoreThreshold,
+            churnGuardTradeCount: antiChurnGuardTradeCount,
+            churnGuardStopoutCount: antiChurnGuardStopoutCount,
+            churnGuardTinyExitCount: antiChurnGuardTinyExitCount,
+            churnGuardRoundTripCount: antiChurnGuardRoundTripCount,
+            churnGuardSymbolLoopCount: antiChurnGuardSymbolLoopCount,
+            churnGuardSetupLoopCount: antiChurnGuardSetupLoopCount,
+          });
+        } catch (error) {
+          antiChurnState = normalizeAntiChurnState(previousAntiChurnState);
+          if (typeof options.logger === 'function') {
+            options.logger({ level: 'warn', event: 'anti_churn_state_reconcile_failed', message: error.message });
+          }
+        }
+      }
+      if (!options.antiChurnState) {
+        saveAntiChurnState(antiChurnState, { env, repoRoot: process.cwd() });
+      }
+      const antiChurnSummary = summarizeAntiChurnState(antiChurnState);
+      const antiChurnActive = Boolean(
+        antiChurnSummary.active_churn_guard
+        || antiChurnSummary.symbol_cooldown_count
+        || antiChurnSummary.setup_cooldown_count
+        || antiChurnSummary.recent_exit_count,
+      );
       const portfolio = buildPortfolioSnapshot({ positions, openOrders, account, maxOpenPositions, partialFillSummary });
       const allocation = brokerState.strict_buy_blocked
         ? {
@@ -142,7 +221,7 @@ function createStockScanner(options = {}) {
         }
         : allocateBuyNotional({ targetNotional: notional, minBuyNotional, portfolio, requireBrokerCash: true });
       const skipTracker = createSkipTracker();
-      const recentTradePenalties = loadRecentTradePenalties({
+      const legacyRecentTradePenalties = loadRecentTradePenalties({
         env,
         repoRoot: process.cwd(),
         now: receivedAt,
@@ -154,6 +233,7 @@ function createStockScanner(options = {}) {
         stopPenalty: recentStopExitRankPenalty,
         overrides: options.recentTradePenalties,
       });
+      const recentTradePenalties = antiChurnActive ? antiChurnState.symbol_cooldowns : legacyRecentTradePenalties;
       const intradayRegime = options.intradayRegime || resolveIntradayStockRegime(new Date(), {
         openingNoiseMinutes,
         nearCloseMinutes: nearCloseManageOnlyMinutes,
@@ -220,6 +300,12 @@ function createStockScanner(options = {}) {
         approvedSymbols: symbols,
         excludedBuySymbols,
         recentTradePenalties,
+        antiChurnState,
+        antiChurnSummary,
+        antiChurnEnabled,
+        antiChurnRecentWinnerProtectionEnabled,
+        antiChurnTinyExitDollars,
+        antiChurnRapidRoundTripSeconds,
         minAdjustedRankScore,
         brokerState,
         partialFillSummary,
@@ -287,6 +373,8 @@ function createStockScanner(options = {}) {
         durationMs: state.lastScanDurationMs,
         portfolio,
         allocation,
+        antiChurnState,
+        antiChurnSummary,
         trailingState,
         partialFillSummary,
         skipSummary: skipTracker.summary(),
@@ -304,6 +392,8 @@ function createStockScanner(options = {}) {
         allocation,
         broker_state: brokerState,
         partial_fill_state: partialFillSummary,
+        anti_churn_state: antiChurnState,
+        anti_churn_summary: antiChurnSummary,
         skip_summary: skipTracker.summary(),
         recent_skips: skipTracker.recent(),
       };
@@ -397,13 +487,35 @@ function createStockScanner(options = {}) {
       maxStopDistanceDollars,
       allowRiskBudgetFractionalShares,
       riskBudgetRequireBrokerEquity,
+      antiChurnEnabled,
+      antiChurnRetentionHours,
+      antiChurnCleanWinCooldownSeconds,
+      antiChurnTrailingWinCooldownSeconds,
+      antiChurnSmallWinCooldownSeconds,
+      antiChurnGoodLossCooldownSeconds,
+      antiChurnBadLossCooldownSeconds,
+      antiChurnHardStopoutCooldownSeconds,
+      antiChurnRepeatedStopoutMultiplier,
+      antiChurnMaxCooldownSeconds,
+      antiChurnRecentWinnerProtectionEnabled,
+      antiChurnRecentWinnerWindowSeconds,
+      antiChurnTinyExitDollars,
+      antiChurnRapidRoundTripSeconds,
+      antiChurnWindowSeconds,
+      antiChurnGuardScoreThreshold,
+      antiChurnGuardTradeCount,
+      antiChurnGuardStopoutCount,
+      antiChurnGuardTinyExitCount,
+      antiChurnGuardRoundTripCount,
+      antiChurnGuardSymbolLoopCount,
+      antiChurnGuardSetupLoopCount,
       excludedBuySymbols,
     },
   };
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, antiChurnState = null, antiChurnSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     writeScannerRuntimeState({
       scanner: 'stock-scanner',
@@ -420,6 +532,8 @@ function createStockScanner(options = {}) {
       rejected_count: results.filter((result) => !isApprovedPostResult(result)).length,
       post_results: results.map(summarizePostResult),
       recent_trade_rank_penalties: summarizeRecentTradePenalties(recentTradePenalties),
+      anti_churn_state: antiChurnState || null,
+      anti_churn_summary: antiChurnSummary || summarizeAntiChurnState(antiChurnState || {}),
       candidate_rank_details: candidates
         .filter((candidate) => candidate.payload?.side === 'buy')
         .map((candidate) => ({
@@ -427,6 +541,7 @@ function createStockScanner(options = {}) {
           rank_score: roundScore(candidate.rankScore),
           base_rank_score: roundScore(candidate.baseRankScore ?? candidate.rankScore),
           recent_trade_rank_penalty: roundScore(candidate.recentTradeRankPenalty || 0),
+          setup_rank_penalty: roundScore(candidate.setupRankPenalty || 0),
           spread_rank_penalty: roundScore(candidate.spreadRankPenalty || 0),
           total_rank_penalty: roundScore(candidate.totalRankPenalty ?? candidate.recentTradeRankPenalty ?? 0),
           adjusted_rank_score: roundScore(candidate.rankScore),
@@ -435,6 +550,9 @@ function createStockScanner(options = {}) {
           sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
           risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
           structure_stop: candidate.payload?.structure_stop || null,
+          anti_churn_recent_winner_protected: Boolean(candidate.payload?.market_context?.scanner?.anti_churn_recent_winner_protected),
+          anti_churn_reason: candidate.recentTradePenalty?.reason || null,
+          setup_trade_penalty_reason: candidate.setupPenalty?.reason || null,
         })),
       skip_summary: skipSummary || {
         allocation_block: allocation?.accepted === false ? 1 : 0,
@@ -490,6 +608,12 @@ function createStockScanner(options = {}) {
         trailing_profit_start_dollars: trailingProfitStartDollars,
         trailing_profit_giveback_dollars: trailingProfitGivebackDollars,
       },
+      anti_churn_overview: antiChurnState ? {
+        active_churn_guard: Boolean(antiChurnState.churn_guard?.active),
+        symbol_cooldown_count: Object.keys(antiChurnState.symbol_cooldowns || {}).length,
+        setup_cooldown_count: Object.keys(antiChurnState.setup_cooldowns || {}).length,
+        recent_exit_count: Array.isArray(antiChurnState.recent_classifications) ? antiChurnState.recent_classifications.length : 0,
+      } : null,
       position_exit_state: candidates
         .filter((candidate) => candidate.exitState)
         .map((candidate) => candidate.exitState),
@@ -701,11 +825,12 @@ function buildCandidates(bundle, options = {}) {
     }
     const snapshot = bundle.snapshots[symbol] || {};
     const latestQuote = bundle.latestQuotes[symbol] || snapshot.latestQuote || snapshot.latest_quote || {};
-      const candidate = buildStockCandidateForSymbol(symbol, snapshot, latestQuote, {
-        receivedAt: now,
-        notional: options.notional,
-        allocation: options.allocation,
-        runId: options.runId,
+    const setupKey = resolveCandidateSetupKey({ symbol, snapshot, options });
+    const candidate = buildStockCandidateForSymbol(symbol, snapshot, latestQuote, {
+      receivedAt: now,
+      notional: options.notional,
+      allocation: options.allocation,
+      runId: options.runId,
       stopLossDollars: options.stopLossDollars,
       stopLossNotionalPct: options.stopLossNotionalPct,
       stopLossMaxDollars: options.stopLossMaxDollars,
@@ -736,7 +861,15 @@ function buildCandidates(bundle, options = {}) {
       maxStopDistanceDollars: options.maxStopDistanceDollars,
       allowRiskBudgetFractionalShares: options.allowRiskBudgetFractionalShares,
       riskBudgetRequireBrokerEquity: options.riskBudgetRequireBrokerEquity,
-      recentTradePenalty: getRecentTradePenalty(options.recentTradePenalties, symbol),
+      recentTradePenalty: getRecentTradePenalty(options.recentTradePenalties || options.antiChurnPenalties || options.antiChurnState?.symbol_cooldowns, symbol),
+      setupPenalty: setupKey ? getRecentTradePenalty(options.setupPenalties || options.antiChurnState?.setup_cooldowns, setupKey) : null,
+      setupKey,
+      antiChurnState: options.antiChurnState || null,
+      antiChurnSummary: options.antiChurnSummary || null,
+      antiChurnEnabled: options.antiChurnEnabled,
+      antiChurnRecentWinnerProtectionEnabled: options.antiChurnRecentWinnerProtectionEnabled,
+      antiChurnTinyExitDollars: options.antiChurnTinyExitDollars,
+      antiChurnRapidRoundTripSeconds: options.antiChurnRapidRoundTripSeconds,
       position_avg_entry_price: safeNumber(positionsBySymbol.get(symbol)?.avg_entry_price ?? positionsBySymbol.get(symbol)?.avgEntryPrice ?? null),
       position_qty_available: safeNumber(positionsBySymbol.get(symbol)?.qty ?? positionsBySymbol.get(symbol)?.quantity ?? positionsBySymbol.get(symbol)?.qty_available ?? null),
     });
@@ -796,6 +929,36 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
       remaining_qty: pendingPartialBuy.remaining_qty,
       last_reconciled_at: pendingPartialBuy.last_reconciled_at,
       recommended_action: pendingPartialBuy.recommended_action,
+    });
+  }
+  const nowMs = new Date(options.receivedAt || nowIso()).getTime();
+  const antiChurnState = options.antiChurnState || null;
+  const symbolCooldown = getRecentTradePenalty(antiChurnState?.symbol_cooldowns || null, symbol);
+  const setupCooldown = options.setupKey ? getRecentTradePenalty(antiChurnState?.setup_cooldowns || null, options.setupKey) : null;
+  if (antiChurnState?.churn_guard?.active) {
+    return skip('CHURN_RATE_GUARD_ACTIVE', {
+      churn_score: antiChurnState.churn_guard?.churn_score || null,
+      trade_count: antiChurnState.churn_guard?.trade_count || null,
+      expires_at: antiChurnState.churn_guard?.expires_at || null,
+      reason_codes: antiChurnState.churn_guard?.reason_codes || [],
+    });
+  }
+  if (isActiveCooldownEntry(symbolCooldown, nowMs)) {
+    return skip('ANTI_CHURN_COOLDOWN_ACTIVE', {
+      symbol,
+      penalty: safeNumber(symbolCooldown?.penalty, 0),
+      cooldown_until: symbolCooldown?.cooldown_until || null,
+      remaining_seconds: safeNumber(symbolCooldown?.remaining_seconds, 0),
+      reason_codes: symbolCooldown?.reason_codes || [],
+    });
+  }
+  if (isActiveCooldownEntry(setupCooldown, nowMs)) {
+    return skip('SETUP_COOLDOWN_ACTIVE', {
+      setup_key: options.setupKey,
+      penalty: safeNumber(setupCooldown?.penalty, 0),
+      cooldown_until: setupCooldown?.cooldown_until || null,
+      remaining_seconds: safeNumber(setupCooldown?.remaining_seconds, 0),
+      reason_codes: setupCooldown?.reason_codes || [],
     });
   }
   if (options.blockBuys) return skip('BUY_SIDE_BLOCKED');
@@ -1062,6 +1225,34 @@ function summarizeRecentTradePenalties(penalties) {
   }));
 }
 
+function isActiveCooldownEntry(entry, nowMs = Date.now()) {
+  if (!entry) return false;
+  const remainingSeconds = safeNumber(entry.remaining_seconds, 0);
+  if (remainingSeconds > 0) return true;
+  const cooldownUntil = entry.cooldown_until || entry.expires_at || null;
+  if (!cooldownUntil) return false;
+  const expiresAtMs = new Date(cooldownUntil).getTime();
+  return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
+}
+
+function resolveCandidateSetupKey({ symbol, snapshot, options = {} } = {}) {
+  const resolver = options.setupKeyResolver;
+  if (typeof resolver === 'function') {
+    const resolved = resolver({ symbol, snapshot, options });
+    if (resolved) return String(resolved).trim().toLowerCase() || null;
+  }
+  const setupKey = options.setupKey
+    || snapshot.setup_key
+    || snapshot.setupKey
+    || snapshot.market_context?.setup_key
+    || snapshot.marketContext?.setup_key
+    || snapshot.latestTrade?.setup_key
+    || snapshot.latestTrade?.setupKey
+    || null;
+  const normalized = String(setupKey || '').trim().toLowerCase();
+  return normalized || null;
+}
+
 function calculateEffectiveStopLossDollars({
   baseStopLossDollars = 1,
   stopLossNotionalPct = 0,
@@ -1167,6 +1358,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   const volumeScore = Math.log10(Math.max(10, safeNumber(snapshot.prevDailyBar?.v ?? snapshot.dailyBar?.v ?? 0, 0)));
   const baseRankScore = Math.abs(movePct) * 10 + volumeScore - (spreadPct * 3);
   const recentPenalty = options.recentTradePenalty || null;
+  const setupPenalty = options.setupPenalty || null;
   const stopoutCluster = getStopoutClusterBlock(recentPenalty, {
     blockMinutes: options.stopoutClusterBlockMinutes,
     blockCount: options.stopoutClusterBlockCount,
@@ -1182,12 +1374,13 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     return null;
   }
   const recentTradeRankPenalty = Math.max(0, safeNumber(recentPenalty?.penalty, 0));
+  const setupRankPenalty = Math.max(0, safeNumber(setupPenalty?.penalty, 0));
   const spreadRankPenalty = calculateSpreadRankPenalty(spreadPct, {
     thresholdPct: options.spreadRankPenaltyThresholdPct,
     penaltyPerPct: options.spreadRankPenaltyPerPct,
     cap: options.spreadRankPenaltyCap,
   });
-  const totalRankPenalty = recentTradeRankPenalty + spreadRankPenalty;
+  const totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty;
   const rankScore = baseRankScore - totalRankPenalty;
   const minAdjustedRankScore = safeNumber(options.minAdjustedRankScore, Number.NEGATIVE_INFINITY);
   if (rankScore < minAdjustedRankScore) {
@@ -1195,6 +1388,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
       symbol,
       base_rank_score: roundScore(baseRankScore),
       recent_trade_rank_penalty: roundScore(recentTradeRankPenalty),
+      setup_rank_penalty: roundScore(setupRankPenalty),
       spread_rank_penalty: roundScore(spreadRankPenalty),
       total_rank_penalty: roundScore(totalRankPenalty),
       adjusted_rank_score: roundScore(rankScore),
@@ -1294,9 +1488,11 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     rankScore,
     baseRankScore,
     recentTradeRankPenalty,
+    setupRankPenalty,
     spreadRankPenalty,
     totalRankPenalty,
     recentTradePenalty: recentPenalty,
+    setupPenalty,
   });
   const maxBuyRiskScore = safeNumber(options.maxBuyRiskScore, 70);
   const candidateRiskScore = safeNumber(candidate?.payload?.risk_score, null);
@@ -1330,7 +1526,7 @@ function getStopoutClusterBlock(recentPenalty, { blockMinutes = 30, blockCount =
     return { blocked: false, stop_exit_count: 0, required_count: requiredCount };
   }
   const stopComponents = (Array.isArray(recentPenalty.components) ? recentPenalty.components : [])
-    .filter((component) => component?.reason === 'recent_stop_exit')
+    .filter((component) => component?.reason === 'recent_stop_exit' || component?.reason === 'hard_stopout' || component?.reason === 'execution_bad_loss' || component?.reason === 'churn_exit' || component?.classification === 'hard_stopout' || component?.classification === 'execution_bad_loss' || component?.classification === 'churn_exit')
     .filter((component) => safeNumber(component.remaining_seconds, 0) > 0)
     .filter((component) => {
       const ageSeconds = safeNumber(component.age_seconds, 0);
@@ -1354,7 +1550,7 @@ function getStopoutClusterBlock(recentPenalty, { blockMinutes = 30, blockCount =
   };
 }
 
-function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + spreadRankPenalty, recentTradePenalty = null, exitState = null }) {
+function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, exitState = null }) {
   const receivedAt = options.receivedAt || nowIso();
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
@@ -1405,12 +1601,16 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       rank_score: side === 'buy' ? roundScore(rankScore) : null,
       base_rank_score: side === 'buy' ? roundScore(baseRankScore) : null,
       recent_trade_rank_penalty: side === 'buy' ? roundScore(recentTradeRankPenalty) : 0,
+      setup_rank_penalty: side === 'buy' ? roundScore(setupRankPenalty) : 0,
       spread_rank_penalty: side === 'buy' ? roundScore(spreadRankPenalty) : 0,
       total_rank_penalty: side === 'buy' ? roundScore(totalRankPenalty) : 0,
       adjusted_rank_score: side === 'buy' ? roundScore(rankScore) : null,
       min_adjusted_rank_score: side === 'buy' ? roundScore(safeNumber(options.minAdjustedRankScore, Number.NEGATIVE_INFINITY)) : null,
       recent_trade_at: side === 'buy' ? recentTradePenalty?.last_traded_at || null : null,
       recent_trade_penalty_reason: side === 'buy' ? recentTradePenalty?.reason || null : null,
+      setup_trade_at: side === 'buy' ? setupPenalty?.last_traded_at || null : null,
+      setup_trade_penalty_reason: side === 'buy' ? setupPenalty?.reason || null : null,
+      anti_churn_recent_winner_protected: side === 'buy' ? Boolean(recentTradePenalty?.recent_winner_protected || setupPenalty?.recent_winner_protected) : false,
       sizing_method: side === 'buy' ? sizingMethod : null,
       risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
       structure_stop: side === 'buy' ? structureStop : null,
@@ -1498,9 +1698,11 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     rankScore,
     baseRankScore,
     recentTradeRankPenalty,
+    setupRankPenalty,
     spreadRankPenalty,
     totalRankPenalty,
     recentTradePenalty,
+    setupPenalty,
     endpoint: 'paper-order',
     payload,
     exitState,
