@@ -106,6 +106,50 @@ test('stock scanner allows fractional stock buys when the budget is below one sh
   assert.equal(candidate.payload.supports_fractional_shares, true);
 });
 
+test('stock scanner keeps fixed-notional sizing details when risk-budget sizing is disabled', () => {
+  const candidate = buildStockCandidateForSymbol('MU', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+  });
+
+  assert(candidate);
+  assert.equal(candidate.payload.sizing_method, 'fixed_notional');
+  assert.equal(candidate.payload.notional, 150);
+  assert.equal(candidate.payload.quantity, null);
+  assert.equal(candidate.payload.risk_budget_sizing, null);
+  assert.equal(candidate.payload.structure_stop, null);
+});
+
+test('stock scanner writes risk-budget sizing and structure stop details when enabled', () => {
+  const candidate = buildStockCandidateForSymbol('MU', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    riskBudgetSizingEnabled: true,
+    maxRiskPerTradeDollars: 1,
+    maxRiskPerTradePctEquity: 1,
+    minStopDistanceDollars: 0.25,
+    maxStopDistanceDollars: 2,
+    allowRiskBudgetFractionalShares: true,
+    riskBudgetRequireBrokerEquity: true,
+    portfolio: {
+      account: { equity: '1000', cash: '500', buying_power: '500' },
+      cash: 500,
+      buying_power: 500,
+    },
+  });
+
+  assert(candidate);
+  assert.equal(candidate.payload.sizing_method, 'risk_budget');
+  assert.equal(candidate.payload.risk_budget_sizing.accepted, true);
+  assert.equal(candidate.payload.structure_stop.accepted, true);
+  assert.equal(candidate.payload.structure_stop.method, 'swing_low');
+  assert.equal(candidate.payload.notional <= 150, true);
+  assert.equal(candidate.payload.stop_loss, candidate.payload.structure_stop.stop_price);
+  assert.equal(candidate.payload.market_context.scanner.sizing_method, 'risk_budget');
+});
+
 test('stock scanner applies a 20 point rank penalty to a recent sell symbol', () => {
   const plain = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',

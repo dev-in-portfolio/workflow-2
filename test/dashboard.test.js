@@ -94,6 +94,21 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       },
     },
   }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'logs', 'scanner-runtime.json'), JSON.stringify({
+    scanner: 'stock-scanner',
+    mode: 'live-market',
+    last_scan_time: '2026-06-19T15:01:00.000Z',
+    risk_budget_sizing: {
+      enabled: true,
+      max_risk_per_trade_dollars: 1,
+      latest_candidates: [{
+        symbol: 'MU',
+        sizing_method: 'risk_budget',
+        risk_budget_sizing: { accepted: true, notional: 120, quantity: 1.5 },
+        structure_stop: { accepted: true, method: 'swing_low', stop_distance: 0.5 },
+      }],
+    },
+  }, null, 2));
 
   const trader = http.createServer((req, res) => {
     const payloads = {
@@ -134,6 +149,14 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       POSITION_STOP_LOSS_MAX_DOLLARS: '2.50',
       TRAILING_PROFIT_START_DOLLARS: '0.50',
       TRAILING_PROFIT_GIVEBACK_DOLLARS: '0.30',
+      RISK_BUDGET_SIZING_ENABLED: 'true',
+      MAX_RISK_PER_TRADE_DOLLARS: '1',
+      MAX_RISK_PER_TRADE_PCT_EQUITY: '0.5',
+      MAX_TRADE_NOTIONAL: '150',
+      MIN_STOP_DISTANCE_DOLLARS: '0.25',
+      MAX_STOP_DISTANCE_DOLLARS: '2',
+      ALLOW_RISK_BUDGET_FRACTIONAL_SHARES: 'true',
+      RISK_BUDGET_REQUIRE_BROKER_EQUITY: 'true',
     },
     fetchImpl: global.fetch,
   }, {
@@ -153,9 +176,15 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.reconciliation_summary.mismatch_count, 1);
   assert.equal(snapshot.live.partial_fill_summary.count, 1);
   assert.deepEqual(snapshot.live.partial_fill_summary.blocked_symbols, ['AAPL']);
+  assert.equal(snapshot.live.risk_budget_sizing.config.enabled, true);
+  assert.equal(snapshot.live.risk_budget_sizing.config.max_risk_per_trade_dollars, 1);
+  assert.equal(snapshot.live.risk_budget_sizing.runtime.enabled, true);
+  assert.equal(snapshot.live.risk_budget_sizing.latest_candidates[0].symbol, 'MU');
   assert.equal(snapshot.summary.reconciliation_status, 'WARN');
   assert.equal(snapshot.summary.reconciliation_mismatch_count, 1);
   assert.equal(snapshot.summary.partial_fill_count, 1);
+  assert.equal(snapshot.summary.risk_budget_sizing_enabled, true);
+  assert.equal(snapshot.summary.risk_budget_latest_candidate_count, 1);
   assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
   assert.equal(snapshot.file_snapshots.broker_local_reconciliation.exists, true);
   assert.equal(snapshot.file_snapshots.partial_fill_state.exists, true);

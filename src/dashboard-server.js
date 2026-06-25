@@ -22,7 +22,37 @@ const DEFAULT_REFRESH_MAX_AGE_MS = 2_000;
 const DEFAULT_RECENT_ENTRY_LIMIT = 12;
 const DEFAULT_LOG_LINE_LIMIT = 20;
 const DASHBOARD_RUNTIME_VERSION = '2026-06-21.live-market-simplified.1';
-const execFileAsync = promisify(execFile);
+const execFileAsync = (file, args, options = {}) => {
+  if (process.platform === 'win32') {
+    const tempDir = process.env.TEMP || 'C:\\Windows\\Temp';
+    const rand = Math.random().toString(36).substring(2, 15);
+    const vbsPath = path.join(tempDir, `run-${rand}.vbs`);
+    const outPath = path.join(tempDir, `out-${rand}.txt`);
+    
+    const formattedCmd = [file, ...args].map((arg) => {
+      if (/[ "()&^|<>]/g.test(arg) || arg === '') {
+        return '"' + arg.replace(/"/g, '""') + '"';
+      }
+      return arg;
+    }).join(' ');
+
+    const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\ncode = WshShell.Run("cmd.exe /c ${formattedCmd.replace(/"/g, '""')} > ""${outPath}""", 0, True)\nWScript.Quit code\n`;
+    
+    return fs.promises.writeFile(vbsPath, vbsContent, 'utf8')
+      .then(() => promisify(execFile)('wscript.exe', [vbsPath], { windowsHide: true }))
+      .then(() => {
+        if (fs.existsSync(outPath)) {
+          return fs.promises.readFile(outPath, 'utf8').then(stdout => ({ stdout, stderr: '' }));
+        }
+        return { stdout: '', stderr: '' };
+      })
+      .finally(() => {
+        try { if (fs.existsSync(vbsPath)) fs.unlinkSync(vbsPath); } catch {}
+        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
+      });
+  }
+  return promisify(execFile)(file, args, options);
+};
 
 function createDashboardServer(options = {}) {
   const state = {
@@ -324,6 +354,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       stop_loss_max_dollars: liveMarketRules.stop_loss_max_dollars,
       trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
       trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
+      risk_budget_sizing: liveMarketRules.risk_budget_sizing,
     },
     live: {
       status,
@@ -344,6 +375,11 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       reconciliation_summary: summarizeBrokerLocalReconciliation(brokerLocalReconciliation),
       partial_fill_state: partialFillState || null,
       partial_fill_summary: partialFillSummary,
+      risk_budget_sizing: {
+        config: liveMarketRules.risk_budget_sizing,
+        runtime: scannerRuntimeFile?.risk_budget_sizing || null,
+        latest_candidates: scannerRuntimeFile?.risk_budget_sizing?.latest_candidates || scannerRuntimeFile?.candidate_rank_details || [],
+      },
       exit_management: exitManagement,
       exit_protection: exitProtection,
       broker_state_availability: {
@@ -404,6 +440,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       preflight: preflightLatest,
       brokerLocalReconciliation,
       partialFillSummary,
+      scannerRuntime: scannerRuntimeFile,
     }),
     timestamp: now,
   };
@@ -1382,7 +1419,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, scannerRuntime = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1406,6 +1443,8 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     partial_fill_count: safeNumber(partialFillSummary?.count, 0),
     partial_fill_blocked_symbols: partialFillSummary?.blocked_symbols || [],
     partial_fill_reserved_buy_notional: safeNumber(partialFillSummary?.reserved_buy_notional, 0),
+    risk_budget_sizing_enabled: Boolean(liveMarketRules.risk_budget_sizing?.enabled),
+    risk_budget_latest_candidate_count: Array.isArray(scannerRuntime?.risk_budget_sizing?.latest_candidates) ? scannerRuntime.risk_budget_sizing.latest_candidates.length : 0,
     workflow_state: control?.workflow?.status || 'unknown',
     scanner_profile: control?.scanner?.profile || control?.workflow?.desired_scanner_profile || null,
     trader_mode: status?.mode || null,
@@ -1424,6 +1463,7 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     stop_loss_max_dollars: liveMarketRules.stop_loss_max_dollars,
     trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
     trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
+    risk_budget_sizing: liveMarketRules.risk_budget_sizing,
     approved_symbols: liveMarketRules.approved_symbols,
     position_size_multiplier: safeNumber(activePolicySnapshot?.policy?.positionSizeMultiplier, null),
     recent_activity_count: recentEntries.paperOutcomes.length + recentEntries.riskDecisions.length + recentEntries.signals.length,
@@ -1645,6 +1685,16 @@ function resolveLiveMarketRules(env = {}) {
     stop_loss_max_dollars: safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5),
     trailing_profit_start_dollars: safeNumber(env.TRAILING_PROFIT_START_DOLLARS, 0.5),
     trailing_profit_giveback_dollars: safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 0.3),
+    risk_budget_sizing: {
+      enabled: parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED),
+      max_risk_per_trade_dollars: safeNumber(env.MAX_RISK_PER_TRADE_DOLLARS, 0),
+      max_risk_per_trade_pct_equity: safeNumber(env.MAX_RISK_PER_TRADE_PCT_EQUITY, 0),
+      max_trade_notional: safeNumber(env.MAX_TRADE_NOTIONAL, 0),
+      min_stop_distance_dollars: safeNumber(env.MIN_STOP_DISTANCE_DOLLARS, 0.01),
+      max_stop_distance_dollars: safeNumber(env.MAX_STOP_DISTANCE_DOLLARS, 0),
+      allow_fractional_shares: parseBoolForDrift(env.ALLOW_RISK_BUDGET_FRACTIONAL_SHARES),
+      require_broker_equity: env.RISK_BUDGET_REQUIRE_BROKER_EQUITY === undefined ? true : parseBoolForDrift(env.RISK_BUDGET_REQUIRE_BROKER_EQUITY),
+    },
   };
 }
 

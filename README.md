@@ -80,6 +80,14 @@ The repo ships with these defaults:
 - `POSITION_STOP_LOSS_DOLLARS=1`
 - `POSITION_STOP_LOSS_NOTIONAL_PCT=0.75`
 - `POSITION_STOP_LOSS_MAX_DOLLARS=2.5`
+- `RISK_BUDGET_SIZING_ENABLED=false`
+- `MAX_RISK_PER_TRADE_DOLLARS=0`
+- `MAX_RISK_PER_TRADE_PCT_EQUITY=0`
+- `MAX_TRADE_NOTIONAL=0`
+- `MIN_STOP_DISTANCE_DOLLARS=0.01`
+- `MAX_STOP_DISTANCE_DOLLARS=0`
+- `ALLOW_RISK_BUDGET_FRACTIONAL_SHARES=false`
+- `RISK_BUDGET_REQUIRE_BROKER_EQUITY=true`
 - `TRAILING_PROFIT_START_DOLLARS=0.5`
 - `TRAILING_PROFIT_GIVEBACK_DOLLARS=0.3`
 - `AUTO_POLICY_REFRESH=false`
@@ -88,7 +96,7 @@ The repo ships with these defaults:
 - `AUTO_POLICY_REFRESH_MIN_PAPER_OUTCOMES=1`
 - `ALPACA_EXECUTION_ENABLED=false`
 
-The config loader rejects unsafe live-trading combinations.
+The config loader rejects unsafe live-trading combinations. Risk-budget sizing and structure-aware stop selection are optional and disabled by default; when disabled, the scanner keeps the fixed-notional sizing path.
 See [.env.example](/C:/Users/dtoro/OneDrive/Documents/Workflow2/.env.example) for safe defaults. For local live operation, `.env.local` should set `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, `ALPACA_EXECUTION_ENABLED=true`, and the Alpaca credentials/base URL.
 
 ## Running Tests

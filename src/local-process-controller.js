@@ -7,7 +7,37 @@ const { nowIso } = require('./util');
 const { appendOperatorTimelineEvent } = require('./operator-timeline');
 const { acquireProcessLock, listProcessLocks, releaseProcessLock } = require('./process-lock');
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = (file, args, options = {}) => {
+  if (process.platform === 'win32') {
+    const tempDir = process.env.TEMP || 'C:\\Windows\\Temp';
+    const rand = Math.random().toString(36).substring(2, 15);
+    const vbsPath = path.join(tempDir, `run-${rand}.vbs`);
+    const outPath = path.join(tempDir, `out-${rand}.txt`);
+    
+    const formattedCmd = [file, ...args].map((arg) => {
+      if (/[ "()&^|<>]/g.test(arg) || arg === '') {
+        return '"' + arg.replace(/"/g, '""') + '"';
+      }
+      return arg;
+    }).join(' ');
+
+    const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\ncode = WshShell.Run("cmd.exe /c ${formattedCmd.replace(/"/g, '""')} > ""${outPath}""", 0, True)\nWScript.Quit code\n`;
+    
+    return fs.promises.writeFile(vbsPath, vbsContent, 'utf8')
+      .then(() => promisify(execFile)('wscript.exe', [vbsPath], { windowsHide: true }))
+      .then(() => {
+        if (fs.existsSync(outPath)) {
+          return fs.promises.readFile(outPath, 'utf8').then(stdout => ({ stdout, stderr: '' }));
+        }
+        return { stdout: '', stderr: '' };
+      })
+      .finally(() => {
+        try { if (fs.existsSync(vbsPath)) fs.unlinkSync(vbsPath); } catch {}
+        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
+      });
+  }
+  return promisify(execFile)(file, args, options);
+};
 
 const SCANNER_PROFILES = {
   'live-market': {

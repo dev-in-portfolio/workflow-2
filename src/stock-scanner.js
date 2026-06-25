@@ -10,6 +10,8 @@ const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
 const { assertSignalCandidate } = require('./module-contracts');
 const { loadPartialFillState, summarizePartialFillState } = require('./partial-fill-state');
+const { calculateRiskBudgetSize } = require('./risk-budget-sizing');
+const { calculateStructureAwareStop } = require('./structure-stops');
 
 function createStockScanner(options = {}) {
   const env = options.env || process.env;
@@ -63,6 +65,14 @@ function createStockScanner(options = {}) {
   const nearCloseManageOnlyMinutes = Math.max(0, safeNumber(options.nearCloseManageOnlyMinutes ?? env.STOCK_SCANNER_NEAR_CLOSE_MANAGE_ONLY_MINUTES, 15));
   const volatilityStopEnabled = options.volatilityStopEnabled ?? parseBool(env.STOCK_SCANNER_VOLATILITY_STOP_ENABLED, false);
   const marketQualityRankingEnabled = options.marketQualityRankingEnabled ?? parseBool(env.STOCK_SCANNER_MARKET_QUALITY_RANKING_ENABLED, false);
+  const riskBudgetSizingEnabled = options.riskBudgetSizingEnabled ?? parseBool(env.RISK_BUDGET_SIZING_ENABLED, false);
+  const maxRiskPerTradeDollars = Math.max(0, safeNumber(options.maxRiskPerTradeDollars ?? env.MAX_RISK_PER_TRADE_DOLLARS, 0));
+  const maxRiskPerTradePctEquity = Math.max(0, safeNumber(options.maxRiskPerTradePctEquity ?? env.MAX_RISK_PER_TRADE_PCT_EQUITY, 0));
+  const maxTradeNotional = Math.max(0, safeNumber(options.maxTradeNotional ?? env.MAX_TRADE_NOTIONAL, 0));
+  const minStopDistanceDollars = Math.max(0.01, safeNumber(options.minStopDistanceDollars ?? env.MIN_STOP_DISTANCE_DOLLARS, 0.01));
+  const maxStopDistanceDollars = Math.max(0, safeNumber(options.maxStopDistanceDollars ?? env.MAX_STOP_DISTANCE_DOLLARS, 0));
+  const allowRiskBudgetFractionalShares = options.allowRiskBudgetFractionalShares ?? parseBool(env.ALLOW_RISK_BUDGET_FRACTIONAL_SHARES, false);
+  const riskBudgetRequireBrokerEquity = options.riskBudgetRequireBrokerEquity ?? parseBool(env.RISK_BUDGET_REQUIRE_BROKER_EQUITY, true);
 
   const state = {
     running: false,
@@ -223,7 +233,16 @@ function createStockScanner(options = {}) {
         optionalHooks: {
           volatility_stop_enabled: Boolean(volatilityStopEnabled),
           market_quality_ranking_enabled: Boolean(marketQualityRankingEnabled),
+          risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
         },
+        riskBudgetSizingEnabled,
+        maxRiskPerTradeDollars,
+        maxRiskPerTradePctEquity,
+        maxTradeNotional,
+        minStopDistanceDollars,
+        maxStopDistanceDollars,
+        allowRiskBudgetFractionalShares,
+        riskBudgetRequireBrokerEquity,
       });
 
       const results = [];
@@ -370,6 +389,14 @@ function createStockScanner(options = {}) {
       nearCloseManageOnlyMinutes,
       volatilityStopEnabled,
       marketQualityRankingEnabled,
+      riskBudgetSizingEnabled,
+      maxRiskPerTradeDollars,
+      maxRiskPerTradePctEquity,
+      maxTradeNotional,
+      minStopDistanceDollars,
+      maxStopDistanceDollars,
+      allowRiskBudgetFractionalShares,
+      riskBudgetRequireBrokerEquity,
       excludedBuySymbols,
     },
   };
@@ -405,6 +432,9 @@ function createStockScanner(options = {}) {
           adjusted_rank_score: roundScore(candidate.rankScore),
           min_adjusted_rank_score: roundScore(minAdjustedRankScore),
           recent_trade_at: candidate.recentTradePenalty?.last_traded_at || null,
+          sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+          risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
+          structure_stop: candidate.payload?.structure_stop || null,
         })),
       skip_summary: skipSummary || {
         allocation_block: allocation?.accepted === false ? 1 : 0,
@@ -427,6 +457,25 @@ function createStockScanner(options = {}) {
       optional_hooks: optionalHooks || {
         volatility_stop_enabled: Boolean(volatilityStopEnabled),
         market_quality_ranking_enabled: Boolean(marketQualityRankingEnabled),
+        risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
+      },
+      risk_budget_sizing: {
+        enabled: Boolean(riskBudgetSizingEnabled),
+        max_risk_per_trade_dollars: maxRiskPerTradeDollars,
+        max_risk_per_trade_pct_equity: maxRiskPerTradePctEquity,
+        max_trade_notional: maxTradeNotional,
+        min_stop_distance_dollars: minStopDistanceDollars,
+        max_stop_distance_dollars: maxStopDistanceDollars,
+        allow_fractional_shares: Boolean(allowRiskBudgetFractionalShares),
+        require_broker_equity: Boolean(riskBudgetRequireBrokerEquity),
+        latest_candidates: candidates
+          .filter((candidate) => candidate.payload?.side === 'buy')
+          .map((candidate) => ({
+            symbol: candidate.symbol,
+            sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+            risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
+            structure_stop: candidate.payload?.structure_stop || null,
+          })),
       },
       rank_floor: {
         min_adjusted_rank_score: roundScore(minAdjustedRankScore),
@@ -679,6 +728,14 @@ function buildCandidates(bundle, options = {}) {
       sellMaxPriceDiffPct: options.sellMaxPriceDiffPct,
       assetType: 'stock',
       excludedBuySymbols: options.excludedBuySymbols,
+      riskBudgetSizingEnabled: options.riskBudgetSizingEnabled,
+      maxRiskPerTradeDollars: options.maxRiskPerTradeDollars,
+      maxRiskPerTradePctEquity: options.maxRiskPerTradePctEquity,
+      maxTradeNotional: options.maxTradeNotional,
+      minStopDistanceDollars: options.minStopDistanceDollars,
+      maxStopDistanceDollars: options.maxStopDistanceDollars,
+      allowRiskBudgetFractionalShares: options.allowRiskBudgetFractionalShares,
+      riskBudgetRequireBrokerEquity: options.riskBudgetRequireBrokerEquity,
       recentTradePenalty: getRecentTradePenalty(options.recentTradePenalties, symbol),
       position_avg_entry_price: safeNumber(positionsBySymbol.get(symbol)?.avg_entry_price ?? positionsBySymbol.get(symbol)?.avgEntryPrice ?? null),
       position_qty_available: safeNumber(positionsBySymbol.get(symbol)?.qty ?? positionsBySymbol.get(symbol)?.quantity ?? positionsBySymbol.get(symbol)?.qty_available ?? null),
@@ -1145,6 +1202,78 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     });
     return null;
   }
+  let candidateQuantity = null;
+  let candidateNotional = notional;
+  let candidateSupportsFractionalShares = true;
+  let stopLossOverride = null;
+  let takeProfitOverride = null;
+  let riskBudgetSizing = null;
+  let structureStop = null;
+  let sizingMethod = 'fixed_notional';
+  if (options.riskBudgetSizingEnabled) {
+    structureStop = calculateStructureAwareStop({
+      symbol,
+      side: 'buy',
+      price: currentPrice,
+      marketData: {
+        ...snapshot,
+        spread_pct: spreadPct,
+        minute_low: snapshot.minuteBar?.l,
+        minute_high: snapshot.minuteBar?.h,
+        low_price: snapshot.minuteBar?.l ?? snapshot.dailyBar?.l ?? null,
+        high_price: snapshot.minuteBar?.h ?? snapshot.dailyBar?.h ?? null,
+      },
+      fixedStopDollars: options.stopLossDollars,
+      spreadPct,
+      minStopDistanceDollars: options.minStopDistanceDollars,
+      maxStopDistanceDollars: options.maxStopDistanceDollars > 0 ? options.maxStopDistanceDollars : null,
+    });
+    if (!structureStop.accepted) {
+      options.skipTracker?.record?.(structureStop.reason_codes?.[0] || 'STRUCTURE_STOP_UNAVAILABLE', {
+        symbol,
+        structure_stop: structureStop,
+      });
+      return null;
+    }
+    const accountEquity = safeNumber(options.portfolio?.account_equity ?? options.portfolio?.equity ?? options.portfolio?.portfolio_value ?? options.portfolio?.account?.equity ?? null, null);
+    const buyingPower = safeNumber(options.portfolio?.buying_power ?? options.portfolio?.buyingPower ?? options.portfolio?.account?.buying_power ?? null, null);
+    const cash = safeNumber(options.portfolio?.cash ?? options.portfolio?.account?.cash ?? null, null);
+    const maxNotional = safeNumber(options.maxTradeNotional, 0) > 0 ? options.maxTradeNotional : notional;
+    riskBudgetSizing = calculateRiskBudgetSize({
+      symbol,
+      side: 'buy',
+      price: currentPrice,
+      stopPrice: structureStop.stop_price,
+      stopDistance: structureStop.stop_distance,
+      maxRiskDollars: options.maxRiskPerTradeDollars,
+      maxRiskPctEquity: options.maxRiskPerTradePctEquity,
+      accountEquity,
+      buyingPower,
+      cash,
+      maxNotional,
+      minNotional: options.allocation?.floor ?? 0,
+      minStopDistanceDollars: options.minStopDistanceDollars,
+      maxStopDistanceDollars: options.maxStopDistanceDollars > 0 ? options.maxStopDistanceDollars : null,
+      allowFractionalShares: options.allowRiskBudgetFractionalShares,
+      requireBrokerEquity: options.riskBudgetRequireBrokerEquity,
+    });
+    if (!riskBudgetSizing.accepted) {
+      for (const reason of riskBudgetSizing.reason_codes || ['RISK_BUDGET_SIZING_REJECTED']) {
+        options.skipTracker?.record?.(reason, {
+          symbol,
+          risk_budget_sizing: riskBudgetSizing,
+          structure_stop: structureStop,
+        });
+      }
+      return null;
+    }
+    candidateQuantity = riskBudgetSizing.quantity;
+    candidateNotional = riskBudgetSizing.notional;
+    candidateSupportsFractionalShares = riskBudgetSizing.allow_fractional_shares;
+    stopLossOverride = structureStop.stop_price;
+    takeProfitOverride = roundEquityPrice(currentPrice + Math.max(structureStop.stop_distance * 1.8, currentPrice * 0.02));
+    sizingMethod = 'risk_budget';
+  }
   const candidate = buildSignalCandidate({
     symbol,
     side: 'buy',
@@ -1154,8 +1283,14 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     snapshot,
     latestQuote,
     options,
-    quantity: null,
-    notional,
+    quantity: candidateQuantity,
+    notional: candidateNotional,
+    supportsFractionalShares: candidateSupportsFractionalShares,
+    stopLossOverride,
+    takeProfitOverride,
+    sizingMethod,
+    riskBudgetSizing,
+    structureStop,
     rankScore,
     baseRankScore,
     recentTradeRankPenalty,
@@ -1219,7 +1354,7 @@ function getStopoutClusterBlock(recentPenalty, { blockMinutes = 30, blockCount =
   };
 }
 
-function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + spreadRankPenalty, recentTradePenalty = null, exitState = null }) {
+function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + spreadRankPenalty, recentTradePenalty = null, exitState = null }) {
   const receivedAt = options.receivedAt || nowIso();
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
@@ -1276,6 +1411,9 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       min_adjusted_rank_score: side === 'buy' ? roundScore(safeNumber(options.minAdjustedRankScore, Number.NEGATIVE_INFINITY)) : null,
       recent_trade_at: side === 'buy' ? recentTradePenalty?.last_traded_at || null : null,
       recent_trade_penalty_reason: side === 'buy' ? recentTradePenalty?.reason || null : null,
+      sizing_method: side === 'buy' ? sizingMethod : null,
+      risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
+      structure_stop: side === 'buy' ? structureStop : null,
     },
     volume,
     alpaca_quote: normalizedPrimary,
@@ -1304,8 +1442,16 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
   }
   const signalId = `stock_${hashObject({ symbol, side, receivedAt, price: currentPrice, runId: options.runId || null }).slice(0, 16)}`;
   const estimatedQty = side === 'buy' && notional ? notional / currentPrice : Math.max(0.000001, quantity || 0);
-  const riskPerShare = side === 'buy' && estimatedQty > 0 ? (options.stopLossDollars ?? 1) / estimatedQty : currentPrice * 0.01;
+  const riskPerShare = side === 'buy' && estimatedQty > 0
+    ? (Number.isFinite(safeNumber(stopLossOverride, null)) ? Math.abs(currentPrice - stopLossOverride) : (options.stopLossDollars ?? 1) / estimatedQty)
+    : currentPrice * 0.01;
   const rewardPerShare = Math.max(riskPerShare * 1.8, currentPrice * 0.02);
+  const stopLoss = Number.isFinite(safeNumber(stopLossOverride, null))
+    ? stopLossOverride
+    : roundEquityPrice(side === 'sell' ? currentPrice * 1.01 : Math.max(0.01, currentPrice - riskPerShare));
+  const takeProfit = Number.isFinite(safeNumber(takeProfitOverride, null))
+    ? takeProfitOverride
+    : roundEquityPrice(side === 'sell' ? Math.max(0.01, currentPrice * 0.99) : currentPrice + rewardPerShare);
   const payload = {
     signal_id: signalId,
     request_id: signalId,
@@ -1323,12 +1469,16 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     price: currentPrice,
     quantity,
     notional,
-    supports_fractional_shares: side === 'buy' ? true : null,
+    supports_fractional_shares: side === 'buy' ? Boolean(supportsFractionalShares) : null,
     requested_notional: side === 'buy' ? options.allocation?.requested ?? notional : null,
-    submitted_notional: side === 'buy' ? options.allocation?.notional ?? notional : null,
+    submitted_notional: side === 'buy' ? notional : null,
     min_buy_notional: side === 'buy' ? options.allocation?.floor ?? null : null,
-    stop_loss: roundEquityPrice(side === 'sell' ? currentPrice * 1.01 : Math.max(0.01, currentPrice - riskPerShare)),
-    take_profit: roundEquityPrice(side === 'sell' ? Math.max(0.01, currentPrice * 0.99) : currentPrice + rewardPerShare),
+    stop_loss: stopLoss,
+    take_profit: takeProfit,
+    sizing_method: side === 'buy' ? sizingMethod : null,
+    risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
+    structure_stop: side === 'buy' ? structureStop : null,
+    risk_budget: side === 'buy' ? riskBudgetSizing : null,
     confidence_score: normalizedPrimary.confidence_score,
     freshness_score: 100,
     source_quality_score: clamp(80 + (providerConfirmation?.confirmed ? 10 : -10), 0, 100),
