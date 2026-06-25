@@ -197,7 +197,7 @@ function dashboardCandidates(env = process.env) {
   if (explicit) {
     base.push(explicit);
   }
-  const preferredPort = Number(env.DASHBOARD_PORT || DEFAULT_DASHBOARD_PORT);
+  const preferredPort = Number(env.TRADER_DASHBOARD_PORT || env.DASHBOARD_PORT || DEFAULT_DASHBOARD_PORT);
   const firstPort = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : DEFAULT_DASHBOARD_PORT;
   for (let offset = 0; offset < DASHBOARD_PROBE_LIMIT; offset += 1) {
     base.push(`http://127.0.0.1:${firstPort + offset}`);

@@ -46,12 +46,18 @@ function render(snapshot) {
     ? Number(summary.daily_change)
     : Number(summary.paper_pnl);
   const exitPositions = Array.isArray(live?.exit_management?.positions) ? live.exit_management.positions : [];
+  const freshness = evaluateFreshness(snapshot);
+  const scannerFreshness = evaluateFreshness(live?.scanner_runtime?.last_scan_time || live?.status?.last_request_at || null, { staleSeconds: 30, criticalSeconds: 120 });
+  const workflowState = summary.workflow_state || snapshot?.control?.workflow?.status || 'unknown';
+  const botStatus = resolveBotStatus({ freshness, workflowState, status: live?.status });
+  const brokerStatus = resolveBrokerStatus(live);
+  const scannerStatus = resolveScannerStatus(live, scannerFreshness);
 
   const openPositionCount = Number.isFinite(Number(summary.open_positions_count))
     ? summary.open_positions_count
     : summary.derived_open_positions_count;
   const lastTradeAge = summary.last_trade_at ? formatRelativeTime(summary.last_trade_at) : null;
-  const workflowState = summary.workflow_state || snapshot?.control?.workflow?.status || 'unknown';
+  updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus });
   $('openPositions').textContent = formatCount(openPositionCount);
   $('openPositionsHint').textContent = summary.open_positions_count_source === 'alpaca'
     ? 'Live broker count'
@@ -65,20 +71,95 @@ function render(snapshot) {
   $('buyingPower').textContent = formatCurrency(summary.account_buying_power ?? summary.account_cash);
   $('buyingPowerHint').textContent = Number.isFinite(Number(summary.account_cash)) ? `Cash ${formatCurrency(summary.account_cash)}` : 'Alpaca account';
   $('profitSummary').textContent = buildProfitNote(dailyChange, summary, snapshot);
-  $('profitStatusPill').textContent = Number.isFinite(dailyChange)
-    ? (dailyChange >= 0 ? 'Positive' : 'Negative')
-    : 'No data';
-  $('profitStatusPill').className = `pill ${Number.isFinite(dailyChange) ? (dailyChange >= 0 ? 'ok' : 'warn') : 'warn'}`;
+  $('profitStatusPill').textContent = botStatus.label;
+  $('profitStatusPill').className = `pill ${botStatus.pillTone}`;
   const statusCopy = Number.isFinite(dailyChange)
     ? `Daily Change is ${formatSignedCurrency(dailyChange)} from ${summary.daily_change_source || 'snapshot'}. Local history PnL is ${formatSignedCurrency(summary.paper_pnl)}.`
     : 'Waiting for live performance data.';
   const versionWarning = dashboardVersionWarning(snapshot);
-  $('profitStatusCopy').textContent = versionWarning || statusCopy;
-  $('profitStatusCopyAlt').textContent = versionWarning || statusCopy;
+  $('profitStatusCopy').textContent = versionWarning || `${statusCopy} ${freshness.message} Broker ${brokerStatus.message}. Scanner ${scannerStatus.message}.`;
+  $('profitStatusCopyAlt').textContent = versionWarning || `${statusCopy} ${freshness.message} Broker ${brokerStatus.message}. Scanner ${scannerStatus.message}.`;
   $('reportDate').textContent = snapshot?.live?.report?.date || snapshot?.live?.status?.started_at || missingText;
   renderPositionCard($('positionOne'), exitPositions[0], snapshot, { primary: true, slotLabel: 'Primary position' });
   renderPositionCard($('positionTwo'), exitPositions[1], snapshot, { primary: false, slotLabel: 'Secondary position' });
   renderRecentTrades(recentTrades, summary.last_trade_at);
+}
+
+function updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus }) {
+  setTag($('botStatusPill'), botStatus.label, botStatus.tone);
+  setTag($('dataFreshnessPill'), freshness.label, freshness.tone);
+  setTag($('brokerConnectionPill'), brokerStatus.label, brokerStatus.tone);
+  setTag($('scannerConnectionPill'), scannerStatus.label, scannerStatus.tone);
+}
+
+function setTag(element, label, tone) {
+  if (!element) return;
+  element.textContent = label;
+  element.className = `tag ${tone}`;
+}
+
+function evaluateFreshness(value, { staleSeconds = 30, criticalSeconds = 120 } = {}) {
+  const ageSeconds = ageInSeconds(value);
+  if (!Number.isFinite(ageSeconds)) {
+    return { label: 'WAITING', tone: 'amber', state: 'unknown', message: 'Freshness waiting.' };
+  }
+  if (ageSeconds >= criticalSeconds) {
+    return { label: `CRITICAL ${formatAge(ageSeconds)}`, tone: 'red', state: 'critical', message: `Data is ${formatAge(ageSeconds)} old.` };
+  }
+  if (ageSeconds >= staleSeconds) {
+    return { label: `STALE ${formatAge(ageSeconds)}`, tone: 'amber', state: 'stale', message: `Data is ${formatAge(ageSeconds)} old.` };
+  }
+  return { label: `LIVE ${formatAge(ageSeconds)}`, tone: 'green', state: 'fresh', message: `Data is ${formatAge(ageSeconds)} old.` };
+}
+
+function ageInSeconds(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, (Date.now() - date.getTime()) / 1000);
+}
+
+function formatAge(seconds) {
+  if (!Number.isFinite(seconds)) return 'unknown';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  return `${Math.round(seconds / 60)}m`;
+}
+
+function resolveBotStatus({ freshness, workflowState, status }) {
+  if (freshness.state === 'critical') {
+    return { label: 'CRITICAL', tone: 'red', pillTone: 'critical' };
+  }
+  if (freshness.state === 'stale') {
+    return { label: 'STALE', tone: 'amber', pillTone: 'warn' };
+  }
+  if (freshness.state === 'unknown') {
+    return { label: 'WAITING', tone: 'amber', pillTone: 'warn' };
+  }
+  const normalized = String(workflowState || status?.status || '').toLowerCase();
+  if (normalized === 'running') return { label: 'LIVE', tone: 'green', pillTone: 'ok' };
+  if (normalized === 'stopped' || normalized === 'paused') return { label: 'PAUSED', tone: 'amber', pillTone: 'warn' };
+  if (normalized === 'error') return { label: 'ERROR', tone: 'red', pillTone: 'critical' };
+  return { label: 'READY', tone: 'green', pillTone: 'ok' };
+}
+
+function resolveBrokerStatus(live) {
+  const state = live?.broker_state_availability || {};
+  const available = state.account_available !== false && state.positions_available !== false && state.open_orders_available !== false;
+  if (available) return { label: 'BROKER OK', tone: 'green', message: 'connected' };
+  const reason = Array.isArray(state.reason_codes) && state.reason_codes.length ? state.reason_codes[0] : 'BROKER DEGRADED';
+  return { label: 'BROKER DEGRADED', tone: 'amber', message: reason };
+}
+
+function resolveScannerStatus(live, scannerFreshness) {
+  if (scannerFreshness.state === 'critical') {
+    return { label: 'SCANNER CRITICAL', tone: 'red', message: scannerFreshness.message };
+  }
+  if (scannerFreshness.state === 'stale') {
+    return { label: 'SCANNER STALE', tone: 'amber', message: scannerFreshness.message };
+  }
+  const scanTime = live?.scanner_runtime?.last_scan_time;
+  if (!scanTime) return { label: 'WAITING', tone: 'amber', message: 'No scan yet.' };
+  return { label: 'SCANNER OK', tone: 'green', message: scannerFreshness.message };
 }
 
 function dashboardVersionWarning(snapshot) {

@@ -89,6 +89,11 @@ function createDashboardServer(options = {}) {
     '/alerts.js': path.join(dashboardDir, 'alerts.js'),
     '/control.js': path.join(dashboardDir, 'control.js'),
     '/styles.css': path.join(dashboardDir, 'styles.css'),
+    '/mobile.js': path.join(dashboardDir, 'mobile.js'),
+    '/sw.js': path.join(dashboardDir, 'sw.js'),
+    '/manifest.webmanifest': path.join(dashboardDir, 'manifest.webmanifest'),
+    '/icons/icon-192.png': path.join(dashboardDir, 'icons', 'icon-192.png'),
+    '/icons/icon-512.png': path.join(dashboardDir, 'icons', 'icon-512.png'),
   };
 
   const server = http.createServer(async (req, res) => {
@@ -1784,6 +1789,9 @@ function getContentType(filePath) {
   if (filePath.endsWith('.html')) return 'text/html; charset=utf-8';
   if (filePath.endsWith('.css')) return 'text/css; charset=utf-8';
   if (filePath.endsWith('.js')) return 'application/javascript; charset=utf-8';
+  if (filePath.endsWith('.webmanifest')) return 'application/manifest+json; charset=utf-8';
+  if (filePath.endsWith('.svg')) return 'image/svg+xml';
+  if (filePath.endsWith('.png')) return 'image/png';
   return 'application/octet-stream';
 }
 
@@ -1806,7 +1814,7 @@ function resolveTraderBaseUrlFromEnv(env = process.env) {
 }
 
 function resolvePreferredDashboardPort(env = process.env) {
-  const raw = Number(env.DASHBOARD_PORT || DEFAULT_DASHBOARD_PORT);
+  const raw = Number(env.TRADER_DASHBOARD_PORT || env.DASHBOARD_PORT || DEFAULT_DASHBOARD_PORT);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DASHBOARD_PORT;
 }
 

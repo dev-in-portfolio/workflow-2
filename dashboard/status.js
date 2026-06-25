@@ -30,19 +30,21 @@ function render(snapshot) {
   const scannerRuntime = live?.scanner_runtime || {};
   const exitManagement = live?.exit_management || {};
   const regime = snapshot?.regime || {};
-  const freshness = msAgo(snapshot?.timestamp || status?.timestamp);
+  const freshness = evaluateFreshness(snapshot?.timestamp || status?.timestamp);
+  const heartbeat = evaluateFreshness(status?.last_request_at || snapshot?.timestamp || null, { staleSeconds: 30, criticalSeconds: 120 });
 
   $('dashboardPort').textContent = snapshot?.dashboard?.port ? String(snapshot.dashboard.port) : '-';
   $('traderBaseUrl').textContent = snapshot?.dashboard?.trader_base_url || 'unresolved';
   $('regimeValue').textContent = regime.active || '-';
-  $('freshnessValue').textContent = freshness || 'stale';
-  $('statusPill').textContent = statusLabel(summary.trader_status);
-  $('statusPill').className = `pill ${status?.status === 'ok' ? 'ok' : status?.status ? 'warn' : 'critical'}`;
+  $('freshnessValue').textContent = freshness.label;
+  $('freshnessValue').className = `freshness-${freshness.state}`;
+  $('statusPill').textContent = statusLabel({ freshness, status, summary });
+  $('statusPill').className = `pill ${statusPillTone({ freshness, status, summary })}`;
   $('traderStateValue').textContent = status?.status || summary.trader_status || '-';
   $('modeValue').textContent = summary.trader_mode || '-';
   $('regimeValue').textContent = regime.active || '-';
   $('uptimeValue').textContent = formatMinutes(summary.uptime_minutes);
-  $('heartbeatValue').textContent = formatHeartbeat(status?.heartbeat_count, status?.last_request_at, snapshot?.timestamp);
+  $('heartbeatValue').textContent = formatHeartbeat(status?.heartbeat_count, status?.last_request_at, snapshot?.timestamp, heartbeat);
   $('marketOpenValue').textContent = regime.market_open ? 'Yes' : 'No';
   $('scannerScanValue').textContent = scannerRuntime.last_scan_time ? msAgo(scannerRuntime.last_scan_time) : '-';
   $('scannerSkipValue').textContent = topSkipReason(scannerRuntime.skip_summary);
@@ -142,18 +144,47 @@ function formatTime(value) {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function msAgo(value) {
+function evaluateFreshness(value, { staleSeconds = 30, criticalSeconds = 120 } = {}) {
+  const seconds = ageSeconds(value);
+  if (!Number.isFinite(seconds)) return { label: 'WAITING', state: 'unknown' };
+  if (seconds >= criticalSeconds) return { label: `CRITICAL ${shortAge(seconds)}`, state: 'critical' };
+  if (seconds >= staleSeconds) return { label: `STALE ${shortAge(seconds)}`, state: 'warn' };
+  return { label: `LIVE ${shortAge(seconds)}`, state: 'fresh' };
+}
+
+function ageSeconds(value) {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  const diff = Date.now() - date.getTime();
-  if (diff < 60_000) return `${Math.max(0, Math.round(diff / 1000))}s ago`;
-  return `${Math.max(0, Math.round(diff / 60_000))}m ago`;
+  return Math.max(0, (Date.now() - date.getTime()) / 1000);
 }
 
-function statusLabel(value) {
-  if (!value) return 'UNKNOWN';
-  return String(value).toUpperCase();
+function shortAge(seconds) {
+  if (!Number.isFinite(seconds)) return 'unknown';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  return `${Math.round(seconds / 60)}m`;
+}
+
+function msAgo(value) {
+  const seconds = ageSeconds(value);
+  if (!Number.isFinite(seconds)) return null;
+  return shortAge(seconds) + ' ago';
+}
+
+function statusLabel({ freshness, status, summary }) {
+  if (freshness.state === 'critical') return 'CRITICAL';
+  if (freshness.state === 'warn') return 'STALE';
+  if (status?.status) return String(status.status).toUpperCase();
+  if (summary?.trader_status) return String(summary.trader_status).toUpperCase();
+  return 'UNKNOWN';
+}
+
+function statusPillTone({ freshness, status }) {
+  if (freshness.state === 'critical') return 'critical';
+  if (freshness.state === 'warn') return 'warn';
+  if (status?.status === 'ok') return 'ok';
+  if (status?.status) return 'warn';
+  return freshness.state === 'unknown' ? 'warn' : 'ok';
 }
 
 function escapeHtml(value) {

@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { loadRuntimeEnv } = require('../src/runtime-env');
@@ -36,6 +37,7 @@ function listenWithFallback(server, preferredPort, options = {}) {
 function main(env = process.env) {
   const runtimeEnv = loadRuntimeEnv(env);
   const dashboardPort = resolveDashboardPort(runtimeEnv) || DEFAULT_DASHBOARD_PORT;
+  const runtimeStatePath = path.join(process.cwd(), 'data', 'runtime', 'dashboard-runtime.json');
   const server = createDashboardServer({
     env: runtimeEnv,
     runtimeEnv,
@@ -54,12 +56,30 @@ function main(env = process.env) {
     if (server.dashboardState) {
       server.dashboardState.dashboardPort = resolvedPort;
     }
+    try {
+      fs.mkdirSync(path.dirname(runtimeStatePath), { recursive: true });
+      fs.writeFileSync(runtimeStatePath, JSON.stringify({
+        status: 'listening',
+        service: 'local-dashboard',
+        dashboard_base_url: baseUrl,
+        dashboard_port: resolvedPort,
+        preferred_port: dashboardPort,
+        runtime_state_path: runtimeStatePath,
+        pid: process.pid,
+        started_at: server.dashboardState?.startedAt || nowIso(),
+        resolved_at: nowIso(),
+        timestamp: nowIso(),
+      }, null, 2));
+    } catch (error) {
+      process.stderr.write(`Failed to write dashboard runtime state: ${error.message || String(error)}\n`);
+    }
     process.stdout.write(`${JSON.stringify({
       status: 'listening',
       service: 'local-dashboard',
       dashboard_base_url: baseUrl,
       trader_base_url: runtimeEnv.DASHBOARD_TRADER_BASE_URL || runtimeEnv.TRADER_BASE_URL || null,
       preferred_port: dashboardPort,
+      runtime_state_path: runtimeStatePath,
       timestamp: nowIso(),
     }, null, 2)}\n`);
 

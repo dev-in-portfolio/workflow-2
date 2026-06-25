@@ -123,6 +123,7 @@ npm run dashboard
 The dashboard is read-only and starts on `http://127.0.0.1:1111` when free, or the next available local port if `1111` is already occupied. It reads the existing trader endpoints and local history files without changing any execution behavior.
 It also opens your browser automatically when launched from `npm run dashboard`, unless you disable that with `DASHBOARD_OPEN_BROWSER=false`.
 For a one-double-click launch on Windows, use [`start-dashboard.cmd`](/C:/Users/dtoro/OneDrive/Documents/Workflow2/start-dashboard.cmd).
+If you want to pin a different local dashboard port, set `TRADER_DASHBOARD_PORT` in your environment. The dashboard still defaults to `1111`.
 
 For the dedicated standalone entrypoint, use:
 
@@ -135,6 +136,7 @@ Set `PERFORMANCE_HISTORY_PATH` to change the file location, or `PORT` / `SERVER_
 The server keeps the live policy snapshot at `data/live-policy.json` by default, or `LIVE_POLICY_PATH` if set.
 It also stores policy history in `data/policy-history.jsonl` by default, or `POLICY_HISTORY_PATH` if set.
 Use `MIN_PROVIDER_CONFIRMATION_SCORE`, `MIN_EDGE_SCORE`, `MAX_STALENESS_SECONDS`, `MAX_OPEN_POSITIONS`, and the `AUTO_POLICY_REFRESH*` settings to control how strict the live gate is before a signal can reach approval and how quickly the policy learns from outcomes and rejections. `MAX_OPEN_POSITIONS` now seeds the live startup policy, so the running service inherits your chosen concurrency target instead of falling back to an old cap.
+The mobile/Tailscale helper commands live in `scripts/start-mobile-dashboard.ps1`, `scripts/serve-dashboard-tailscale.ps1`, and `scripts/check-mobile-dashboard.ps1`. They keep the dashboard private to your laptop plus tailnet devices and never require Funnel.
 
 To have it start automatically when you log in on Windows, run:
 

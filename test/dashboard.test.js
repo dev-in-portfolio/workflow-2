@@ -4,7 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { createDashboardServer, buildDashboardSnapshot } = require('../src/dashboard-server');
+const { createDashboardServer, buildDashboardSnapshot, resolveDashboardPort } = require('../src/dashboard-server');
 const { shouldAutoOpenBrowser } = require('../scripts/dashboard-cli');
 
 test('dashboard snapshot aggregates read-only endpoints and local files', async () => {
@@ -443,4 +443,27 @@ test('dashboard launcher auto-open can be disabled explicitly', () => {
   assert.equal(shouldAutoOpenBrowser({ DASHBOARD_OPEN_BROWSER: 'false' }), false);
   assert.equal(shouldAutoOpenBrowser({ DASHBOARD_OPEN_BROWSER: '0' }), false);
   assert.equal(shouldAutoOpenBrowser({ DASHBOARD_OPEN_BROWSER: 'true' }), true);
+});
+
+test('dashboard port prefers TRADER_DASHBOARD_PORT over DASHBOARD_PORT', () => {
+  assert.equal(resolveDashboardPort({ TRADER_DASHBOARD_PORT: '2222', DASHBOARD_PORT: '3333' }), 2222);
+  assert.equal(resolveDashboardPort({ DASHBOARD_PORT: '3333' }), 3333);
+  assert.equal(resolveDashboardPort({ TRADER_DASHBOARD_PORT: 'not-a-port' }), 1111);
+});
+
+test('dashboard server serves mobile shell assets and manifest', async () => {
+  const server = createDashboardServer({ dashboardDir: path.join(process.cwd(), 'dashboard') });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  try {
+    const manifest = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`);
+    const mobile = await fetch(`http://127.0.0.1:${port}/mobile.js`);
+    assert.equal(manifest.ok, true);
+    assert.equal(mobile.ok, true);
+    assert.match(manifest.headers.get('content-type') || '', /manifest\+json/);
+    assert.match(mobile.headers.get('content-type') || '', /javascript/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

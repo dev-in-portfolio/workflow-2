@@ -150,6 +150,14 @@ h1 {
   flex-wrap: wrap;
   box-shadow: var(--shadow-soft);
   backdrop-filter: blur(16px);
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.page-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .page-tab {
@@ -162,6 +170,7 @@ h1 {
   letter-spacing: 0.08em;
   font-size: 0.76rem;
   transition: background 160ms ease, color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  flex: 0 0 auto;
 }
 
 .page-tab:hover {
@@ -298,6 +307,13 @@ h1 {
 
 .focus-shell {
   padding-bottom: 24px;
+}
+
+.status-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .focus-summary {
@@ -1197,6 +1213,72 @@ h1 {
   color: var(--cyan);
 }
 
+.install-banner {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(7, 12, 22, 0.94);
+  border: 1px solid rgba(79, 209, 255, 0.22);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(18px);
+}
+
+.has-install-banner .shell {
+  padding-bottom: 128px;
+}
+
+.install-banner-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.install-banner-copy strong {
+  font-size: 0.98rem;
+  letter-spacing: 0.04em;
+}
+
+.install-banner-copy small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.install-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.install-banner-button {
+  appearance: none;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 10px 14px;
+  font: inherit;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.install-banner-button.primary {
+  background: linear-gradient(180deg, rgba(79, 209, 255, 0.18), rgba(79, 209, 255, 0.08));
+  border-color: rgba(79, 209, 255, 0.28);
+}
+
+.install-banner-button.ghost {
+  background: rgba(255,255,255,0.02);
+}
+
 .source-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -1213,6 +1295,22 @@ h1 {
 .source-card .status.ok { color: var(--green); }
 .source-card .status.warn { color: var(--amber); }
 .source-card .status.bad { color: var(--red); }
+
+.freshness-fresh {
+  color: var(--green);
+}
+
+.freshness-stale {
+  color: var(--amber);
+}
+
+.freshness-critical {
+  color: var(--red);
+}
+
+.freshness-unknown {
+  color: var(--muted);
+}
 
 .log-entry {
   display: grid;
@@ -1296,6 +1394,17 @@ h1 {
     padding-top: 18px;
   }
 
+  .page-tabs {
+    gap: 6px;
+    padding: 4px;
+    flex-wrap: nowrap;
+  }
+
+  .page-tab {
+    font-size: 0.72rem;
+    padding: 9px 12px;
+  }
+
   .header-metrics,
   .status-row,
   .kpi-grid,
@@ -1340,6 +1449,22 @@ h1 {
 
   .position-hero span {
     font-size: clamp(1.6rem, 8vw, 2.8rem);
+  }
+
+  .install-banner {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .install-banner-actions {
+    width: 100%;
+  }
+
+  .install-banner-button {
+    flex: 1;
   }
 }
 
