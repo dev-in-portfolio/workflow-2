@@ -10,6 +10,12 @@ const {
   assertRiskDecision,
   assertSignalCandidate,
 } = require('./module-contracts');
+const {
+  loadPartialFillState,
+  savePartialFillState,
+  summarizePartialFillState,
+  updatePartialFillStateFromOrder,
+} = require('./partial-fill-state');
 const { nowIso, safeNumber } = require('./util');
 
 function normalizeOrderStatus(order) {
@@ -27,6 +33,8 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
   const policySnapshot = options.policySnapshot || performance?.getPolicySnapshot?.() || { policy: {} };
   const policy = policySnapshot.policy || {};
   const requestedPortfolio = signalOrRequest.portfolio || signalOrRequest.portfolio_context || {};
+  let partialFillState = options.partialFillState || loadPartialFillState({ env: options.env || process.env, repoRoot: options.repoRoot || process.cwd() });
+  const partialFillSummary = summarizePartialFillState(partialFillState);
 
   const validation = validatePaperOrderWebhookPayload(signal);
   if (!validation.pass) {
@@ -50,6 +58,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
   const reconciledMarketContext = {
     ...marketContext,
     broker_reconciliation: brokerReconciliation,
+    partial_fill_state: partialFillSummary,
   };
 
   const riskDecision = evaluateRiskGate(signal, portfolio, policy, reconciledMarketContext);
@@ -149,6 +158,22 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     };
   }
 
+  const partialConflict = findPendingPartialConflict(partialFillSummary, paperOrderRequest);
+  if (partialConflict) {
+    return {
+      accepted: false,
+      stage: 'pre_submit',
+      reason_codes: ['PARTIAL_FILL_PENDING'],
+      signal,
+      riskDecision,
+      paperOrderRequest,
+      broker_reconciliation: brokerReconciliation,
+      market_context: reconciledMarketContext,
+      partial_fill_state: partialFillSummary,
+      partial_fill_conflict: partialConflict,
+    };
+  }
+
   const openOrderCheck = await detectOpenOrderConflict(options.executionAdapter, paperOrderRequest);
   if (!openOrderCheck.pass) {
     return {
@@ -182,6 +207,24 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     paperOrder,
     confirmation,
   });
+  partialFillState = updatePartialFillStateFromOrder(partialFillState, {
+    ...paperOrder,
+    ...(confirmation?.order || {}),
+    status: paperResult.status,
+    filled_quantity: paperResult.filled_quantity,
+    average_fill_price: paperResult.average_fill_price,
+    remaining_qty: paperResult.remaining_quantity,
+    symbol: paperOrderRequest.symbol,
+    side: paperOrderRequest.side,
+  }, {
+    request: paperOrderRequest,
+    now: paperResult.filled_at || nowIso(),
+  });
+  const updatedPartialFillSummary = summarizePartialFillState(partialFillState);
+  if (options.savePartialFillState !== false) {
+    savePartialFillState(partialFillState, { env: options.env || process.env, repoRoot: options.repoRoot || process.cwd() });
+  }
+  paperResult.partial_fill_state = updatedPartialFillSummary;
 
   const paperOutcome = recordPaperOutcome(performance, signal, paperResult, options.outcomeSnapshot || null);
 
@@ -198,6 +241,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
         confirmation,
         paperResult,
         paperOutcome,
+        partialFillState: updatedPartialFillSummary,
       },
       source: options.source || 'server',
       severity: 'info',
@@ -216,11 +260,23 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     paperOutcome,
     market_context: reconciledMarketContext,
     broker_reconciliation: brokerReconciliation,
+    partial_fill_state: updatedPartialFillSummary,
   };
 }
 
 function isBuySignal(signal = {}) {
   return String(signal.side || signal.direction || '').trim().toLowerCase() === 'buy';
+}
+
+function findPendingPartialConflict(partialFillSummary = {}, request = {}) {
+  const symbol = String(request.symbol || '').trim().toUpperCase();
+  const side = String(request.side || '').trim().toLowerCase();
+  if (!symbol || !side) return null;
+  const active = [
+    ...(Array.isArray(partialFillSummary.partial_buys) ? partialFillSummary.partial_buys : []),
+    ...(Array.isArray(partialFillSummary.partial_sells) ? partialFillSummary.partial_sells : []),
+  ];
+  return active.find((order) => String(order.symbol || '').toUpperCase() === symbol && String(order.side || '').toLowerCase() === side) || null;
 }
 
 async function resolveLiveBuyNotionalTarget(executionAdapter, desiredTarget) {
@@ -427,11 +483,23 @@ function buildPaperResultFromOrder({ signal, paperOrderRequest, paperOrder, conf
   const filledQuantity = safeNumber(
     order.fill?.filled_quantity
       ?? order.filled_quantity
+      ?? order.filled_qty
+      ?? order.external_order?.filled_qty
+      ?? order.external_order?.filled_quantity
       ?? order.qty
       ?? order.quantity
       ?? paperOrderRequest.quantity
       ?? 0,
     0,
+  );
+  const submittedQuantity = safeNumber(order.qty ?? order.quantity ?? paperOrderRequest.quantity ?? null, null);
+  const remainingQuantity = safeNumber(
+    order.remaining_qty
+      ?? order.leaves_qty
+      ?? order.external_order?.leaves_qty
+      ?? order.external_order?.remaining_qty
+      ?? (Number.isFinite(submittedQuantity) ? Math.max(0, submittedQuantity - filledQuantity) : null),
+    null,
   );
 
   return {
@@ -440,6 +508,8 @@ function buildPaperResultFromOrder({ signal, paperOrderRequest, paperOrder, conf
     filled_at: filledAt,
     average_fill_price: Number.isFinite(averageFillPrice) ? averageFillPrice : null,
     filled_quantity: Number.isFinite(filledQuantity) ? filledQuantity : null,
+    submitted_quantity: Number.isFinite(submittedQuantity) ? submittedQuantity : null,
+    remaining_quantity: Number.isFinite(remainingQuantity) ? remainingQuantity : null,
     estimated_fees: safeNumber(order.fill?.estimated_fees ?? order.estimated_fees ?? 0, 0),
     original_signal: signal,
     paper_order_request: paperOrderRequest,
@@ -495,6 +565,7 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
       signal_id: signal.signal_id || null,
       symbol: signal.symbol || null,
       recorded_at: paperResult.filled_at || nowIso(),
+      partial_fill: buildPartialFillMetadata(paperResult),
     });
   }
 
@@ -507,6 +578,23 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
   }
 
   return outcome;
+}
+
+function buildPartialFillMetadata(paperResult = {}) {
+  const submitted = safeNumber(paperResult.submitted_quantity, null);
+  const filled = safeNumber(paperResult.filled_quantity, null);
+  const remaining = safeNumber(paperResult.remaining_quantity, null);
+  const fillPct = Number.isFinite(submitted) && submitted > 0 && Number.isFinite(filled)
+    ? filled / submitted
+    : null;
+  return {
+    status: paperResult.status || null,
+    submitted_quantity: submitted,
+    filled_quantity: filled,
+    remaining_quantity: remaining,
+    fill_percentage: Number.isFinite(fillPct) ? fillPct : null,
+    state_summary: paperResult.partial_fill_state || null,
+  };
 }
 
 function sleep(ms) {

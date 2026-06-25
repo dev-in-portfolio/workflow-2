@@ -9,15 +9,17 @@ function normalizeBrokerSymbol(symbol) {
   return raw;
 }
 
-function buildPortfolioSnapshot({ positions = [], openOrders = [], account = null, maxOpenPositions = null } = {}) {
+function buildPortfolioSnapshot({ positions = [], openOrders = [], account = null, maxOpenPositions = null, partialFillSummary = null } = {}) {
   const livePositions = Array.isArray(positions) ? positions.filter((position) => {
     const qty = safeNumber(position.qty ?? position.quantity ?? position.qty_available, 0);
     return Number.isFinite(qty) && Math.abs(qty) > 0;
   }) : [];
   const liveOpenOrders = Array.isArray(openOrders) ? openOrders : [];
   const openBuyOrders = liveOpenOrders.filter((order) => String(order.side || '').toLowerCase() === 'buy');
+  const partialBuyCount = Array.isArray(partialFillSummary?.partial_buys) ? partialFillSummary.partial_buys.length : 0;
+  const partialReservedBuyNotional = safeNumber(partialFillSummary?.reserved_buy_notional, 0);
   const cap = safeNumber(maxOpenPositions, null);
-  const occupiedSlots = livePositions.length + openBuyOrders.length;
+  const occupiedSlots = livePositions.length + openBuyOrders.length + partialBuyCount;
   const remainingSlots = Number.isFinite(cap) ? Math.max(0, cap - occupiedSlots) : null;
   return {
     available: true,
@@ -29,13 +31,18 @@ function buildPortfolioSnapshot({ positions = [], openOrders = [], account = nul
     open_position_count: livePositions.length,
     open_order_count: liveOpenOrders.length,
     open_buy_order_count: openBuyOrders.length,
+    partial_buy_order_count: partialBuyCount,
+    partial_reserved_buy_notional: partialReservedBuyNotional,
     max_open_positions: Number.isFinite(cap) ? cap : null,
     remaining_position_slots: remainingSlots,
     occupied_position_slots: occupiedSlots,
     positions: livePositions,
     open_orders: liveOpenOrders,
     symbols_held: livePositions.map((position) => normalizeBrokerSymbol(position.symbol)).filter(Boolean),
-    symbols_with_open_buy_orders: openBuyOrders.map((order) => normalizeBrokerSymbol(order.symbol)).filter(Boolean),
+    symbols_with_open_buy_orders: [
+      ...openBuyOrders.map((order) => normalizeBrokerSymbol(order.symbol)).filter(Boolean),
+      ...(partialFillSummary?.blocked_symbols || []).map(normalizeBrokerSymbol).filter(Boolean),
+    ],
   };
 }
 
@@ -67,7 +74,22 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
   }
   const cash = safeNumber(portfolio.cash, null);
   const buyingPower = safeNumber(portfolio.buying_power, null);
-  const limitingCash = Math.min(...cashCandidates);
+  const reservedNotional = Math.max(0, safeNumber(portfolio.partial_reserved_buy_notional, 0));
+  const limitingCash = Math.max(0, Math.min(...cashCandidates) - reservedNotional);
+  if (reservedNotional > 0 && limitingCash < floor) {
+    return {
+      accepted: false,
+      reason: 'PARTIAL_FILL_RESERVES_BUYING_POWER',
+      reason_codes: ['OPEN_ORDER_RESERVES_BUYING_POWER', 'PARTIAL_FILL_RESERVES_BUYING_POWER', 'BUYING_POWER_REDUCED_BY_OPEN_ORDERS'],
+      requested,
+      notional: 0,
+      floor,
+      remaining_slots: remainingSlots,
+      reserved_notional: reservedNotional,
+      slot_budget: 0,
+      cash_source: null,
+    };
+  }
   const cashSource = Number.isFinite(cash) && Number.isFinite(buyingPower)
     ? (cash <= buyingPower ? 'cash' : 'buying_power')
     : (Number.isFinite(cash) ? 'cash' : 'buying_power');
@@ -97,6 +119,10 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
     floor,
     remaining_slots: remainingSlots,
     spendable_cash: spendableCash,
+    reserved_notional: reservedNotional,
+    reason_codes: reservedNotional > 0
+      ? ['OPEN_ORDER_RESERVES_BUYING_POWER', 'PARTIAL_FILL_RESERVES_BUYING_POWER', 'BUYING_POWER_REDUCED_BY_OPEN_ORDERS']
+      : [],
     slot_budget: Math.floor(slotBudget * 100) / 100,
     cash_source: cashSource,
   };

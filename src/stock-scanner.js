@@ -9,6 +9,7 @@ const { writeScannerRuntimeState } = require('./scanner-runtime-state');
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
 const { assertSignalCandidate } = require('./module-contracts');
+const { loadPartialFillState, summarizePartialFillState } = require('./partial-fill-state');
 
 function createStockScanner(options = {}) {
   const env = options.env || process.env;
@@ -116,7 +117,9 @@ function createStockScanner(options = {}) {
       const account = accountState.data;
       const brokerState = buildScannerBrokerState({ accountState, positionsState, openOrdersState });
       const approvedPositions = filterApprovedPositions(positions, symbols);
-      const portfolio = buildPortfolioSnapshot({ positions, openOrders, account, maxOpenPositions });
+      const partialFillState = options.partialFillState || loadPartialFillState({ env, repoRoot: process.cwd() });
+      const partialFillSummary = summarizePartialFillState(partialFillState);
+      const portfolio = buildPortfolioSnapshot({ positions, openOrders, account, maxOpenPositions, partialFillSummary });
       const allocation = brokerState.strict_buy_blocked
         ? {
           accepted: false,
@@ -161,6 +164,9 @@ function createStockScanner(options = {}) {
           requested: allocation.requested,
           remaining_slots: allocation.remaining_slots,
         });
+        for (const reason of Array.isArray(allocation.reason_codes) ? allocation.reason_codes : []) {
+          skipTracker.record(reason, { symbol: '*', allocation: true });
+        }
       }
       if (brokerState.strict_buy_blocked) {
         for (const reason of brokerState.reason_codes) {
@@ -206,6 +212,7 @@ function createStockScanner(options = {}) {
         recentTradePenalties,
         minAdjustedRankScore,
         brokerState,
+        partialFillSummary,
         stopoutClusterBlockMinutes,
         stopoutClusterBlockCount,
         maxBuyRiskScore,
@@ -262,6 +269,7 @@ function createStockScanner(options = {}) {
         portfolio,
         allocation,
         trailingState,
+        partialFillSummary,
         skipSummary: skipTracker.summary(),
         recentSkips: skipTracker.recent(),
         candidates,
@@ -276,6 +284,7 @@ function createStockScanner(options = {}) {
         portfolio,
         allocation,
         broker_state: brokerState,
+        partial_fill_state: partialFillSummary,
         skip_summary: skipTracker.summary(),
         recent_skips: skipTracker.recent(),
       };
@@ -367,7 +376,7 @@ function createStockScanner(options = {}) {
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     writeScannerRuntimeState({
       scanner: 'stock-scanner',
@@ -405,11 +414,14 @@ function createStockScanner(options = {}) {
       portfolio: portfolio ? {
         open_positions_count: portfolio.open_positions_count,
         open_buy_order_count: portfolio.open_buy_order_count,
+        partial_buy_order_count: portfolio.partial_buy_order_count,
+        partial_reserved_buy_notional: portfolio.partial_reserved_buy_notional,
         remaining_position_slots: portfolio.remaining_position_slots,
         cash: portfolio.cash,
         buying_power: portfolio.buying_power,
       } : null,
       allocation,
+      partial_fill_state: partialFillSummary,
       broker_state: brokerState,
       intraday_regime: intradayRegime,
       optional_hooks: optionalHooks || {
@@ -654,6 +666,7 @@ function buildCandidates(bundle, options = {}) {
       position: positionsBySymbol.get(symbol) || null,
       openOrder: openOrdersBySymbol.get(symbol) || null,
       portfolio: options.portfolio || {},
+      partialFillSummary: options.partialFillSummary,
       skipTracker: options.skipTracker,
       twelveDataQuote: options.twelveDataQuotes?.[symbol] || null,
       requireMultiSourceConfirmation: options.requireMultiSourceConfirmation,
@@ -717,6 +730,17 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   }
 
   if (openBuyOrders.length) return skip('OPEN_BUY_ORDER_EXISTS');
+  const pendingPartialBuy = findPendingPartialForSymbol(options.partialFillSummary, symbol, 'buy');
+  if (pendingPartialBuy) {
+    return skip('PARTIAL_FILL_PENDING', {
+      order_id: pendingPartialBuy.order_id,
+      side: pendingPartialBuy.side,
+      filled_qty: pendingPartialBuy.filled_qty,
+      remaining_qty: pendingPartialBuy.remaining_qty,
+      last_reconciled_at: pendingPartialBuy.last_reconciled_at,
+      recommended_action: pendingPartialBuy.recommended_action,
+    });
+  }
   if (options.blockBuys) return skip('BUY_SIDE_BLOCKED');
   if (options.requireMarketOpen && options.marketOpen === false) return skip('MARKET_CLOSED_FOR_STOCKS');
   if (options.regimeBuysAllowed === false) return skip(options.intradayRegime?.reason_code || 'INTRADAY_REGIME_BUY_BLOCK', { regime: options.intradayRegime?.regime || null });
@@ -731,6 +755,14 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   }
 
   return buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, options });
+}
+
+function findPendingPartialForSymbol(summary = {}, symbol, side) {
+  const list = side === 'sell' ? summary?.partial_sells : summary?.partial_buys;
+  return (Array.isArray(list) ? list : []).find((order) => (
+    String(order.symbol || '').toUpperCase() === String(symbol || '').toUpperCase()
+    && String(order.side || '').toLowerCase() === String(side || '').toLowerCase()
+  )) || null;
 }
 
 function isApprovedPostResult(result = {}) {

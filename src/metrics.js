@@ -245,7 +245,11 @@ function summarizeFillQuality(paperOutcomes = []) {
     rejected_count: 0,
     canceled_count: 0,
     other_count: 0,
+    average_partial_fill_percentage: null,
+    repeated_partial_fill_symbols: [],
   };
+  const partialPercentages = [];
+  const partialSymbols = new Map();
 
   for (const outcome of paperOutcomes) {
     const status = String(outcome.status || outcome.paper_result?.status || outcome.paper_result?.order_status || '').toLowerCase();
@@ -253,6 +257,13 @@ function summarizeFillQuality(paperOutcomes = []) {
       summary.filled_count += 1;
     } else if (status === 'partially_filled') {
       summary.partially_filled_count += 1;
+      const submitted = safeNumber(outcome.partial_fill?.submitted_quantity ?? outcome.paper_result?.submitted_quantity, null);
+      const filled = safeNumber(outcome.partial_fill?.filled_quantity ?? outcome.paper_result?.filled_quantity, null);
+      if (Number.isFinite(submitted) && submitted > 0 && Number.isFinite(filled)) {
+        partialPercentages.push(filled / submitted);
+      }
+      const symbol = outcome.symbol || outcome.original_signal?.symbol || outcome.paper_result?.original_signal?.symbol || null;
+      if (symbol) partialSymbols.set(symbol, (partialSymbols.get(symbol) || 0) + 1);
     } else if (status === 'rejected') {
       summary.rejected_count += 1;
     } else if (status === 'cancelled' || status === 'canceled') {
@@ -267,6 +278,12 @@ function summarizeFillQuality(paperOutcomes = []) {
   summary.partial_fill_rate = summary.partially_filled_count / total;
   summary.rejection_rate = summary.rejected_count / total;
   summary.cancel_rate = summary.canceled_count / total;
+  summary.average_partial_fill_percentage = partialPercentages.length
+    ? partialPercentages.reduce((sum, value) => sum + value, 0) / partialPercentages.length
+    : null;
+  summary.repeated_partial_fill_symbols = [...partialSymbols.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([symbol, count]) => ({ symbol, count }));
   return summary;
 }
 

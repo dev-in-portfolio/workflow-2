@@ -69,6 +69,31 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
     pnl_mismatches: [],
     recommended_actions: ['Refresh scanner/trailing runtime state so exits remain explainable.'],
   }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'partial-fill-state.json'), JSON.stringify({
+    version: '2026-06-25.partial-fill-state.1',
+    updated_at: '2026-06-19T15:01:00.000Z',
+    last_reconciled_at: '2026-06-19T15:01:00.000Z',
+    orders: {
+      'ord-partial-aapl': {
+        order_id: 'ord-partial-aapl',
+        client_order_id: 'client-partial-aapl',
+        symbol: 'AAPL',
+        side: 'buy',
+        submitted_qty: 2,
+        filled_qty: 1,
+        remaining_qty: 1,
+        submitted_notional: 202,
+        filled_notional: 101,
+        average_fill_price: 101,
+        status: 'partially_filled',
+        first_seen_at: '2026-06-19T15:00:00.000Z',
+        last_seen_at: '2026-06-19T15:01:00.000Z',
+        last_reconciled_at: '2026-06-19T15:01:00.000Z',
+        warnings: [],
+        reason_codes: ['PARTIAL_FILL_PENDING'],
+      },
+    },
+  }, null, 2));
 
   const trader = http.createServer((req, res) => {
     const payloads = {
@@ -126,10 +151,14 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.preflight_status, 'WARN');
   assert.equal(snapshot.live.broker_local_reconciliation.status, 'WARN');
   assert.equal(snapshot.live.reconciliation_summary.mismatch_count, 1);
+  assert.equal(snapshot.live.partial_fill_summary.count, 1);
+  assert.deepEqual(snapshot.live.partial_fill_summary.blocked_symbols, ['AAPL']);
   assert.equal(snapshot.summary.reconciliation_status, 'WARN');
   assert.equal(snapshot.summary.reconciliation_mismatch_count, 1);
+  assert.equal(snapshot.summary.partial_fill_count, 1);
   assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
   assert.equal(snapshot.file_snapshots.broker_local_reconciliation.exists, true);
+  assert.equal(snapshot.file_snapshots.partial_fill_state.exists, true);
   assert.equal(typeof snapshot.live.config_drift.has_drift, 'boolean');
   assert.equal(snapshot.summary.trader_status, 'ok');
   assert.equal(snapshot.summary.paper_pnl, 2.5);

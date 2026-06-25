@@ -13,6 +13,7 @@ const { readOperatorTimelineTail } = require('./operator-timeline');
 const { calculateEffectiveStopLossDollars } = require('./stock-scanner');
 const { resolveLiveMarketAutomationSchedule } = require('./live-market-schedule');
 const { evaluatePolicyHealth } = require('./policy-health');
+const { summarizePartialFillState } = require('./partial-fill-state');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -213,6 +214,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const preflightLatest = readJsonFileIfPresent(preflightLatestPath);
   const brokerLocalReconciliationPath = path.join(dataDir, 'runtime', 'broker-local-reconciliation-latest.json');
   const brokerLocalReconciliation = readJsonFileIfPresent(brokerLocalReconciliationPath);
+  const partialFillStatePath = path.join(dataDir, 'runtime', 'partial-fill-state.json');
+  const partialFillState = readJsonFileIfPresent(partialFillStatePath);
+  const partialFillSummary = summarizePartialFillState(partialFillState || {});
   const livePolicyFile = readJsonFileIfPresent(path.join(dataDir, 'live-policy.json'));
   const performanceHistory = readJsonlTail(path.join(dataDir, 'performance-history.jsonl'), 512);
   const policyHistory = readJsonlTail(path.join(dataDir, 'policy-history.jsonl'), DEFAULT_RECENT_ENTRY_LIMIT);
@@ -289,6 +293,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     preflight: preflightLatest,
     policyHealth,
     brokerLocalReconciliation,
+    partialFillSummary,
   });
 
   return {
@@ -337,6 +342,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       policy_health: policyHealth,
       broker_local_reconciliation: brokerLocalReconciliation || null,
       reconciliation_summary: summarizeBrokerLocalReconciliation(brokerLocalReconciliation),
+      partial_fill_state: partialFillState || null,
+      partial_fill_summary: partialFillSummary,
       exit_management: exitManagement,
       exit_protection: exitProtection,
       broker_state_availability: {
@@ -380,6 +387,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       live_policy: fileMeta(path.join(dataDir, 'live-policy.json'), livePolicyFile),
       live_preflight: fileMeta(preflightLatestPath, preflightLatest),
       broker_local_reconciliation: fileMeta(brokerLocalReconciliationPath, brokerLocalReconciliation),
+      partial_fill_state: fileMeta(partialFillStatePath, partialFillState),
     },
     source_health: sourceHealth,
     alerts,
@@ -395,6 +403,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       control: controlState,
       preflight: preflightLatest,
       brokerLocalReconciliation,
+      partialFillSummary,
     }),
     timestamp: now,
   };
@@ -1187,7 +1196,7 @@ function buildSourceHealth(endpointResults, fileResults) {
   return sources;
 }
 
-function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null }) {
+function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null }) {
   const alerts = [];
   const workflow = control?.workflow || {};
   const scanner = control?.scanner || {};
@@ -1288,6 +1297,14 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
       message: (brokerLocalReconciliation.warnings || []).slice(0, 4).join(', ') || 'Reconciliation reported warnings.',
     });
   }
+  if (partialFillSummary?.count > 0) {
+    alerts.push({
+      severity: partialFillSummary.stale_partials?.length ? 'warning' : 'info',
+      code: 'PARTIAL_FILL_PENDING',
+      title: 'Partial fills need tracking',
+      message: `${partialFillSummary.count} active partial fill(s); blocked symbols: ${(partialFillSummary.blocked_symbols || []).join(', ') || 'none'}.`,
+    });
+  }
   const unprotectedPositions = (Array.isArray(exitProtection) ? exitProtection : []).filter((item) => item.classification === 'none');
   if (unprotectedPositions.length) {
     alerts.push({
@@ -1365,7 +1382,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1386,6 +1403,9 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     reconciliation_checked_at: brokerLocalReconciliation?.checked_at || null,
     reconciliation_mismatch_count: Array.isArray(brokerLocalReconciliation?.mismatches) ? brokerLocalReconciliation.mismatches.length : null,
     reconciliation_critical_count: Array.isArray(brokerLocalReconciliation?.critical_failures) ? brokerLocalReconciliation.critical_failures.length : null,
+    partial_fill_count: safeNumber(partialFillSummary?.count, 0),
+    partial_fill_blocked_symbols: partialFillSummary?.blocked_symbols || [],
+    partial_fill_reserved_buy_notional: safeNumber(partialFillSummary?.reserved_buy_notional, 0),
     workflow_state: control?.workflow?.status || 'unknown',
     scanner_profile: control?.scanner?.profile || control?.workflow?.desired_scanner_profile || null,
     trader_mode: status?.mode || null,
