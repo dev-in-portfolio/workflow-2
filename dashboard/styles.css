@@ -900,6 +900,25 @@ h1 {
   padding: 14px 16px;
 }
 
+.lifecycle-card.good {
+  border-color: rgba(88, 226, 159, 0.24);
+  background: linear-gradient(180deg, rgba(18, 34, 27, 0.92), rgba(8, 15, 14, 0.92));
+}
+
+.lifecycle-card.warn {
+  border-color: rgba(255, 203, 107, 0.24);
+  background: linear-gradient(180deg, rgba(34, 28, 12, 0.92), rgba(15, 13, 8, 0.92));
+}
+
+.lifecycle-card.bad {
+  border-color: rgba(255, 107, 139, 0.24);
+  background: linear-gradient(180deg, rgba(35, 16, 23, 0.92), rgba(14, 8, 12, 0.92));
+}
+
+.lifecycle-card.neutral {
+  border-color: rgba(255,255,255,0.08);
+}
+
 .trade-card {
   padding: 16px 18px;
   border-radius: 18px;
@@ -931,6 +950,10 @@ h1 {
 
 .trade-pnl.warn {
   color: var(--amber);
+}
+
+.trade-pnl.neutral {
+  color: var(--muted);
 }
 
 .trade-card-grid {

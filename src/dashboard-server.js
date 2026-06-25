@@ -14,6 +14,7 @@ const { calculateEffectiveStopLossDollars } = require('./stock-scanner');
 const { resolveLiveMarketAutomationSchedule } = require('./live-market-schedule');
 const { evaluatePolicyHealth } = require('./policy-health');
 const { summarizePartialFillState } = require('./partial-fill-state');
+const { summarizeCandidateLifecycleState } = require('./candidate-lifecycle-state');
 const { loadAntiChurnState, summarizeAntiChurnState } = require('./anti-churn-engine');
 const { loadSetupFatigueState, summarizeSetupFatigueState } = require('./setup-fatigue');
 const { summarizeSessionGuards } = require('./session-guards');
@@ -254,12 +255,15 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const brokerLocalReconciliation = readJsonFileIfPresent(brokerLocalReconciliationPath);
   const partialFillStatePath = path.join(dataDir, 'runtime', 'partial-fill-state.json');
   const partialFillState = readJsonFileIfPresent(partialFillStatePath);
+  const candidateLifecycleStatePath = path.join(dataDir, 'runtime', 'candidate-lifecycle-state.json');
+  const candidateLifecycleState = readJsonFileIfPresent(candidateLifecycleStatePath);
   const setupFatigueStatePath = path.join(dataDir, 'runtime', 'setup-fatigue-state.json');
   const setupFatigueState = readJsonFileIfPresent(setupFatigueStatePath) || loadSetupFatigueState(setupFatigueStatePath);
   const antiChurnStatePath = path.join(dataDir, 'runtime', 'anti-churn-state.json');
   const antiChurnState = readJsonFileIfPresent(antiChurnStatePath) || loadAntiChurnState(antiChurnStatePath);
   const antiChurnSummary = summarizeAntiChurnState(antiChurnState || {});
   const partialFillSummary = summarizePartialFillState(partialFillState || {});
+  const candidateLifecycleSummary = summarizeCandidateLifecycleState(candidateLifecycleState || {});
   const setupFatigueSummary = summarizeSetupFatigueState(setupFatigueState || {});
   const sessionGuards = summarizeSessionGuards(scannerRuntimeFile?.session_guards || null) || null;
   const livePolicyFile = readJsonFileIfPresent(path.join(dataDir, 'live-policy.json'));
@@ -339,6 +343,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     policyHealth,
     brokerLocalReconciliation,
     partialFillSummary,
+    candidateLifecycleSummary,
     setupFatigueSummary,
     sessionGuards,
   });
@@ -392,6 +397,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       reconciliation_summary: summarizeBrokerLocalReconciliation(brokerLocalReconciliation),
       partial_fill_state: partialFillState || null,
       partial_fill_summary: partialFillSummary,
+      candidate_lifecycle_state: candidateLifecycleState || null,
+      candidate_lifecycle_summary: candidateLifecycleSummary,
       anti_churn_state: antiChurnState || null,
       anti_churn_summary: antiChurnSummary,
       setup_fatigue_state: setupFatigueState || null,
@@ -446,6 +453,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       live_preflight: fileMeta(preflightLatestPath, preflightLatest),
       broker_local_reconciliation: fileMeta(brokerLocalReconciliationPath, brokerLocalReconciliation),
       partial_fill_state: fileMeta(partialFillStatePath, partialFillState),
+      candidate_lifecycle_state: fileMeta(candidateLifecycleStatePath, candidateLifecycleState),
       anti_churn_state: fileMeta(antiChurnStatePath, antiChurnState),
       setup_fatigue_state: fileMeta(setupFatigueStatePath, setupFatigueState),
     },
@@ -464,6 +472,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       preflight: preflightLatest,
       brokerLocalReconciliation,
       partialFillSummary,
+      candidateLifecycleSummary,
       antiChurnSummary,
       setupFatigueSummary,
       sessionGuards,
@@ -1260,7 +1269,7 @@ function buildSourceHealth(endpointResults, fileResults) {
   return sources;
 }
 
-function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null, setupFatigueSummary = null, sessionGuards = null }) {
+function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null, candidateLifecycleSummary = null, setupFatigueSummary = null, sessionGuards = null }) {
   const alerts = [];
   const workflow = control?.workflow || {};
   const scanner = control?.scanner || {};
@@ -1369,6 +1378,14 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
       message: `${partialFillSummary.count} active partial fill(s); blocked symbols: ${(partialFillSummary.blocked_symbols || []).join(', ') || 'none'}.`,
     });
   }
+  if (candidateLifecycleSummary?.blocked_count > 0 || candidateLifecycleSummary?.expired_count > 0) {
+    alerts.push({
+      severity: 'info',
+      code: 'CANDIDATE_LIFECYCLE_ACTIVE',
+      title: 'Candidate lifecycle is active',
+      message: `${candidateLifecycleSummary.blocked_count || 0} blocked and ${candidateLifecycleSummary.expired_count || 0} expired candidate(s).`,
+    });
+  }
   if (sessionGuards?.buy_blocked) {
     alerts.push({
       severity: 'warning',
@@ -1462,7 +1479,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, antiChurnSummary = null, setupFatigueSummary = null, sessionGuards = null, scannerRuntime = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, candidateLifecycleSummary = null, antiChurnSummary = null, setupFatigueSummary = null, sessionGuards = null, scannerRuntime = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1486,6 +1503,14 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     partial_fill_count: safeNumber(partialFillSummary?.count, 0),
     partial_fill_blocked_symbols: partialFillSummary?.blocked_symbols || [],
     partial_fill_reserved_buy_notional: safeNumber(partialFillSummary?.reserved_buy_notional, 0),
+    candidate_lifecycle_mode: candidateLifecycleSummary?.scanner_mode || null,
+    candidate_lifecycle_queue_enabled: Boolean(candidateLifecycleSummary?.queue_enabled),
+    candidate_lifecycle_selected_symbol: candidateLifecycleSummary?.selected_symbol || null,
+    candidate_lifecycle_watched_count: safeNumber(candidateLifecycleSummary?.watched_count, 0),
+    candidate_lifecycle_eligible_count: safeNumber(candidateLifecycleSummary?.eligible_count, 0),
+    candidate_lifecycle_blocked_count: safeNumber(candidateLifecycleSummary?.blocked_count, 0),
+    candidate_lifecycle_expired_count: safeNumber(candidateLifecycleSummary?.expired_count, 0),
+    candidate_lifecycle_reason_codes: candidateLifecycleSummary?.reason_codes || [],
     anti_churn_active: Boolean(antiChurnSummary?.active_churn_guard),
     anti_churn_penalty_points: safeNumber(antiChurnSummary?.penalty_points, 0),
     anti_churn_symbol_cooldown_count: safeNumber(antiChurnSummary?.symbol_cooldown_count, 0),

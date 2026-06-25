@@ -84,6 +84,7 @@ function render(snapshot) {
   renderPositionCard($('positionTwo'), exitPositions[1], snapshot, { primary: false, slotLabel: 'Secondary position' });
   renderRecentTrades(recentTrades, summary.last_trade_at);
   renderGuards(live?.session_guards, live?.setup_fatigue_summary);
+  renderCandidateLifecycle(live?.candidate_lifecycle_summary || live?.scanner_runtime?.candidate_lifecycle_summary);
 }
 
 function updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus }) {
@@ -234,6 +235,42 @@ function renderGuards(sessionGuards, setupFatigueSummary) {
     </article>
   `);
   target.innerHTML = [...guardCards, ...fatigueCards].join('');
+}
+
+function renderCandidateLifecycle(summary) {
+  const target = $('candidateLifecycleList');
+  const meta = $('candidateLifecycleMeta');
+  if (!target || !meta) return;
+  const watched = Array.isArray(summary?.watched_candidates) ? summary.watched_candidates : [];
+  const eligible = Array.isArray(summary?.eligible_candidates) ? summary.eligible_candidates : [];
+  const blocked = Array.isArray(summary?.blocked_candidates) ? summary.blocked_candidates : [];
+  const expired = Array.isArray(summary?.expired_candidates) ? summary.expired_candidates : [];
+  if (!watched.length && !eligible.length && !blocked.length && !expired.length) {
+    meta.textContent = 'No lifecycle state';
+    target.innerHTML = '<div class="empty-state">No candidate lifecycle state is currently active.</div>';
+    return;
+  }
+  meta.textContent = `${formatCount(summary?.eligible_count)} eligible, ${formatCount(summary?.blocked_count)} blocked`;
+  const cards = [];
+  const renderCandidateCard = (candidate, tone, label) => `
+    <article class="trade-card guard-card lifecycle-card ${tone}">
+      <div class="trade-card-top">
+        <strong><code>${escapeHtml(candidate.symbol || missingText)}</code></strong>
+        <span class="trade-pnl ${tone === 'good' ? 'ok' : tone === 'warn' ? 'warn' : 'neutral'}">${escapeHtml(label)}</span>
+      </div>
+      <div class="trade-card-grid">
+        <span><b>Status</b> ${escapeHtml(candidate.status || missingText)}</span>
+        <span><b>Rank</b> ${escapeHtml(formatNumber(candidate.decayed_rank ?? candidate.latest_rank ?? 0))}</span>
+        <span><b>Seen</b> ${escapeHtml(formatCount(candidate.scans_seen))}</span>
+        <span><b>Reason</b> ${escapeHtml((candidate.reason_codes || []).join(', ') || candidate.queue_reason || 'none')}</span>
+      </div>
+    </article>
+  `;
+  for (const candidate of eligible.slice(0, 2)) cards.push(renderCandidateCard(candidate, 'good', 'eligible'));
+  for (const candidate of watched.slice(0, 2)) cards.push(renderCandidateCard(candidate, 'warn', 'watching'));
+  for (const candidate of blocked.slice(0, 2)) cards.push(renderCandidateCard(candidate, 'bad', 'blocked'));
+  for (const candidate of expired.slice(0, 2)) cards.push(renderCandidateCard(candidate, 'neutral', 'expired'));
+  target.innerHTML = cards.join('');
 }
 
 function formatSignedCurrency(value) {
@@ -408,6 +445,11 @@ function formatPercent(value, decimals = 1) {
 function formatCount(value) {
   if (!Number.isFinite(Number(value))) return missingText;
   return numberFormatter.format(Number(value));
+}
+
+function formatNumber(value, decimals = 3) {
+  if (!Number.isFinite(Number(value))) return missingText;
+  return Number(value).toFixed(decimals);
 }
 
 function formatClock(value) {

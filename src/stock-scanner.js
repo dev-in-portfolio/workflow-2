@@ -11,6 +11,14 @@ const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market
 const { assertSignalCandidate } = require('./module-contracts');
 const { loadPartialFillState, summarizePartialFillState } = require('./partial-fill-state');
 const {
+  CandidateLifecycleReason,
+  loadCandidateLifecycleState,
+  reconcileCandidateLifecycleState,
+  saveCandidateLifecycleState,
+  summarizeCandidateLifecycleState,
+  normalizeCandidateKey,
+} = require('./candidate-lifecycle-state');
+const {
   SetupFatigueReason,
   loadSetupFatigueState,
   reconcileSetupFatigueState,
@@ -122,6 +130,22 @@ function createStockScanner(options = {}) {
   const maxStopDistanceDollars = Math.max(0, safeNumber(options.maxStopDistanceDollars ?? env.MAX_STOP_DISTANCE_DOLLARS, 0));
   const allowRiskBudgetFractionalShares = options.allowRiskBudgetFractionalShares ?? parseBool(env.ALLOW_RISK_BUDGET_FRACTIONAL_SHARES, false);
   const riskBudgetRequireBrokerEquity = options.riskBudgetRequireBrokerEquity ?? parseBool(env.RISK_BUDGET_REQUIRE_BROKER_EQUITY, true);
+  const candidateLifecycleEnabled = options.candidateLifecycleEnabled ?? parseBool(env.CANDIDATE_QUEUE_ENABLED, false);
+  const candidateMinScansBeforeEntry = Math.max(1, Math.floor(safeNumber(options.candidateMinScansBeforeEntry ?? env.CANDIDATE_MIN_SCANS_BEFORE_ENTRY, 2)));
+  const candidateMinSecondsBeforeEntry = Math.max(0, Math.floor(safeNumber(options.candidateMinSecondsBeforeEntry ?? env.CANDIDATE_MIN_SECONDS_BEFORE_ENTRY, 30)));
+  const candidateMaxAgeSeconds = Math.max(1, Math.floor(safeNumber(options.candidateMaxAgeSeconds ?? env.CANDIDATE_MAX_AGE_SECONDS, 10 * 60)));
+  const candidateConfirmationRequired = options.candidateConfirmationRequired ?? parseBool(env.CANDIDATE_CONFIRMATION_REQUIRED, true);
+  const candidateQueueMaxSize = Math.max(1, Math.floor(safeNumber(options.candidateQueueMaxSize ?? env.CANDIDATE_QUEUE_MAX_SIZE, 12)));
+  const rankConfidenceDecayEnabled = options.rankConfidenceDecayEnabled ?? parseBool(env.RANK_CONFIDENCE_DECAY_ENABLED, false);
+  const rankConfidenceHalfLifeSeconds = Math.max(1, Math.floor(safeNumber(options.rankConfidenceHalfLifeSeconds ?? env.RANK_CONFIDENCE_HALF_LIFE_SECONDS, 15 * 60)));
+  const rankConfidenceMaxStaleSeconds = Math.max(1, Math.floor(safeNumber(options.rankConfidenceMaxStaleSeconds ?? env.RANK_CONFIDENCE_MAX_STALE_SECONDS, 30 * 60)));
+  const huntToMonitorLatchEnabled = options.huntToMonitorLatchEnabled ?? parseBool(env.HUNT_TO_MONITOR_LATCH_ENABLED, false);
+  const monitorModeAllowsNewBuys = options.monitorModeAllowsNewBuys ?? parseBool(env.MONITOR_MODE_ALLOWS_NEW_BUYS, false);
+  const manageOnlyBlocksBuys = options.manageOnlyBlocksBuys ?? parseBool(env.MANAGE_ONLY_BLOCKS_BUYS, true);
+  const microRotationGuardEnabled = options.microRotationGuardEnabled ?? parseBool(env.MICRO_ROTATION_GUARD_ENABLED, false);
+  const rotationSoftBandPoints = Math.max(0, safeNumber(options.rotationSoftBandPoints ?? env.ROTATION_SOFT_BAND_POINTS, 4));
+  const rotationHardBandPoints = Math.max(0, safeNumber(options.rotationHardBandPoints ?? env.ROTATION_HARD_BAND_POINTS, 12));
+  const rotationMinHoldScans = Math.max(0, Math.floor(safeNumber(options.rotationMinHoldScans ?? env.ROTATION_MIN_HOLD_SCANS, 1)));
 
   const state = {
     running: false,
@@ -136,6 +160,9 @@ function createStockScanner(options = {}) {
 
     state.running = true;
     const receivedAt = nowIso();
+    let previousCandidateLifecycleState = null;
+    let scannerMode = 'hunt';
+    let candidateLifecycleResult = null;
     try {
       const bundle = await fetchStockBundle({
         fetchImpl: marketFetch,
@@ -358,7 +385,15 @@ function createStockScanner(options = {}) {
         previousState: previousTrailingState,
       });
       saveTrailingState(trailingState, { env, repoRoot: process.cwd() });
-      const candidates = buildCandidates(bundle, {
+      previousCandidateLifecycleState = options.candidateLifecycleState || loadCandidateLifecycleState({ env, repoRoot: process.cwd() });
+      scannerMode = determineScannerMode({
+        sessionGuards,
+        portfolio,
+        openOrders,
+        huntToMonitorLatchEnabled,
+        manageOnlyBlocksBuys,
+      });
+      const { candidates, candidateLifecycleResult: computedCandidateLifecycleResult } = buildCandidates(bundle, {
         receivedAt,
         maxCandidatesPerRun,
         maxBuyCandidates: Math.min(maxCandidatesPerRun, Math.max(0, portfolio.remaining_position_slots ?? maxOpenPositions)),
@@ -408,6 +443,7 @@ function createStockScanner(options = {}) {
         spreadRankPenaltyPerPct,
         spreadRankPenaltyCap,
         intradayRegime,
+        scannerMode,
         optionalHooks: {
           volatility_stop_enabled: Boolean(volatilityStopEnabled),
           market_quality_ranking_enabled: Boolean(marketQualityRankingEnabled),
@@ -421,7 +457,30 @@ function createStockScanner(options = {}) {
         maxStopDistanceDollars,
         allowRiskBudgetFractionalShares,
         riskBudgetRequireBrokerEquity,
+        candidateLifecycleEnabled,
+        candidateLifecycleState: previousCandidateLifecycleState,
+        candidateLifecycleConfig: {
+          minScansBeforeEntry: candidateMinScansBeforeEntry,
+          minSecondsBeforeEntry: candidateMinSecondsBeforeEntry,
+          maxAgeSeconds: candidateMaxAgeSeconds,
+          confirmationRequired: candidateConfirmationRequired,
+          queueMaxSize: candidateQueueMaxSize,
+          rankFloor: minAdjustedRankScore,
+          decayEnabled: rankConfidenceDecayEnabled,
+          halfLifeSeconds: rankConfidenceHalfLifeSeconds,
+          maxStaleSeconds: rankConfidenceMaxStaleSeconds,
+          huntToMonitorLatchEnabled,
+          monitorModeAllowsNewBuys,
+          manageOnlyBlocksBuys,
+          softBandPoints: rotationSoftBandPoints,
+          hardBandPoints: rotationHardBandPoints,
+          minHoldScans: rotationMinHoldScans,
+        },
       });
+      candidateLifecycleResult = computedCandidateLifecycleResult;
+      if (!options.candidateLifecycleState && candidateLifecycleResult?.state) {
+        saveCandidateLifecycleState(candidateLifecycleResult.state, { env, repoRoot: process.cwd() });
+      }
 
       const results = [];
       for (const candidate of candidates) {
@@ -478,6 +537,8 @@ function createStockScanner(options = {}) {
         results,
         recentTradePenalties,
         brokerState,
+        candidateLifecycleState: candidateLifecycleResult?.state || previousCandidateLifecycleState,
+        candidateLifecycleSummary: candidateLifecycleResult?.summary || summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
       });
       return {
         accepted: true,
@@ -489,6 +550,8 @@ function createStockScanner(options = {}) {
         partial_fill_state: partialFillSummary,
         anti_churn_state: antiChurnState,
         anti_churn_summary: antiChurnSummary,
+        candidate_lifecycle_state: candidateLifecycleResult?.state || previousCandidateLifecycleState,
+        candidate_lifecycle_summary: candidateLifecycleResult?.summary || summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
         skip_summary: skipTracker.summary(),
         recent_skips: skipTracker.recent(),
       };
@@ -500,6 +563,8 @@ function createStockScanner(options = {}) {
         receivedAt,
         durationMs: state.lastScanDurationMs,
         error: error.message,
+        candidateLifecycleState: previousCandidateLifecycleState || null,
+        candidateLifecycleSummary: summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
       });
       throw error;
     } finally {
@@ -610,7 +675,7 @@ function createStockScanner(options = {}) {
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     writeScannerRuntimeState({
       scanner: 'stock-scanner',
@@ -632,10 +697,13 @@ function createStockScanner(options = {}) {
       setup_fatigue_state: setupFatigueState || null,
       setup_fatigue_summary: setupFatigueSummary || summarizeSetupFatigueState(setupFatigueState || {}),
       session_guards: sessionGuards || null,
+      candidate_lifecycle_state: candidateLifecycleState || null,
+      candidate_lifecycle_summary: candidateLifecycleSummary || summarizeCandidateLifecycleState(candidateLifecycleState || {}),
       candidate_rank_details: candidates
         .filter((candidate) => candidate.payload?.side === 'buy')
         .map((candidate) => ({
           symbol: candidate.symbol,
+          setup_key: candidate.setupKey || null,
           rank_score: roundScore(candidate.rankScore),
           base_rank_score: roundScore(candidate.baseRankScore ?? candidate.rankScore),
           recent_trade_rank_penalty: roundScore(candidate.recentTradeRankPenalty || 0),
@@ -648,6 +716,9 @@ function createStockScanner(options = {}) {
           sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
           risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
           structure_stop: candidate.payload?.structure_stop || null,
+          candidate_lifecycle_status: candidate.payload?.market_context?.scanner?.candidate_lifecycle_status || null,
+          candidate_lifecycle_reason_codes: candidate.payload?.market_context?.scanner?.candidate_lifecycle_reason_codes || [],
+          candidate_lifecycle_decayed_rank: candidate.payload?.market_context?.scanner?.candidate_lifecycle_decayed_rank || null,
           anti_churn_recent_winner_protected: Boolean(candidate.payload?.market_context?.scanner?.anti_churn_recent_winner_protected),
           anti_churn_reason: candidate.recentTradePenalty?.reason || null,
           setup_trade_penalty_reason: candidate.setupPenalty?.reason || null,
@@ -724,6 +795,7 @@ function createStockScanner(options = {}) {
         active_setups: setupFatigueSummary.active_setups,
         paused_setups: setupFatigueSummary.paused_setups,
       } : null,
+      candidate_lifecycle: candidateLifecycleSummary || summarizeCandidateLifecycleState(candidateLifecycleState || {}),
       position_exit_state: candidates
         .filter((candidate) => candidate.exitState)
         .map((candidate) => candidate.exitState),
@@ -986,6 +1058,23 @@ function buildCandidates(bundle, options = {}) {
       setupFatigueEnabled: options.setupFatigueEnabled,
       setupFatigueThreshold: options.setupFatigueThreshold,
       sessionGuards: options.sessionGuards,
+      candidateLifecycleEnabled: options.candidateLifecycleEnabled,
+      candidateLifecycleState: options.candidateLifecycleState,
+      candidateMinScansBeforeEntry: options.candidateMinScansBeforeEntry,
+      candidateMinSecondsBeforeEntry: options.candidateMinSecondsBeforeEntry,
+      candidateMaxAgeSeconds: options.candidateMaxAgeSeconds,
+      candidateConfirmationRequired: options.candidateConfirmationRequired,
+      candidateQueueMaxSize: options.candidateQueueMaxSize,
+      rankConfidenceDecayEnabled: options.rankConfidenceDecayEnabled,
+      rankConfidenceHalfLifeSeconds: options.rankConfidenceHalfLifeSeconds,
+      rankConfidenceMaxStaleSeconds: options.rankConfidenceMaxStaleSeconds,
+      huntToMonitorLatchEnabled: options.huntToMonitorLatchEnabled,
+      monitorModeAllowsNewBuys: options.monitorModeAllowsNewBuys,
+      manageOnlyBlocksBuys: options.manageOnlyBlocksBuys,
+      scannerMode: options.scannerMode,
+      rotationSoftBandPoints: options.rotationSoftBandPoints,
+      rotationHardBandPoints: options.rotationHardBandPoints,
+      rotationMinHoldScans: options.rotationMinHoldScans,
       position_avg_entry_price: safeNumber(positionsBySymbol.get(symbol)?.avg_entry_price ?? positionsBySymbol.get(symbol)?.avgEntryPrice ?? null),
       position_qty_available: safeNumber(positionsBySymbol.get(symbol)?.qty ?? positionsBySymbol.get(symbol)?.quantity ?? positionsBySymbol.get(symbol)?.qty_available ?? null),
     });
@@ -996,10 +1085,66 @@ function buildCandidates(bundle, options = {}) {
     }
   }
   buyEntries.sort((a, b) => b.rankScore - a.rankScore);
-  return [
-    ...sellEntries,
-    ...buyEntries.slice(0, Math.max(0, options.maxBuyCandidates ?? options.maxCandidatesPerRun ?? 2)),
-  ];
+  let candidateLifecycleResult = null;
+  let selectedBuyEntries = buyEntries;
+  if (options.candidateLifecycleEnabled) {
+    candidateLifecycleResult = reconcileCandidateLifecycleState({
+      previousState: options.candidateLifecycleState || {},
+      candidates: buyEntries,
+      now,
+      queueEnabled: options.candidateLifecycleEnabled,
+      minScansBeforeEntry: options.candidateMinScansBeforeEntry,
+      minSecondsBeforeEntry: options.candidateMinSecondsBeforeEntry,
+      maxAgeSeconds: options.candidateMaxAgeSeconds,
+      confirmationRequired: options.candidateConfirmationRequired,
+      queueMaxSize: options.candidateQueueMaxSize,
+      rankFloor: options.minAdjustedRankScore,
+      decayEnabled: options.rankConfidenceDecayEnabled,
+      halfLifeSeconds: options.rankConfidenceHalfLifeSeconds,
+      maxStaleSeconds: options.rankConfidenceMaxStaleSeconds,
+      huntToMonitorLatchEnabled: options.huntToMonitorLatchEnabled,
+      monitorModeAllowsNewBuys: options.monitorModeAllowsNewBuys,
+      manageOnlyBlocksBuys: options.manageOnlyBlocksBuys,
+      scannerMode: options.scannerMode,
+      sessionGuards: options.sessionGuards,
+      portfolio: options.portfolio,
+      openOrders: options.openOrders,
+      softBandPoints: options.rotationSoftBandPoints,
+      hardBandPoints: options.rotationHardBandPoints,
+      minHoldScans: options.rotationMinHoldScans,
+    });
+    const selectedKey = candidateLifecycleResult.selection?.selected_key || candidateLifecycleResult.state?.selected_key || null;
+    if (selectedKey) {
+      selectedBuyEntries = buyEntries.filter((candidate) => resolveCandidateLifecycleKey(candidate) === selectedKey);
+    }
+    if (!selectedBuyEntries.length) {
+      selectedBuyEntries = buyEntries.filter((candidate) => {
+        const lifecycleEntry = candidateLifecycleResult.state?.candidates?.[resolveCandidateLifecycleKey(candidate)];
+        return lifecycleEntry?.status === 'eligible' || lifecycleEntry?.status === 'entered';
+      });
+    }
+    if (!selectedBuyEntries.length) {
+      selectedBuyEntries = [];
+    }
+    const lifecycleMap = candidateLifecycleResult.state?.candidates || {};
+    for (const candidate of buyEntries) {
+      const lifecycleEntry = lifecycleMap[resolveCandidateLifecycleKey(candidate)] || null;
+      if (!candidate.payload?.market_context?.scanner) continue;
+      candidate.candidateLifecycle = lifecycleEntry;
+      candidate.payload.market_context.scanner.candidate_lifecycle_status = lifecycleEntry?.status || candidate.payload.market_context.scanner.candidate_lifecycle_status || 'watching';
+      candidate.payload.market_context.scanner.candidate_lifecycle_reason_codes = lifecycleEntry?.reason_codes || candidate.payload.market_context.scanner.candidate_lifecycle_reason_codes || [];
+      candidate.payload.market_context.scanner.candidate_lifecycle_decayed_rank = roundScore(lifecycleEntry?.decayed_rank ?? candidate.rankScore);
+      candidate.payload.market_context.scanner.candidate_lifecycle_selected = Boolean(lifecycleEntry?.status === 'entered');
+    }
+  }
+  const limitedBuys = selectedBuyEntries.slice(0, Math.max(0, options.maxBuyCandidates ?? options.maxCandidatesPerRun ?? 2));
+  return {
+    candidates: [
+      ...sellEntries,
+      ...limitedBuys,
+    ],
+    candidateLifecycleResult,
+  };
 }
 
 function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {}) {
@@ -1344,6 +1489,18 @@ function getRecentTradePenalty(penalties, symbol) {
   return penalties[normalized] || null;
 }
 
+function resolveCandidateLifecycleKey(candidate = {}) {
+  const symbol = String(candidate.symbol || '').trim().toUpperCase();
+  const setupKey = String(candidate.setupKey || candidate.setup_key || candidate.payload?.market_context?.setup_key || '').trim().toLowerCase();
+  return normalizeCandidateKey(symbol, setupKey || null);
+}
+
+function resolveCandidateLifecycleEntry(lifecycleState, symbol, setupKey = null) {
+  if (!lifecycleState?.candidates) return null;
+  const key = normalizeCandidateKey(symbol, setupKey || null);
+  return key ? lifecycleState.candidates[key] || null : null;
+}
+
 function summarizeRecentTradePenalties(penalties) {
   if (!penalties) return [];
   const values = penalties instanceof Map ? [...penalties.values()] : Object.values(penalties);
@@ -1388,6 +1545,27 @@ function resolveCandidateSetupKey({ symbol, snapshot, options = {} } = {}) {
     || null;
   const normalized = String(setupKey || '').trim().toLowerCase();
   return normalized || null;
+}
+
+function determineScannerMode({
+  sessionGuards = null,
+  portfolio = null,
+  openOrders = null,
+  huntToMonitorLatchEnabled = false,
+  manageOnlyBlocksBuys = true,
+} = {}) {
+  if (!huntToMonitorLatchEnabled) return 'hunt';
+  if ((sessionGuards?.manage_only || sessionGuards?.buy_blocked) && manageOnlyBlocksBuys) {
+    return 'manage_only';
+  }
+  const hasOpenPositions = Number(safeNumber(portfolio?.open_positions_count, 0)) > 0;
+  const hasOpenBuyOrders = Number(safeNumber(portfolio?.open_buy_order_count, 0)) > 0;
+  const hasPartialBuys = Number(safeNumber(portfolio?.partial_buy_order_count, 0)) > 0;
+  const hasProtectiveOrders = Array.isArray(openOrders) && openOrders.some((order) => String(order?.side || '').toLowerCase() === 'sell');
+  if (hasOpenPositions || hasOpenBuyOrders || hasPartialBuys || hasProtectiveOrders) {
+    return 'monitor';
+  }
+  return 'hunt';
 }
 
 function calculateEffectiveStopLossDollars({
@@ -1639,6 +1817,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     setupPenalty,
     setupFatigue,
     sessionGuards: options.sessionGuards || null,
+    setupKey: options.setupKey || null,
   });
   const maxBuyRiskScore = safeNumber(options.maxBuyRiskScore, 70);
   const candidateRiskScore = safeNumber(candidate?.payload?.risk_score, null);
@@ -1696,7 +1875,7 @@ function getStopoutClusterBlock(recentPenalty, { blockMinutes = 30, blockCount =
   };
 }
 
-function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, setupFatigue = null, sessionGuards = null, exitState = null }) {
+function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, setupFatigue = null, sessionGuards = null, exitState = null, setupKey = null }) {
   const receivedAt = options.receivedAt || nowIso();
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
@@ -1721,6 +1900,9 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     raw_payload: { snapshot, latest_quote: latestQuote, quote },
   };
   const normalizedPrimary = normalizeMarketData(rawMarketData, { receivedAt, maxStalenessSeconds: 300 });
+  const candidateLifecycleEntry = side === 'buy'
+    ? resolveCandidateLifecycleEntry(options.candidateLifecycleState, symbol, setupKey)
+    : null;
   const secondaryQuote = normalizeMarketData({
     provider: options.twelveDataQuote ? 'twelvedata' : 'alpaca-secondary',
     asset_type: 'stock',
@@ -1740,6 +1922,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     source: 'stock-scanner',
     scanner: {
       run_id: options.runId || null,
+      setup_key: setupKey || null,
       move_pct: Number(movePct.toFixed(4)),
       spread_pct: Number(spreadPct.toFixed(4)),
       current_price: Number(currentPrice.toFixed(6)),
@@ -1762,6 +1945,10 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       setup_fatigue_paused_until: side === 'buy' ? setupFatigue?.paused_until || null : null,
       setup_fatigue_reason_codes: side === 'buy' ? setupFatigue?.reason_codes || [] : [],
       session_guard_blocked: side === 'buy' ? Boolean(sessionGuards?.buy_blocked) : false,
+      candidate_lifecycle_status: side === 'buy' ? candidateLifecycleEntry?.status || (options.candidateLifecycleEnabled ? 'watching' : null) : null,
+      candidate_lifecycle_reason_codes: side === 'buy' ? candidateLifecycleEntry?.reason_codes || [] : [],
+      candidate_lifecycle_decayed_rank: side === 'buy' ? roundScore(candidateLifecycleEntry?.decayed_rank ?? rankScore) : null,
+      candidate_lifecycle_selected: side === 'buy' ? Boolean(candidateLifecycleEntry?.status === 'entered') : false,
       sizing_method: side === 'buy' ? sizingMethod : null,
       risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
       structure_stop: side === 'buy' ? structureStop : null,
@@ -1845,9 +2032,11 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     market_context: marketContext,
     setup_fatigue: side === 'buy' ? setupFatigue : null,
     session_guards: side === 'buy' ? summarizeSessionGuards(sessionGuards) : null,
+    candidate_lifecycle: side === 'buy' ? candidateLifecycleEntry || null : null,
   };
   return {
     symbol,
+    setupKey: setupKey || null,
     movePct,
     spreadPct,
     rankScore,

@@ -1233,6 +1233,65 @@ test('stock scanner runtime snapshot includes anti-churn details', async () => {
   assert.equal(runtime.anti_churn_state.symbol_cooldowns.MU.reason, 'TRAILING_WIN_LIGHT_PENALTY');
 });
 
+test('stock scanner runtime snapshot includes candidate lifecycle details when enabled', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stock-scanner-candidate-lifecycle-'));
+  const runtimePath = path.join(tempDir, 'scanner-runtime.json');
+  const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
+  const scanner = createStockScanner({
+    enabled: true,
+    baseUrl: 'https://data.alpaca.markets',
+    localBaseUrl: 'http://127.0.0.1:65535',
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    symbols: ['MU', 'WDC'],
+    intervalMs: 60_000,
+    maxCandidatesPerRun: 1,
+    maxOpenPositions: 1,
+    marketOpen: true,
+    env: {
+      SCANNER_RUNTIME_STATE_ENABLED: 'true',
+      SCANNER_RUNTIME_STATE_PATH: runtimePath,
+      CANDIDATE_QUEUE_ENABLED: 'true',
+      CANDIDATE_MIN_SCANS_BEFORE_ENTRY: '1',
+      CANDIDATE_MIN_SECONDS_BEFORE_ENTRY: '0',
+      CANDIDATE_MAX_AGE_SECONDS: '600',
+      CANDIDATE_CONFIRMATION_REQUIRED: 'false',
+      CANDIDATE_QUEUE_MAX_SIZE: '4',
+      RANK_CONFIDENCE_DECAY_ENABLED: 'false',
+      HUNT_TO_MONITOR_LATCH_ENABLED: 'false',
+      MICRO_ROTATION_GUARD_ENABLED: 'true',
+      ROTATION_SOFT_BAND_POINTS: '4',
+      ROTATION_HARD_BAND_POINTS: '12',
+      ROTATION_MIN_HOLD_SCANS: '1',
+    },
+    candidateLifecycleState: {},
+    marketFetch: async (url) => {
+      if (url.includes('/v2/positions')) return buildResponse([]);
+      if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+      if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+      if (url.includes('/v2/stocks/snapshots?')) {
+        return buildResponse({
+          snapshots: {
+            MU: rankedSnapshot({ bid: 119.9, ask: 120.1, previousClose: 100, volume: 100000, timestamp: alpacaTimestamp }),
+            WDC: rankedSnapshot({ bid: 104.9, ask: 105.1, previousClose: 100, volume: 100000, timestamp: alpacaTimestamp }),
+          },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    localFetch: async () => buildResponse({ accepted: true, final_decision: 'APPROVED_FOR_PAPER' }),
+  });
+
+  const result = await scanner.runOnce({ runId: 'candidate-lifecycle-runtime' });
+  scanner.stop();
+  const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+
+  assert.equal(result.accepted, true);
+  assert.equal(runtime.candidate_lifecycle_summary.queue_enabled, true);
+  assert.equal(runtime.candidate_lifecycle_summary.total_count >= 1, true);
+  assert.equal(Object.keys(runtime.candidate_lifecycle_state.candidates).length >= 1, true);
+});
+
 test('stock scanner batches large stock universes into multiple market-data requests', async () => {
   const requestedUrls = [];
   const symbols = Array.from({ length: 26 }, (_, index) => `T${String(index + 1).padStart(2, '0')}`);

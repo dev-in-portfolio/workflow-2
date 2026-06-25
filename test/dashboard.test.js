@@ -173,6 +173,64 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       },
     },
   }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'candidate-lifecycle-state.json'), JSON.stringify({
+    version: '2026-06-25.candidate-lifecycle-state.1',
+    updated_at: '2026-06-19T15:02:00.000Z',
+    last_reconciled_at: '2026-06-19T15:02:00.000Z',
+    mode: 'hunt',
+    queue_enabled: true,
+    selected_key: 'MU::mu-breakout',
+    selection_state: {
+      selected_key: 'MU::mu-breakout',
+      selected_symbol: 'MU',
+      selected_rank: 71.2,
+      selected_decayed_rank: 69.8,
+      selected_at: '2026-06-19T15:02:00.000Z',
+      hold_scans: 2,
+    },
+    queue_state: {
+      soft_band_points: 4,
+      hard_band_points: 12,
+      min_hold_scans: 2,
+      rank_floor: 60,
+      last_rotation_at: '2026-06-19T15:01:30.000Z',
+      last_rotation_reason_codes: ['CANDIDATE_QUEUE_CONFIRMED'],
+    },
+    candidates: {
+      'MU::mu-breakout': {
+        candidate_key: 'MU::mu-breakout',
+        symbol: 'MU',
+        setup_key: 'mu-breakout',
+        first_seen_at: '2026-06-19T14:59:30.000Z',
+        last_seen_at: '2026-06-19T15:02:00.000Z',
+        scans_seen: 3,
+        latest_rank: 71.2,
+        peak_rank: 72,
+        decayed_rank: 69.8,
+        rank_history: [],
+        status: 'entered',
+        expires_at: null,
+        reason_codes: ['CANDIDATE_QUEUE_CONFIRMED'],
+        updated_at: '2026-06-19T15:02:00.000Z',
+      },
+      'WDC::wdc-breakout': {
+        candidate_key: 'WDC::wdc-breakout',
+        symbol: 'WDC',
+        setup_key: 'wdc-breakout',
+        first_seen_at: '2026-06-19T15:01:30.000Z',
+        last_seen_at: '2026-06-19T15:02:00.000Z',
+        scans_seen: 1,
+        latest_rank: 59.3,
+        peak_rank: 59.3,
+        decayed_rank: 59.3,
+        rank_history: [],
+        status: 'blocked',
+        expires_at: null,
+        reason_codes: ['CANDIDATE_RANK_BELOW_FLOOR'],
+        updated_at: '2026-06-19T15:02:00.000Z',
+      },
+    },
+  }, null, 2));
   fs.writeFileSync(path.join(dataDir, 'logs', 'scanner-runtime.json'), JSON.stringify({
     scanner: 'stock-scanner',
     mode: 'live-market',
@@ -208,6 +266,64 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       warnings: ['SETUP_FATIGUE_ACTIVE'],
       recommended_actions: ['Avoid new buys in setups flagged by setup fatigue until pauses clear.'],
       last_reconciled_at: '2026-06-19T15:05:00.000Z',
+    },
+    candidate_lifecycle_summary: {
+      status: 'ACTIVE',
+      queue_enabled: true,
+      scanner_mode: 'hunt',
+      selected_key: 'MU::mu-breakout',
+      selected_symbol: 'MU',
+      selected_rank: 71.2,
+      selected_decayed_rank: 69.8,
+      watched_count: 0,
+      eligible_count: 1,
+      entered_count: 1,
+      expired_count: 0,
+      blocked_count: 1,
+      total_count: 2,
+      watched_candidates: [],
+      eligible_candidates: [{
+        candidate_key: 'MU::mu-breakout',
+        symbol: 'MU',
+        status: 'eligible',
+      }],
+      entered_candidates: [{
+        candidate_key: 'MU::mu-breakout',
+        symbol: 'MU',
+        status: 'entered',
+      }],
+      expired_candidates: [],
+      blocked_candidates: [{
+        candidate_key: 'WDC::wdc-breakout',
+        symbol: 'WDC',
+        status: 'blocked',
+      }],
+      rank_floor: 60,
+      queue_state: {
+        soft_band_points: 4,
+        hard_band_points: 12,
+        min_hold_scans: 2,
+        rank_floor: 60,
+        last_rotation_at: '2026-06-19T15:01:30.000Z',
+        last_rotation_reason_codes: ['CANDIDATE_QUEUE_CONFIRMED'],
+      },
+      selection_state: {
+        selected_key: 'MU::mu-breakout',
+        selected_symbol: 'MU',
+        selected_rank: 71.2,
+        selected_decayed_rank: 69.8,
+        selected_at: '2026-06-19T15:02:00.000Z',
+        hold_scans: 2,
+      },
+      rotation_decision: {
+        selected_key: 'MU::mu-breakout',
+        last_rotation_at: '2026-06-19T15:01:30.000Z',
+        last_rotation_reason_codes: ['CANDIDATE_QUEUE_CONFIRMED'],
+      },
+      reason_codes: ['CANDIDATE_QUEUE_CONFIRMED', 'CANDIDATE_RANK_BELOW_FLOOR'],
+      warnings: ['BLOCKED_CANDIDATES_PRESENT'],
+      recommended_actions: ['Review blocked candidates and lift the blocker if the setup should be allowed.'],
+      last_reconciled_at: '2026-06-19T15:02:00.000Z',
     },
     session_guards: {
       status: 'ACTIVE',
@@ -315,6 +431,9 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.reconciliation_summary.mismatch_count, 1);
   assert.equal(snapshot.live.partial_fill_summary.count, 1);
   assert.deepEqual(snapshot.live.partial_fill_summary.blocked_symbols, ['AAPL']);
+  assert.equal(snapshot.live.candidate_lifecycle_summary.queue_enabled, true);
+  assert.equal(snapshot.live.candidate_lifecycle_summary.selected_symbol, 'MU');
+  assert.equal(snapshot.live.candidate_lifecycle_summary.blocked_count, 1);
   assert.equal(snapshot.live.anti_churn_summary.active_churn_guard, true);
   assert.equal(snapshot.live.anti_churn_summary.symbols_under_cooldown.length, 0);
   assert.equal(snapshot.live.anti_churn_summary.recent_winner_protection.length, 1);
@@ -328,6 +447,9 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.reconciliation_status, 'WARN');
   assert.equal(snapshot.summary.reconciliation_mismatch_count, 1);
   assert.equal(snapshot.summary.partial_fill_count, 1);
+  assert.equal(snapshot.summary.candidate_lifecycle_queue_enabled, true);
+  assert.equal(snapshot.summary.candidate_lifecycle_selected_symbol, 'MU');
+  assert.equal(snapshot.summary.candidate_lifecycle_blocked_count, 1);
   assert.equal(snapshot.summary.anti_churn_active, true);
   assert.equal(snapshot.summary.anti_churn_reason_codes[0], 'CHURN_RATE_GUARD_ACTIVE');
   assert.equal(snapshot.summary.setup_fatigue_active_count, 1);
@@ -337,6 +459,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
   assert.equal(snapshot.file_snapshots.broker_local_reconciliation.exists, true);
   assert.equal(snapshot.file_snapshots.partial_fill_state.exists, true);
+  assert.equal(snapshot.file_snapshots.candidate_lifecycle_state.exists, true);
   assert.equal(snapshot.file_snapshots.anti_churn_state.exists, true);
   assert.equal(snapshot.file_snapshots.setup_fatigue_state.exists, true);
   assert.equal(typeof snapshot.live.config_drift.has_drift, 'boolean');
