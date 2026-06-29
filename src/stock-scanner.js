@@ -11,6 +11,11 @@ const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market
 const { assertSignalCandidate } = require('./module-contracts');
 const { loadPartialFillState, summarizePartialFillState } = require('./partial-fill-state');
 const {
+  loadExecutionQualityState,
+  summarizeExecutionQualityState,
+  normalizeExecutionQualityKey,
+} = require('./execution-quality-state');
+const {
   CandidateLifecycleReason,
   loadCandidateLifecycleState,
   reconcileCandidateLifecycleState,
@@ -122,6 +127,15 @@ function createStockScanner(options = {}) {
   const nearCloseManageOnlyMinutes = Math.max(0, safeNumber(options.nearCloseManageOnlyMinutes ?? env.STOCK_SCANNER_NEAR_CLOSE_MANAGE_ONLY_MINUTES, 15));
   const volatilityStopEnabled = options.volatilityStopEnabled ?? parseBool(env.STOCK_SCANNER_VOLATILITY_STOP_ENABLED, false);
   const marketQualityRankingEnabled = options.marketQualityRankingEnabled ?? parseBool(env.STOCK_SCANNER_MARKET_QUALITY_RANKING_ENABLED, false);
+  const executionQualityFeedbackEnabled = options.executionQualityFeedbackEnabled ?? parseBool(env.EXECUTION_QUALITY_FEEDBACK_ENABLED, false);
+  const executionQualityRankPenaltyEnabled = options.executionQualityRankPenaltyEnabled ?? parseBool(env.EXECUTION_QUALITY_RANK_PENALTY_ENABLED, false);
+  const executionQualitySizeMultiplierEnabled = options.executionQualitySizeMultiplierEnabled ?? parseBool(env.EXECUTION_QUALITY_SIZE_MULTIPLIER_ENABLED, false);
+  const executionQualityCooldownEnabled = options.executionQualityCooldownEnabled ?? parseBool(env.EXECUTION_QUALITY_COOLDOWN_ENABLED, false);
+  const maxExecutionQualityRankPenalty = Math.max(0, safeNumber(options.maxExecutionQualityRankPenalty ?? env.MAX_EXECUTION_QUALITY_RANK_PENALTY, 40));
+  const minExecutionQualitySizeMultiplier = Math.max(0.5, Math.min(1, safeNumber(options.minExecutionQualitySizeMultiplier ?? env.MIN_EXECUTION_QUALITY_SIZE_MULTIPLIER, 0.5)));
+  const highSlippageThresholdPct = Math.max(0, safeNumber(options.highSlippageThresholdPct ?? env.HIGH_SLIPPAGE_THRESHOLD_PCT, 0.5));
+  const badFillThresholdPct = Math.max(0, safeNumber(options.badFillThresholdPct ?? env.BAD_FILL_THRESHOLD_PCT, 2));
+  const executionQualityDecayPerHour = Math.max(0, safeNumber(options.executionQualityDecayPerHour ?? env.EXECUTION_QUALITY_DECAY_PER_HOUR, 0));
   const riskBudgetSizingEnabled = options.riskBudgetSizingEnabled ?? parseBool(env.RISK_BUDGET_SIZING_ENABLED, false);
   const maxRiskPerTradeDollars = Math.max(0, safeNumber(options.maxRiskPerTradeDollars ?? env.MAX_RISK_PER_TRADE_DOLLARS, 0));
   const maxRiskPerTradePctEquity = Math.max(0, safeNumber(options.maxRiskPerTradePctEquity ?? env.MAX_RISK_PER_TRADE_PCT_EQUITY, 0));
@@ -205,6 +219,12 @@ function createStockScanner(options = {}) {
       const approvedPositions = filterApprovedPositions(positions, symbols);
       const partialFillState = options.partialFillState || loadPartialFillState({ env, repoRoot: process.cwd() });
       const partialFillSummary = summarizePartialFillState(partialFillState);
+      const executionQualityState = options.executionQualityState || loadExecutionQualityState({ env, repoRoot: process.cwd() });
+      const executionQualitySummary = summarizeExecutionQualityState(executionQualityState, {
+        now: receivedAt,
+        decayPerHour: executionQualityDecayPerHour,
+        minSizeMultiplier: minExecutionQualitySizeMultiplier,
+      });
       const previousAntiChurnState = options.antiChurnState || loadAntiChurnState({ env, repoRoot: process.cwd() });
       let antiChurnState = normalizeAntiChurnState(previousAntiChurnState);
       if (!options.antiChurnState) {
@@ -398,6 +418,7 @@ function createStockScanner(options = {}) {
         maxCandidatesPerRun,
         maxBuyCandidates: Math.min(maxCandidatesPerRun, Math.max(0, portfolio.remaining_position_slots ?? maxOpenPositions)),
         notional: allocation.accepted ? allocation.notional : notional,
+        minBuyNotional,
         allocation,
         marketOpen,
         intradayRegime,
@@ -436,6 +457,17 @@ function createStockScanner(options = {}) {
         minAdjustedRankScore,
         brokerState,
         partialFillSummary,
+        executionQualityState,
+        executionQualitySummary,
+        executionQualityFeedbackEnabled,
+        executionQualityRankPenaltyEnabled,
+        executionQualitySizeMultiplierEnabled,
+        executionQualityCooldownEnabled,
+        maxExecutionQualityRankPenalty,
+        minExecutionQualitySizeMultiplier,
+        highSlippageThresholdPct,
+        badFillThresholdPct,
+        executionQualityDecayPerHour,
         stopoutClusterBlockMinutes,
         stopoutClusterBlockCount,
         maxBuyRiskScore,
@@ -528,6 +560,8 @@ function createStockScanner(options = {}) {
         antiChurnSummary,
         setupFatigueState,
         setupFatigueSummary,
+        executionQualityState,
+        executionQualitySummary,
         sessionGuards,
         trailingState,
         partialFillSummary,
@@ -548,12 +582,16 @@ function createStockScanner(options = {}) {
         allocation,
         broker_state: brokerState,
         partial_fill_state: partialFillSummary,
+        execution_quality_state: executionQualityState,
+        execution_quality_summary: executionQualitySummary,
         anti_churn_state: antiChurnState,
         anti_churn_summary: antiChurnSummary,
         candidate_lifecycle_state: candidateLifecycleResult?.state || previousCandidateLifecycleState,
         candidate_lifecycle_summary: candidateLifecycleResult?.summary || summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
         skip_summary: skipTracker.summary(),
         recent_skips: skipTracker.recent(),
+        execution_quality_state: executionQualityState,
+        execution_quality_summary: executionQualitySummary,
       };
     } catch (error) {
       state.lastRunAt = receivedAt;
@@ -563,6 +601,12 @@ function createStockScanner(options = {}) {
         receivedAt,
         durationMs: state.lastScanDurationMs,
         error: error.message,
+        executionQualityState: executionQualityState || null,
+        executionQualitySummary: executionQualitySummary || summarizeExecutionQualityState(executionQualityState || {}, {
+          now: receivedAt,
+          decayPerHour: executionQualityDecayPerHour,
+          minSizeMultiplier: minExecutionQualitySizeMultiplier,
+        }),
         candidateLifecycleState: previousCandidateLifecycleState || null,
         candidateLifecycleSummary: summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
       });
@@ -639,6 +683,15 @@ function createStockScanner(options = {}) {
       nearCloseManageOnlyMinutes,
       volatilityStopEnabled,
       marketQualityRankingEnabled,
+      executionQualityFeedbackEnabled,
+      executionQualityRankPenaltyEnabled,
+      executionQualitySizeMultiplierEnabled,
+      executionQualityCooldownEnabled,
+      maxExecutionQualityRankPenalty,
+      minExecutionQualitySizeMultiplier,
+      highSlippageThresholdPct,
+      badFillThresholdPct,
+      executionQualityDecayPerHour,
       riskBudgetSizingEnabled,
       maxRiskPerTradeDollars,
       maxRiskPerTradePctEquity,
@@ -675,7 +728,7 @@ function createStockScanner(options = {}) {
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     writeScannerRuntimeState({
       scanner: 'stock-scanner',
@@ -708,6 +761,7 @@ function createStockScanner(options = {}) {
           base_rank_score: roundScore(candidate.baseRankScore ?? candidate.rankScore),
           recent_trade_rank_penalty: roundScore(candidate.recentTradeRankPenalty || 0),
           setup_rank_penalty: roundScore(candidate.setupRankPenalty || 0),
+          execution_quality_rank_penalty: roundScore(candidate.executionQualityRankPenalty || 0),
           spread_rank_penalty: roundScore(candidate.spreadRankPenalty || 0),
           total_rank_penalty: roundScore(candidate.totalRankPenalty ?? candidate.recentTradeRankPenalty ?? 0),
           adjusted_rank_score: roundScore(candidate.rankScore),
@@ -716,6 +770,8 @@ function createStockScanner(options = {}) {
           sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
           risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
           structure_stop: candidate.payload?.structure_stop || null,
+          execution_quality: candidate.payload?.execution_quality || null,
+          execution_quality_state: candidate.payload?.execution_quality_state || null,
           candidate_lifecycle_status: candidate.payload?.market_context?.scanner?.candidate_lifecycle_status || null,
           candidate_lifecycle_reason_codes: candidate.payload?.market_context?.scanner?.candidate_lifecycle_reason_codes || [],
           candidate_lifecycle_decayed_rank: candidate.payload?.market_context?.scanner?.candidate_lifecycle_decayed_rank || null,
@@ -744,11 +800,17 @@ function createStockScanner(options = {}) {
       } : null,
       allocation,
       partial_fill_state: partialFillSummary,
+      execution_quality_state: executionQualityState || null,
+      execution_quality_summary: executionQualitySummary || null,
       broker_state: brokerState,
       intraday_regime: intradayRegime,
       optional_hooks: optionalHooks || {
         volatility_stop_enabled: Boolean(volatilityStopEnabled),
         market_quality_ranking_enabled: Boolean(marketQualityRankingEnabled),
+        execution_quality_feedback_enabled: Boolean(executionQualityFeedbackEnabled),
+        execution_quality_rank_penalty_enabled: Boolean(executionQualityRankPenaltyEnabled),
+        execution_quality_size_multiplier_enabled: Boolean(executionQualitySizeMultiplierEnabled),
+        execution_quality_cooldown_enabled: Boolean(executionQualityCooldownEnabled),
         risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
       },
       risk_budget_sizing: {
@@ -760,6 +822,11 @@ function createStockScanner(options = {}) {
         max_stop_distance_dollars: maxStopDistanceDollars,
         allow_fractional_shares: Boolean(allowRiskBudgetFractionalShares),
         require_broker_equity: Boolean(riskBudgetRequireBrokerEquity),
+        execution_quality_feedback_enabled: Boolean(executionQualityFeedbackEnabled),
+        execution_quality_rank_penalty_enabled: Boolean(executionQualityRankPenaltyEnabled),
+        execution_quality_size_multiplier_enabled: Boolean(executionQualitySizeMultiplierEnabled),
+        execution_quality_cooldown_enabled: Boolean(executionQualityCooldownEnabled),
+        execution_quality_decay_per_hour: executionQualityDecayPerHour,
         latest_candidates: candidates
           .filter((candidate) => candidate.payload?.side === 'buy')
           .map((candidate) => ({
@@ -767,6 +834,8 @@ function createStockScanner(options = {}) {
             sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
             risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
             structure_stop: candidate.payload?.structure_stop || null,
+            execution_quality: candidate.payload?.execution_quality || null,
+            execution_quality_size_multiplier: candidate.payload?.market_context?.scanner?.execution_quality_size_multiplier || null,
           })),
       },
       rank_floor: {
@@ -796,6 +865,7 @@ function createStockScanner(options = {}) {
         paused_setups: setupFatigueSummary.paused_setups,
       } : null,
       candidate_lifecycle: candidateLifecycleSummary || summarizeCandidateLifecycleState(candidateLifecycleState || {}),
+      execution_quality: executionQualitySummary,
       position_exit_state: candidates
         .filter((candidate) => candidate.exitState)
         .map((candidate) => candidate.exitState),
@@ -1058,6 +1128,16 @@ function buildCandidates(bundle, options = {}) {
       setupFatigueEnabled: options.setupFatigueEnabled,
       setupFatigueThreshold: options.setupFatigueThreshold,
       sessionGuards: options.sessionGuards,
+      executionQualityState: options.executionQualityState,
+      executionQualitySummary: options.executionQualitySummary,
+      executionQualityFeedbackEnabled: options.executionQualityFeedbackEnabled,
+      executionQualityRankPenaltyEnabled: options.executionQualityRankPenaltyEnabled,
+      executionQualitySizeMultiplierEnabled: options.executionQualitySizeMultiplierEnabled,
+      executionQualityCooldownEnabled: options.executionQualityCooldownEnabled,
+      maxExecutionQualityRankPenalty: options.maxExecutionQualityRankPenalty,
+      minExecutionQualitySizeMultiplier: options.minExecutionQualitySizeMultiplier,
+      highSlippageThresholdPct: options.highSlippageThresholdPct,
+      badFillThresholdPct: options.badFillThresholdPct,
       candidateLifecycleEnabled: options.candidateLifecycleEnabled,
       candidateLifecycleState: options.candidateLifecycleState,
       candidateMinScansBeforeEntry: options.candidateMinScansBeforeEntry,
@@ -1489,6 +1569,54 @@ function getRecentTradePenalty(penalties, symbol) {
   return penalties[normalized] || null;
 }
 
+function resolveExecutionQualityEntry(summary, symbol, setupKey = null, side = 'buy', timeRegime = null) {
+  if (!summary) return null;
+  const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+  if (!normalizedSymbol) return null;
+  const normalizedSetup = String(setupKey || '').trim().toLowerCase();
+  const normalizedSide = String(side || 'buy').trim().toLowerCase() || 'buy';
+  const normalizedRegime = String(timeRegime || '').trim().toLowerCase();
+  const candidates = [];
+  const bySymbol = Array.isArray(summary.by_symbol) ? summary.by_symbol : [];
+  const bySetup = Array.isArray(summary.by_setup) ? summary.by_setup : [];
+  const stateEntries = Array.isArray(summary.entries) ? summary.entries : [];
+
+  for (const entry of [...bySymbol, ...bySetup, ...stateEntries]) {
+    if (!entry) continue;
+    const key = normalizeExecutionQualityKey(entry.symbol || normalizedSymbol, entry.setup_key || normalizedSetup, entry.side || normalizedSide, entry.time_regime || normalizedRegime);
+    const targetKey = normalizeExecutionQualityKey(normalizedSymbol, normalizedSetup || entry.setup_key || null, normalizedSide, normalizedRegime || entry.time_regime || null);
+    if (key === targetKey) candidates.push(entry);
+    if (String(entry.symbol || '').trim().toUpperCase() === normalizedSymbol && (!normalizedSetup || String(entry.setup_key || '').trim().toLowerCase() === normalizedSetup)) {
+      candidates.push(entry);
+    }
+  }
+
+  const best = candidates
+    .filter(Boolean)
+    .sort((a, b) => safeNumber(b.effective_penalty_points ?? b.penalty_points ?? 0, 0) - safeNumber(a.effective_penalty_points ?? a.penalty_points ?? 0, 0))[0] || null;
+  return best;
+}
+
+function getExecutionQualityCooldown(entry, now = nowIso()) {
+  if (!entry) return null;
+  const recent = Array.isArray(entry.recent_records) ? entry.recent_records[0] : null;
+  const recommendation = recent?.cooldown_recommendation || entry.cooldown_recommendation || null;
+  const minutes = Math.max(0, safeNumber(recommendation?.minutes, 0));
+  if (minutes <= 0) return { active: false, remaining_seconds: 0, expires_at: null, reason_codes: [] };
+  const startedAt = recent?.timestamp || entry.last_bad_execution_at || entry.updated_at || now;
+  const startedAtMs = new Date(startedAt).getTime();
+  const expiresAtMs = Number.isFinite(startedAtMs) ? startedAtMs + (minutes * 60_000) : null;
+  const remainingSeconds = Number.isFinite(expiresAtMs) ? Math.max(0, Math.round((expiresAtMs - new Date(now).getTime()) / 1000)) : 0;
+  return {
+    active: remainingSeconds > 0,
+    reason: recommendation?.reason || entry.last_classification || 'execution_quality',
+    reason_codes: ['EXECUTION_QUALITY_COOLDOWN_ACTIVE', `EXECUTION_QUALITY_${String(recommendation?.reason || entry.last_classification || 'EXECUTION_QUALITY').toUpperCase()}`],
+    remaining_seconds: remainingSeconds,
+    expires_at: Number.isFinite(expiresAtMs) ? new Date(expiresAtMs).toISOString() : null,
+    cooldown_minutes: minutes,
+  };
+}
+
 function resolveCandidateLifecycleKey(candidate = {}) {
   const symbol = String(candidate.symbol || '').trim().toUpperCase();
   const setupKey = String(candidate.setupKey || candidate.setup_key || candidate.payload?.market_context?.setup_key || '').trim().toLowerCase();
@@ -1668,6 +1796,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
 function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, options }) {
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const notional = safeNumber(options.notional, 150);
+  const minBuyNotional = Math.max(1, safeNumber(options.minBuyNotional ?? options.allocation?.floor ?? 25, 25));
   if (!Number.isFinite(notional) || notional <= 0) {
     options.skipTracker?.record?.('BELOW_MINIMUM_BUY_NOTIONAL', { symbol, notional });
     return null;
@@ -1697,12 +1826,39 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   }
   const recentTradeRankPenalty = Math.max(0, safeNumber(recentPenalty?.penalty, 0));
   const setupRankPenalty = Math.max(0, safeNumber(setupPenalty?.penalty, 0));
+  const executionQualityEntry = resolveExecutionQualityEntry(options.executionQualitySummary, symbol, options.setupKey, 'buy');
+  const executionQualityPenalty = options.executionQualityRankPenaltyEnabled
+    ? Math.min(
+      Math.max(0, safeNumber(options.maxExecutionQualityRankPenalty, 40)),
+      Math.max(0, safeNumber(executionQualityEntry?.effective_penalty_points ?? executionQualityEntry?.penalty_points ?? executionQualityEntry?.average_penalty_points ?? 0, 0)),
+    )
+    : 0;
+  const executionQualitySizeMultiplier = options.executionQualitySizeMultiplierEnabled
+    ? Math.max(
+      Math.max(0.5, safeNumber(options.minExecutionQualitySizeMultiplier, 0.5)),
+      Math.min(1, safeNumber(executionQualityEntry?.effective_size_multiplier ?? executionQualityEntry?.size_multiplier ?? 1, 1)),
+    )
+    : 1;
+  const executionQualityCooldown = options.executionQualityCooldownEnabled
+    ? getExecutionQualityCooldown(executionQualityEntry, options.receivedAt || nowIso())
+    : null;
+  if (executionQualityCooldown?.active) {
+    options.skipTracker?.record?.('EXECUTION_QUALITY_COOLDOWN_ACTIVE', {
+      symbol,
+      setup_key: options.setupKey || null,
+      execution_quality: executionQualityEntry || null,
+      cooldown_until: executionQualityCooldown.expires_at || null,
+      remaining_seconds: executionQualityCooldown.remaining_seconds || 0,
+      reason_codes: executionQualityCooldown.reason_codes || [],
+    });
+    return null;
+  }
   const spreadRankPenalty = calculateSpreadRankPenalty(spreadPct, {
     thresholdPct: options.spreadRankPenaltyThresholdPct,
     penaltyPerPct: options.spreadRankPenaltyPerPct,
     cap: options.spreadRankPenaltyCap,
   });
-  const totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty;
+  const totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty + executionQualityPenalty;
   const rankScore = baseRankScore - totalRankPenalty;
   const minAdjustedRankScore = safeNumber(options.minAdjustedRankScore, Number.NEGATIVE_INFINITY);
   if (rankScore < minAdjustedRankScore) {
@@ -1711,6 +1867,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
       base_rank_score: roundScore(baseRankScore),
       recent_trade_rank_penalty: roundScore(recentTradeRankPenalty),
       setup_rank_penalty: roundScore(setupRankPenalty),
+      execution_quality_rank_penalty: roundScore(executionQualityPenalty),
       spread_rank_penalty: roundScore(spreadRankPenalty),
       total_rank_penalty: roundScore(totalRankPenalty),
       adjusted_rank_score: roundScore(rankScore),
@@ -1790,6 +1947,21 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     takeProfitOverride = roundEquityPrice(currentPrice + Math.max(structureStop.stop_distance * 1.8, currentPrice * 0.02));
     sizingMethod = 'risk_budget';
   }
+  if (options.executionQualitySizeMultiplierEnabled && executionQualitySizeMultiplier < 1) {
+    candidateNotional = roundCurrency(Math.max(options.allocation?.floor ?? 0, candidateNotional * executionQualitySizeMultiplier));
+    if (Number.isFinite(candidateQuantity)) {
+      candidateQuantity = Number((candidateQuantity * executionQualitySizeMultiplier).toFixed(6));
+    }
+    if (candidateNotional < Math.max(options.allocation?.floor ?? 0, minBuyNotional)) {
+      options.skipTracker?.record?.('EXECUTION_QUALITY_SIZE_REDUCTION', {
+        symbol,
+        execution_quality: executionQualityEntry || null,
+        execution_quality_size_multiplier: executionQualitySizeMultiplier,
+        reduced_notional: candidateNotional,
+      });
+      return null;
+    }
+  }
   const candidate = buildSignalCandidate({
     symbol,
     side: 'buy',
@@ -1811,6 +1983,9 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     baseRankScore,
     recentTradeRankPenalty,
     setupRankPenalty,
+    executionQualityPenalty,
+    executionQualityEntry,
+    executionQualitySizeMultiplier,
     spreadRankPenalty,
     totalRankPenalty,
     recentTradePenalty: recentPenalty,
@@ -1875,7 +2050,7 @@ function getStopoutClusterBlock(recentPenalty, { blockMinutes = 30, blockCount =
   };
 }
 
-function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, setupFatigue = null, sessionGuards = null, exitState = null, setupKey = null }) {
+function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, executionQualityPenalty = 0, executionQualityEntry = null, executionQualitySizeMultiplier = 1, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, setupFatigue = null, sessionGuards = null, exitState = null, setupKey = null }) {
   const receivedAt = options.receivedAt || nowIso();
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
@@ -1931,12 +2106,16 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       base_rank_score: side === 'buy' ? roundScore(baseRankScore) : null,
       recent_trade_rank_penalty: side === 'buy' ? roundScore(recentTradeRankPenalty) : 0,
       setup_rank_penalty: side === 'buy' ? roundScore(setupRankPenalty) : 0,
+      execution_quality_rank_penalty: side === 'buy' ? roundScore(safeNumber(executionQualityPenalty, 0)) : 0,
       spread_rank_penalty: side === 'buy' ? roundScore(spreadRankPenalty) : 0,
       total_rank_penalty: side === 'buy' ? roundScore(totalRankPenalty) : 0,
       adjusted_rank_score: side === 'buy' ? roundScore(rankScore) : null,
       min_adjusted_rank_score: side === 'buy' ? roundScore(safeNumber(options.minAdjustedRankScore, Number.NEGATIVE_INFINITY)) : null,
       recent_trade_at: side === 'buy' ? recentTradePenalty?.last_traded_at || null : null,
       recent_trade_penalty_reason: side === 'buy' ? recentTradePenalty?.reason || null : null,
+      execution_quality_penalty_reason: side === 'buy' ? executionQualityEntry?.last_classification || executionQualityEntry?.classification || null : null,
+      execution_quality_size_multiplier: side === 'buy' ? roundScore(safeNumber(executionQualitySizeMultiplier, 1)) : null,
+      execution_quality_penalty_points: side === 'buy' ? roundScore(safeNumber(executionQualityEntry?.effective_penalty_points ?? executionQualityEntry?.penalty_points ?? 0, 0)) : null,
       setup_trade_at: side === 'buy' ? setupPenalty?.last_traded_at || null : null,
       setup_trade_penalty_reason: side === 'buy' ? setupPenalty?.reason || null : null,
       anti_churn_recent_winner_protected: side === 'buy' ? Boolean(recentTradePenalty?.recent_winner_protected || setupPenalty?.recent_winner_protected) : false,
@@ -1952,6 +2131,8 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       sizing_method: side === 'buy' ? sizingMethod : null,
       risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
       structure_stop: side === 'buy' ? structureStop : null,
+      execution_quality: side === 'buy' ? executionQualityEntry || null : null,
+      execution_quality_state: side === 'buy' ? options.executionQualitySummary || null : null,
       setup_fatigue: side === 'buy' ? setupFatigue : null,
       session_guards: side === 'buy' ? summarizeSessionGuards(sessionGuards) : null,
     },
@@ -2043,6 +2224,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     baseRankScore,
     recentTradeRankPenalty,
     setupRankPenalty,
+    executionQualityPenalty,
     spreadRankPenalty,
     totalRankPenalty,
     recentTradePenalty,

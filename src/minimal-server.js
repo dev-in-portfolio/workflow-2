@@ -4,6 +4,7 @@ const path = require('path');
 const { URL } = require('url');
 const { InMemoryAuditStore } = require('./audit');
 const { PerformanceStore } = require('./feedback-loop');
+const { resolveExecutionQualityStatePath } = require('./execution-quality-state');
 const { PaperTradeAdapter } = require('./paper-adapter');
 const { processMarketInput, processTradingSignal } = require('./trading-loop');
 const { nowIso } = require('./util');
@@ -20,6 +21,7 @@ function createMinimalTradingServer(options = {}) {
       historyPath: options.performanceHistoryPath || null,
       policyPath: options.policyPath || null,
       policyHistoryPath: options.policyHistoryPath || null,
+      executionQualityPath: options.executionQualityPath || resolveExecutionQualityStatePath({ repoRoot: options.repoRoot || process.cwd() }),
       startupPolicyPatch: options.startupPolicyPatch || null,
       initialPolicySnapshot: options.initialPolicySnapshot || null,
     }),

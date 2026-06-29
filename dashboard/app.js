@@ -85,6 +85,7 @@ function render(snapshot) {
   renderRecentTrades(recentTrades, summary.last_trade_at);
   renderGuards(live?.session_guards, live?.setup_fatigue_summary);
   renderCandidateLifecycle(live?.candidate_lifecycle_summary || live?.scanner_runtime?.candidate_lifecycle_summary);
+  renderExecutionQuality(live?.execution_quality_summary || live?.scanner_runtime?.execution_quality_summary || live?.execution_quality_state);
 }
 
 function updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus }) {
@@ -270,6 +271,69 @@ function renderCandidateLifecycle(summary) {
   for (const candidate of watched.slice(0, 2)) cards.push(renderCandidateCard(candidate, 'warn', 'watching'));
   for (const candidate of blocked.slice(0, 2)) cards.push(renderCandidateCard(candidate, 'bad', 'blocked'));
   for (const candidate of expired.slice(0, 2)) cards.push(renderCandidateCard(candidate, 'neutral', 'expired'));
+  target.innerHTML = cards.join('');
+}
+
+function renderExecutionQuality(summary) {
+  const target = $('executionQualityList');
+  const meta = $('executionQualityMeta');
+  if (!target || !meta) return;
+  const recentBadFills = Array.isArray(summary?.recent_bad_fills) ? summary.recent_bad_fills : [];
+  const topSymbols = Array.isArray(summary?.by_symbol) ? summary.by_symbol : [];
+  const topSetups = Array.isArray(summary?.by_setup) ? summary.by_setup : [];
+  if (!recentBadFills.length && !topSymbols.length && !topSetups.length) {
+    meta.textContent = 'No execution quality state';
+    target.innerHTML = '<div class="empty-state">No execution quality state is currently active.</div>';
+    return;
+  }
+  meta.textContent = `${formatCount(summary?.total_trades)} trades, ${formatPercent(summary?.partial_fill_rate * 100 || 0, 0)} partial fills`;
+  const cards = [];
+  cards.push(`
+    <article class="trade-card guard-card lifecycle-card neutral">
+      <div class="trade-card-top">
+        <strong>Overview</strong>
+        <span class="trade-pnl neutral">${escapeHtml(formatNumber(summary?.average_quality_score ?? 0, 1))}</span>
+      </div>
+      <div class="trade-card-grid">
+        <span><b>Avg quality</b> ${escapeHtml(formatNumber(summary?.average_quality_score ?? 0, 1))}</span>
+        <span><b>Avg penalty</b> ${escapeHtml(formatNumber(summary?.average_execution_penalty_points ?? 0, 1))}</span>
+        <span><b>Partial fills</b> ${escapeHtml(formatPercent(summary?.partial_fill_rate * 100 || 0, 0))}</span>
+        <span><b>Reject / cancel</b> ${escapeHtml(formatPercent((summary?.rejection_rate || 0) * 100, 0))} / ${escapeHtml(formatPercent((summary?.cancellation_rate || 0) * 100, 0))}</span>
+      </div>
+    </article>
+  `);
+  const renderBucketCard = (bucket, label, tone) => `
+    <article class="trade-card guard-card lifecycle-card ${tone}">
+      <div class="trade-card-top">
+        <strong><code>${escapeHtml(bucket.symbol || bucket.setup_key || bucket.key || missingText)}</code></strong>
+        <span class="trade-pnl ${bucket.effective_penalty_points > 0 ? 'warn' : 'ok'}">${escapeHtml(formatNumber(bucket.effective_penalty_points ?? bucket.penalty_points ?? 0, 1))}</span>
+      </div>
+      <div class="trade-card-grid">
+        <span><b>${escapeHtml(label)}</b> ${escapeHtml(bucket.trade_count || 0)}</span>
+        <span><b>Quality</b> ${escapeHtml(formatNumber(bucket.average_quality_score ?? 0, 1))}</span>
+        <span><b>Slip / drag</b> ${escapeHtml(formatNumber(bucket.average_slippage ?? 0, 2))} / ${escapeHtml(formatNumber(bucket.average_execution_drag ?? 0, 2))}</span>
+        <span><b>Size</b> ${escapeHtml(formatPercent((bucket.effective_size_multiplier ?? bucket.size_multiplier ?? 1) * 100, 0))}</span>
+      </div>
+    </article>
+  `;
+  for (const bucket of topSymbols.slice(0, 2)) cards.push(renderBucketCard(bucket, 'Symbol', bucket.effective_penalty_points > 0 ? 'warn' : 'good'));
+  for (const bucket of topSetups.slice(0, 2)) cards.push(renderBucketCard(bucket, 'Setup', bucket.effective_penalty_points > 0 ? 'warn' : 'good'));
+  for (const bad of recentBadFills.slice(0, 2)) {
+    cards.push(`
+      <article class="trade-card guard-card lifecycle-card bad">
+        <div class="trade-card-top">
+          <strong><code>${escapeHtml(bad.symbol || missingText)}</code></strong>
+          <span class="trade-pnl warn">${escapeHtml(bad.classification || 'unknown')}</span>
+        </div>
+        <div class="trade-card-grid">
+          <span><b>Setup</b> ${escapeHtml(bad.setup_key || missingText)}</span>
+          <span><b>Penalty</b> ${escapeHtml(formatNumber(bad.execution_penalty_points ?? 0, 1))}</span>
+          <span><b>Slippage</b> ${escapeHtml(formatNumber(bad.slippage ?? 0, 2))}</span>
+          <span><b>When</b> ${escapeHtml(formatRelativeTime(bad.recorded_at) || formatClock(bad.recorded_at) || missingText)}</span>
+        </div>
+      </article>
+    `);
+  }
   target.innerHTML = cards.join('');
 }
 

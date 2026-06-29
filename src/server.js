@@ -8,6 +8,7 @@ const { buildReviewItem } = require('./review');
 const { comparePolicyPerformance } = require('./walk-forward');
 const { validatePaperOrderWebhookPayload } = require('./webhooks');
 const { processMarketInput, processTradingSignal } = require('./trading-loop');
+const { resolveExecutionQualityStatePath } = require('./execution-quality-state');
 
 function createTradingControlServer(options = {}) {
   const state = {
@@ -18,6 +19,7 @@ function createTradingControlServer(options = {}) {
       historyPath: options.performanceHistoryPath || null,
       policyPath: options.policyPath || null,
       policyHistoryPath: options.policyHistoryPath || null,
+      executionQualityPath: options.executionQualityPath || resolveExecutionQualityStatePath({ repoRoot: options.repoRoot || process.cwd() }),
       startupPolicyPatch: options.startupPolicyPatch || null,
       initialPolicySnapshot: options.initialPolicySnapshot || null,
     }),

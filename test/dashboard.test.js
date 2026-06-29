@@ -173,6 +173,53 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       },
     },
   }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'execution-quality-state.json'), JSON.stringify({
+    version: '2026-06-25.execution-quality-state.1',
+    updated_at: '2026-06-19T15:01:30.000Z',
+    last_reconciled_at: '2026-06-19T15:01:30.000Z',
+    entries: {
+      'MU::mu-breakout::buy::regular': {
+        key: 'MU::mu-breakout::buy::regular',
+        symbol: 'MU',
+        setup_key: 'mu-breakout',
+        side: 'buy',
+        time_regime: 'regular',
+        trade_count: 1,
+        average_quality_score: 54,
+        average_slippage: 1.9,
+        average_execution_drag: 0.5,
+        partial_fill_count: 0,
+        rejection_count: 0,
+        cancellation_count: 0,
+        duplicate_risk_count: 0,
+        last_bad_execution_at: '2026-06-19T15:01:30.000Z',
+        penalty_points: 46,
+        size_multiplier: 0.77,
+        updated_at: '2026-06-19T15:01:30.000Z',
+        recent_records: [{
+          timestamp: '2026-06-19T15:01:30.000Z',
+          classification: 'bad_fill',
+          execution_quality_score: 54,
+          execution_penalty_points: 46,
+          slippage: 1.9,
+          execution_drag: 0.5,
+          reason_codes: ['BAD_FILL_SLIPPAGE'],
+        }],
+        classifications: {
+          bad_fill: 1,
+          excellent_fill: 0,
+          normal_fill: 0,
+          high_slippage: 0,
+          partial_fill: 0,
+          rejected_order: 0,
+          canceled_order: 0,
+          stale_execution: 0,
+          duplicate_risk: 0,
+          unknown: 0,
+        },
+      },
+    },
+  }, null, 2));
   fs.writeFileSync(path.join(dataDir, 'runtime', 'candidate-lifecycle-state.json'), JSON.stringify({
     version: '2026-06-25.candidate-lifecycle-state.1',
     updated_at: '2026-06-19T15:02:00.000Z',
@@ -430,6 +477,8 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.broker_local_reconciliation.status, 'WARN');
   assert.equal(snapshot.live.reconciliation_summary.mismatch_count, 1);
   assert.equal(snapshot.live.partial_fill_summary.count, 1);
+  assert.equal(snapshot.live.execution_quality_summary.total_trades, 1);
+  assert.equal(snapshot.live.execution_quality_summary.by_symbol[0].symbol, 'MU');
   assert.deepEqual(snapshot.live.partial_fill_summary.blocked_symbols, ['AAPL']);
   assert.equal(snapshot.live.candidate_lifecycle_summary.queue_enabled, true);
   assert.equal(snapshot.live.candidate_lifecycle_summary.selected_symbol, 'MU');
@@ -447,6 +496,8 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.reconciliation_status, 'WARN');
   assert.equal(snapshot.summary.reconciliation_mismatch_count, 1);
   assert.equal(snapshot.summary.partial_fill_count, 1);
+  assert.equal(snapshot.summary.execution_quality_total_trades, 1);
+  assert.equal(snapshot.summary.execution_quality_average_score, 54);
   assert.equal(snapshot.summary.candidate_lifecycle_queue_enabled, true);
   assert.equal(snapshot.summary.candidate_lifecycle_selected_symbol, 'MU');
   assert.equal(snapshot.summary.candidate_lifecycle_blocked_count, 1);

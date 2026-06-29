@@ -1,9 +1,18 @@
 const fs = require('fs');
 const path = require('path');
 const { computePaperOutcome } = require('./paper-outcomes');
-const { calculateDrawdown, generateDailyLiveResultsReport, summarizeFillQuality } = require('./metrics');
+const { calculateDrawdown, generateDailyLiveResultsReport, summarizeFillQuality, summarizeExecutionQuality } = require('./metrics');
 const { buildThresholdProposal } = require('./performance-tuning');
 const { assertPerformanceRecord } = require('./module-contracts');
+const {
+  classifyExecutionQuality,
+  defaultExecutionQualityState,
+  loadExecutionQualityState,
+  resolveExecutionQualityStatePath,
+  saveExecutionQualityState,
+  summarizeExecutionQualityState,
+  updateExecutionQualityState,
+} = require('./execution-quality-state');
 const { nowIso, safeNumber } = require('./util');
 
 class PerformanceStore {
@@ -11,6 +20,9 @@ class PerformanceStore {
     this.historyPath = options.historyPath || null;
     this.policyPath = options.policyPath || null;
     this.policyHistoryPath = options.policyHistoryPath || null;
+    this.executionQualityPath = options.executionQualityPath || null;
+    this.executionQualityDecayPerHour = Math.max(0, safeNumber(options.executionQualityDecayPerHour, 0));
+    this.executionQualityMinSizeMultiplier = Math.max(0.5, Math.min(1, safeNumber(options.executionQualityMinSizeMultiplier, 0.5)));
     this.startupPolicyPatch = options.startupPolicyPatch || null;
     this.signals = [];
     this.riskDecisions = [];
@@ -18,6 +30,9 @@ class PerformanceStore {
     this.events = [];
     this.policySnapshot = null;
     this.policyHistory = [];
+    this.executionQualityState = this.executionQualityPath
+      ? loadExecutionQualityState(this.executionQualityPath)
+      : defaultExecutionQualityState();
     if (this.historyPath) {
       this.loadHistoryFromDisk(this.historyPath);
     }
@@ -67,6 +82,31 @@ class PerformanceStore {
       ...outcome,
       recorded_at: recordedAt,
     };
+    const executionRecord = buildExecutionQualityRecord(record);
+    const executionQuality = classifyExecutionQuality(executionRecord, {
+      highSlippageThresholdPct: 0.5,
+      badFillThresholdPct: 2,
+      minSizeMultiplier: this.executionQualityMinSizeMultiplier,
+    });
+    const updatedQuality = updateExecutionQualityState(this.executionQualityState, {
+      ...executionRecord,
+      execution_quality: executionQuality,
+    }, {
+      now: recordedAt,
+      decayPerHour: this.executionQualityDecayPerHour,
+      minSizeMultiplier: this.executionQualityMinSizeMultiplier,
+    });
+    this.executionQualityState = updatedQuality.state;
+    if (this.executionQualityPath) {
+      saveExecutionQualityState(this.executionQualityState, this.executionQualityPath);
+    }
+    record.execution_quality = executionQuality;
+    record.execution_quality_score = executionQuality.execution_quality_score;
+    record.execution_penalty_points = executionQuality.execution_penalty_points;
+    record.execution_size_multiplier = executionQuality.size_multiplier;
+    record.execution_cooldown_recommendation = executionQuality.cooldown_recommendation;
+    record.execution_quality_classification = executionQuality.classification;
+    record.execution_quality_state = updatedQuality.summary;
     this.paperOutcomes.push(record);
     this.appendHistoryRecord('paper_outcome', record);
     return record;
@@ -273,6 +313,18 @@ class PerformanceStore {
   getPolicyHistory() {
     if (this.policyHistory.length) return this.policyHistory.slice();
     return [this.getPolicySnapshot()];
+  }
+
+  getExecutionQualityState() {
+    return this.executionQualityState || (this.executionQualityPath ? loadExecutionQualityState(this.executionQualityPath) : defaultExecutionQualityState());
+  }
+
+  getExecutionQualitySummary(options = {}) {
+    return summarizeExecutionQualityState(this.getExecutionQualityState(), {
+      now: options.now || nowIso(),
+      decayPerHour: this.executionQualityDecayPerHour,
+      minSizeMultiplier: this.executionQualityMinSizeMultiplier,
+    });
   }
 
   getPolicyEffectiveness({ dateFrom = null, dateTo = null, limit = 20 } = {}) {
@@ -538,6 +590,37 @@ class PerformanceStore {
       .sort((a, b) => b.getTime() - a.getTime())[0];
     return latest ? latest.toISOString().slice(0, 10) : null;
   }
+}
+
+function buildExecutionQualityRecord(record = {}) {
+  const paperResult = record.paper_result || record.paperResult || {};
+  const signal = record.original_signal || {};
+  const marketContext = signal.market_context || record.market_context || {};
+  const scannerContext = marketContext.scanner || {};
+  const side = String(record.side || paperResult.side || signal.side || '').trim().toLowerCase() || null;
+  const symbol = String(record.symbol || paperResult.symbol || signal.symbol || '').trim().toUpperCase() || null;
+  return {
+    symbol,
+    setup_key: scannerContext.setup_key || signal.setup_key || signal.setupKey || null,
+    side,
+    order_type: paperResult.order_type || record.order_type || signal.order_type || null,
+    submitted_price: safeNumber(paperResult.submitted_price ?? paperResult.entry_price ?? record.entry_price ?? signal.entry_price ?? signal.price ?? null, null),
+    expected_price: safeNumber(paperResult.expected_price ?? signal.entry_price ?? signal.price ?? null, null),
+    filled_avg_price: safeNumber(paperResult.average_fill_price ?? paperResult.filled_avg_price ?? paperResult.filled_price ?? null, null),
+    filled_qty: safeNumber(paperResult.filled_quantity ?? paperResult.filled_qty ?? record.quantity ?? signal.quantity ?? null, null),
+    submitted_qty: safeNumber(paperResult.submitted_quantity ?? paperResult.qty ?? record.quantity ?? signal.quantity ?? null, null),
+    status: paperResult.status || record.status || null,
+    slippage: safeNumber(record.execution_slippage ?? record.slippage ?? paperResult.slippage ?? null, null),
+    spread_pct: safeNumber(scannerContext.spread_pct ?? marketContext.spread_pct ?? null, null),
+    execution_drag: safeNumber(record.execution_drag ?? paperResult.execution_drag ?? null, null),
+    partial_fill: Boolean(record.partial_fill || String(paperResult.status || '').toLowerCase() === 'partially_filled'),
+    latency_ms: safeNumber(record.latency_ms ?? paperResult.latency_ms ?? null, null),
+    rejected: String(paperResult.status || record.status || '').toLowerCase() === 'rejected',
+    canceled: String(paperResult.status || record.status || '').toLowerCase().includes('cancel'),
+    duplicate_risk: Boolean(record.duplicate_risk || scannerContext.duplicate_risk || false),
+    timestamp: record.recorded_at || paperResult.filled_at || signal.created_at || nowIso(),
+    time_regime: scannerContext.time_regime || marketContext.time_regime || null,
+  };
 }
 
 function recommendPositionSizeMultiplier({ paperPnl = 0, winRate = 0, blockedRate = 0, falsePositives = 0, drawdown = 0, executionDrag = 0, fillRate = 0, partialFillRate = 0 } = {}) {

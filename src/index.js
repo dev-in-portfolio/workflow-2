@@ -31,6 +31,7 @@ module.exports = {
   ...require('./signals'),
   ...require('./setup-fatigue'),
   ...require('./session-guards'),
+  ...require('./execution-quality-state'),
   ...require('./server'),
   ...require('./server-cli'),
   ...require('./minimal-server'),

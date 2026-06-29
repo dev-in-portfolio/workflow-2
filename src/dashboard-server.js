@@ -18,6 +18,7 @@ const { summarizeCandidateLifecycleState } = require('./candidate-lifecycle-stat
 const { loadAntiChurnState, summarizeAntiChurnState } = require('./anti-churn-engine');
 const { loadSetupFatigueState, summarizeSetupFatigueState } = require('./setup-fatigue');
 const { summarizeSessionGuards } = require('./session-guards');
+const { loadExecutionQualityState, summarizeExecutionQualityState } = require('./execution-quality-state');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -255,6 +256,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const brokerLocalReconciliation = readJsonFileIfPresent(brokerLocalReconciliationPath);
   const partialFillStatePath = path.join(dataDir, 'runtime', 'partial-fill-state.json');
   const partialFillState = readJsonFileIfPresent(partialFillStatePath);
+  const executionQualityStatePath = path.join(dataDir, 'runtime', 'execution-quality-state.json');
+  const executionQualityState = readJsonFileIfPresent(executionQualityStatePath) || loadExecutionQualityState(executionQualityStatePath);
   const candidateLifecycleStatePath = path.join(dataDir, 'runtime', 'candidate-lifecycle-state.json');
   const candidateLifecycleState = readJsonFileIfPresent(candidateLifecycleStatePath);
   const setupFatigueStatePath = path.join(dataDir, 'runtime', 'setup-fatigue-state.json');
@@ -263,6 +266,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const antiChurnState = readJsonFileIfPresent(antiChurnStatePath) || loadAntiChurnState(antiChurnStatePath);
   const antiChurnSummary = summarizeAntiChurnState(antiChurnState || {});
   const partialFillSummary = summarizePartialFillState(partialFillState || {});
+  const executionQualitySummary = summarizeExecutionQualityState(executionQualityState || {});
   const candidateLifecycleSummary = summarizeCandidateLifecycleState(candidateLifecycleState || {});
   const setupFatigueSummary = summarizeSetupFatigueState(setupFatigueState || {});
   const sessionGuards = summarizeSessionGuards(scannerRuntimeFile?.session_guards || null) || null;
@@ -397,6 +401,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       reconciliation_summary: summarizeBrokerLocalReconciliation(brokerLocalReconciliation),
       partial_fill_state: partialFillState || null,
       partial_fill_summary: partialFillSummary,
+      execution_quality_state: executionQualityState || null,
+      execution_quality_summary: executionQualitySummary,
       candidate_lifecycle_state: candidateLifecycleState || null,
       candidate_lifecycle_summary: candidateLifecycleSummary,
       anti_churn_state: antiChurnState || null,
@@ -453,6 +459,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       live_preflight: fileMeta(preflightLatestPath, preflightLatest),
       broker_local_reconciliation: fileMeta(brokerLocalReconciliationPath, brokerLocalReconciliation),
       partial_fill_state: fileMeta(partialFillStatePath, partialFillState),
+      execution_quality_state: fileMeta(executionQualityStatePath, executionQualityState),
       candidate_lifecycle_state: fileMeta(candidateLifecycleStatePath, candidateLifecycleState),
       anti_churn_state: fileMeta(antiChurnStatePath, antiChurnState),
       setup_fatigue_state: fileMeta(setupFatigueStatePath, setupFatigueState),
@@ -472,6 +479,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       preflight: preflightLatest,
       brokerLocalReconciliation,
       partialFillSummary,
+      executionQualitySummary,
       candidateLifecycleSummary,
       antiChurnSummary,
       setupFatigueSummary,
@@ -1479,7 +1487,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, candidateLifecycleSummary = null, antiChurnSummary = null, setupFatigueSummary = null, sessionGuards = null, scannerRuntime = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, executionQualitySummary = null, candidateLifecycleSummary = null, antiChurnSummary = null, setupFatigueSummary = null, sessionGuards = null, scannerRuntime = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1503,6 +1511,22 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     partial_fill_count: safeNumber(partialFillSummary?.count, 0),
     partial_fill_blocked_symbols: partialFillSummary?.blocked_symbols || [],
     partial_fill_reserved_buy_notional: safeNumber(partialFillSummary?.reserved_buy_notional, 0),
+    execution_quality_recent_bad_symbols: Array.isArray(executionQualitySummary?.recent_bad_fills)
+      ? executionQualitySummary.recent_bad_fills.map((item) => item.symbol).filter(Boolean).slice(0, 5)
+      : [],
+    execution_quality_top_symbols: Array.isArray(executionQualitySummary?.by_symbol)
+      ? executionQualitySummary.by_symbol.slice(0, 5)
+      : [],
+    execution_quality_top_setups: Array.isArray(executionQualitySummary?.by_setup)
+      ? executionQualitySummary.by_setup.slice(0, 5)
+      : [],
+    execution_quality_total_trades: safeNumber(executionQualitySummary?.total_trades, 0),
+    execution_quality_average_score: safeNumber(executionQualitySummary?.average_quality_score, 0),
+    execution_quality_partial_fill_rate: safeNumber(executionQualitySummary?.partial_fill_rate, 0),
+    execution_quality_rejection_rate: safeNumber(executionQualitySummary?.rejection_rate, 0),
+    execution_quality_cancellation_rate: safeNumber(executionQualitySummary?.cancellation_rate, 0),
+    execution_quality_duplicate_risk_rate: safeNumber(executionQualitySummary?.duplicate_risk_rate, 0),
+    execution_quality_recent_bad_count: Array.isArray(executionQualitySummary?.recent_bad_fills) ? executionQualitySummary.recent_bad_fills.length : 0,
     candidate_lifecycle_mode: candidateLifecycleSummary?.scanner_mode || null,
     candidate_lifecycle_queue_enabled: Boolean(candidateLifecycleSummary?.queue_enabled),
     candidate_lifecycle_selected_symbol: candidateLifecycleSummary?.selected_symbol || null,

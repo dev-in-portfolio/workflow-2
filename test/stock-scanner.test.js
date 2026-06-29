@@ -179,6 +179,93 @@ test('stock scanner applies a 20 point rank penalty to a recent sell symbol', ()
   assert.equal(penalized.payload.market_context.scanner.recent_trade_penalty_reason, 'compound_recent_sell');
 });
 
+test('stock scanner applies execution quality penalties to buy candidates and leaves sells alone', () => {
+  const executionQualitySummary = {
+    status: 'active',
+    total_entries: 1,
+    total_trades: 1,
+    average_quality_score: 54,
+    average_slippage: 1.9,
+    average_execution_drag: 0.5,
+    partial_fill_rate: 0,
+    rejection_rate: 0,
+    cancellation_rate: 0,
+    duplicate_risk_rate: 0,
+    by_symbol: [{
+      symbol: 'NVDA',
+      setup_key: 'breakout',
+      side: 'buy',
+      time_regime: 'regular',
+      trade_count: 1,
+      average_quality_score: 54,
+      average_slippage: 1.9,
+      average_execution_drag: 0.5,
+      penalty_points: 46,
+      effective_penalty_points: 18,
+      size_multiplier: 0.77,
+      effective_size_multiplier: 0.91,
+      last_classification: 'bad_fill',
+      classifications: {
+        bad_fill: 1,
+        excellent_fill: 0,
+        normal_fill: 0,
+        high_slippage: 0,
+        partial_fill: 0,
+        rejected_order: 0,
+        canceled_order: 0,
+        stale_execution: 0,
+        duplicate_risk: 0,
+        unknown: 0,
+      },
+      recent_records: [],
+    }],
+    by_setup: [],
+    recent_bad_fills: [],
+    penalty_symbols: [],
+    size_reduction_symbols: [],
+    warnings: [],
+  };
+  const plain = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+  });
+  const penalized = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    setupKey: 'breakout',
+    setupFatigueState: {},
+    executionQualitySummary,
+    executionQualityRankPenaltyEnabled: true,
+    executionQualitySizeMultiplierEnabled: true,
+    executionQualityCooldownEnabled: true,
+  });
+  const sellCandidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    stopLossDollars: 1,
+    trailingProfitStartDollars: 0.5,
+    trailingProfitGivebackDollars: 0.3,
+    trailingState: { positions: {} },
+    setupFatigueState: {},
+    executionQualitySummary,
+    executionQualityRankPenaltyEnabled: true,
+    executionQualitySizeMultiplierEnabled: true,
+    executionQualityCooldownEnabled: true,
+  });
+
+  assert(plain);
+  assert(penalized);
+  assert(sellCandidate);
+  assert.equal(Number((plain.rankScore - penalized.rankScore).toFixed(6)), 18);
+  assert.equal(penalized.payload.market_context.scanner.execution_quality_rank_penalty, 18);
+  assert.equal(penalized.payload.market_context.scanner.execution_quality_size_multiplier, 0.91);
+  assert.equal(penalized.payload.market_context.scanner.execution_quality_penalty_reason, 'bad_fill');
+  assert.equal(sellCandidate.payload.side, 'sell');
+  assert.equal(sellCandidate.payload.market_context.scanner.execution_quality_rank_penalty, 0);
+});
+
 test('stock scanner compounds recent sell timers and ignores buys', () => {
   const penalties = normalizeRecentTradePenaltyMap([
     {
@@ -1077,6 +1164,7 @@ test('stock scanner keeps a recent winner eligible when it remains the strongest
     maxOpenPositions: 1,
     marketOpen: true,
     antiChurnState,
+    env: { PERFORMANCE_HISTORY_PATH: 'non_existent_file.jsonl' },
     marketFetch: async (url) => {
       if (url.includes('/v2/positions')) return buildResponse([]);
       if (url.includes('/v2/orders?status=open')) return buildResponse([]);

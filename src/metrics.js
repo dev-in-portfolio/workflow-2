@@ -29,6 +29,7 @@ function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = []
   const stopoutClustering = summarizeStopoutClustering(paperOutcomes);
   const tradeDuration = summarizeTradeDuration(paperOutcomes);
   const slippageSummary = summarizeSlippage(paperOutcomes);
+  const executionQualitySummary = summarizeExecutionQuality(paperOutcomes);
   const falsePositives = paperOutcomes.filter((outcome) => outcome.false_positive || outcome.win_loss === 'loss' && outcome.calibration_bucket === '90-100').length;
   const calibrationBuckets = summarizeCalibrationBuckets(paperOutcomes);
   const falsePositiveBuckets = summarizeFalsePositiveBuckets(paperOutcomes);
@@ -81,6 +82,7 @@ function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = []
     trade_duration_summary: tradeDuration,
     partial_fill_rate: fillQualitySummary.partial_fill_rate,
     slippage_summary: slippageSummary,
+    execution_quality_summary: executionQualitySummary,
     false_positives: falsePositives,
     false_positive_buckets: falsePositiveBuckets,
     signal_quality_summary: signalQualitySummary,
@@ -383,6 +385,129 @@ function summarizeSlippage(paperOutcomes = []) {
   };
 }
 
+function summarizeExecutionQuality(paperOutcomes = []) {
+  const bySymbol = new Map();
+  const bySetup = new Map();
+  const recentBadFills = [];
+  let totalTrades = 0;
+  let totalScore = 0;
+  let totalPenalty = 0;
+  let totalSlippage = 0;
+  let totalExecutionDrag = 0;
+  let partialFillCount = 0;
+  let rejectionCount = 0;
+  let cancellationCount = 0;
+  let duplicateRiskCount = 0;
+
+  for (const outcome of paperOutcomes) {
+    const quality = outcome.execution_quality || {};
+    const symbol = String(outcome.symbol || outcome.original_signal?.symbol || 'unknown').trim().toUpperCase() || 'UNKNOWN';
+    const setupKey = String(outcome.setup_key || outcome.original_signal?.market_context?.setup_key || 'unknown').trim().toLowerCase() || 'unknown';
+    const score = safeNumber(quality.execution_quality_score, safeNumber(outcome.execution_quality_score, null));
+    const penalty = safeNumber(quality.execution_penalty_points, safeNumber(outcome.execution_penalty_points, 0));
+    const slippage = safeNumber(quality.slippage, safeNumber(outcome.slippage ?? outcome.execution_slippage ?? outcome.paper_result?.slippage, null));
+    const drag = safeNumber(quality.execution_drag, safeNumber(outcome.execution_drag, null));
+    const classification = String(quality.classification || outcome.execution_quality_classification || 'unknown');
+    const isBad = !['excellent_fill', 'normal_fill'].includes(classification);
+
+    totalTrades += 1;
+    totalScore += Number.isFinite(score) ? score : 100;
+    totalPenalty += penalty;
+    totalSlippage += Number.isFinite(slippage) ? slippage : 0;
+    totalExecutionDrag += Number.isFinite(drag) ? drag : 0;
+    if (classification === 'partial_fill') partialFillCount += 1;
+    if (classification === 'rejected_order') rejectionCount += 1;
+    if (classification === 'canceled_order') cancellationCount += 1;
+    if (classification === 'duplicate_risk') duplicateRiskCount += 1;
+
+    if (isBad) {
+      recentBadFills.push({
+        symbol,
+        setup_key: setupKey,
+        classification,
+        execution_quality_score: Number.isFinite(score) ? score : null,
+        execution_penalty_points: penalty,
+        slippage,
+        execution_drag: drag,
+        side: outcome.side || outcome.paper_result?.side || null,
+        recorded_at: outcome.recorded_at || outcome.paper_result?.filled_at || null,
+      });
+    }
+
+    const symbolBucket = bySymbol.get(symbol) || {
+      symbol,
+      trade_count: 0,
+      average_quality_score: 0,
+      average_slippage: 0,
+      average_execution_drag: 0,
+      partial_fill_count: 0,
+      rejection_count: 0,
+      cancellation_count: 0,
+      duplicate_risk_count: 0,
+      penalty_points: 0,
+      classifications: {},
+    };
+    symbolBucket.trade_count += 1;
+    symbolBucket.average_quality_score += Number.isFinite(score) ? score : 100;
+    symbolBucket.average_slippage += Number.isFinite(slippage) ? slippage : 0;
+    symbolBucket.average_execution_drag += Number.isFinite(drag) ? drag : 0;
+    symbolBucket.partial_fill_count += classification === 'partial_fill' ? 1 : 0;
+    symbolBucket.rejection_count += classification === 'rejected_order' ? 1 : 0;
+    symbolBucket.cancellation_count += classification === 'canceled_order' ? 1 : 0;
+    symbolBucket.duplicate_risk_count += classification === 'duplicate_risk' ? 1 : 0;
+    symbolBucket.penalty_points += penalty;
+    symbolBucket.classifications[classification] = (symbolBucket.classifications[classification] || 0) + 1;
+    bySymbol.set(symbol, symbolBucket);
+
+    const setupBucket = bySetup.get(setupKey) || {
+      setup_key: setupKey,
+      trade_count: 0,
+      average_quality_score: 0,
+      average_slippage: 0,
+      average_execution_drag: 0,
+      partial_fill_count: 0,
+      rejection_count: 0,
+      cancellation_count: 0,
+      duplicate_risk_count: 0,
+      penalty_points: 0,
+      classifications: {},
+    };
+    setupBucket.trade_count += 1;
+    setupBucket.average_quality_score += Number.isFinite(score) ? score : 100;
+    setupBucket.average_slippage += Number.isFinite(slippage) ? slippage : 0;
+    setupBucket.average_execution_drag += Number.isFinite(drag) ? drag : 0;
+    setupBucket.partial_fill_count += classification === 'partial_fill' ? 1 : 0;
+    setupBucket.rejection_count += classification === 'rejected_order' ? 1 : 0;
+    setupBucket.cancellation_count += classification === 'canceled_order' ? 1 : 0;
+    setupBucket.duplicate_risk_count += classification === 'duplicate_risk' ? 1 : 0;
+    setupBucket.penalty_points += penalty;
+    setupBucket.classifications[classification] = (setupBucket.classifications[classification] || 0) + 1;
+    bySetup.set(setupKey, setupBucket);
+  }
+
+  const finalize = (bucket) => ({
+    ...bucket,
+    average_quality_score: bucket.trade_count ? bucket.average_quality_score / bucket.trade_count : 0,
+    average_slippage: bucket.trade_count ? bucket.average_slippage / bucket.trade_count : null,
+    average_execution_drag: bucket.trade_count ? bucket.average_execution_drag / bucket.trade_count : null,
+  });
+
+  return {
+    total_trades: totalTrades,
+    average_quality_score: totalTrades ? totalScore / totalTrades : 0,
+    average_execution_penalty_points: totalTrades ? totalPenalty / totalTrades : 0,
+    average_slippage: totalTrades ? totalSlippage / totalTrades : null,
+    average_execution_drag: totalTrades ? totalExecutionDrag / totalTrades : null,
+    partial_fill_rate: totalTrades ? partialFillCount / totalTrades : 0,
+    rejection_rate: totalTrades ? rejectionCount / totalTrades : 0,
+    cancellation_rate: totalTrades ? cancellationCount / totalTrades : 0,
+    duplicate_risk_rate: totalTrades ? duplicateRiskCount / totalTrades : 0,
+    by_symbol: [...bySymbol.values()].map(finalize).sort((a, b) => b.penalty_points - a.penalty_points || a.symbol.localeCompare(b.symbol)),
+    by_setup: [...bySetup.values()].map(finalize).sort((a, b) => b.penalty_points - a.penalty_points || a.setup_key.localeCompare(b.setup_key)),
+    recent_bad_fills: recentBadFills.slice(-12).reverse(),
+  };
+}
+
 function recommendOpenPositionCapFromReport({
   currentMaxOpenPositions = 12,
   paperPnl = 0,
@@ -527,6 +652,7 @@ module.exports = {
   summarizeFalsePositiveBuckets,
   summarizeSignalQualityOutliers,
   summarizeFillQuality,
+  summarizeExecutionQuality,
   summarizePnlBy,
   summarizeChurn,
   summarizeStopoutClustering,
