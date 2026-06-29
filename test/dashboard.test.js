@@ -12,6 +12,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   const dataDir = path.join(tempDir, 'data');
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
   fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'logs', 'overnight-status.json'), JSON.stringify({
     status: 'ok',
     mode: 'minimal-v1',
@@ -278,7 +279,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       },
     },
   }, null, 2));
-  fs.writeFileSync(path.join(dataDir, 'logs', 'scanner-runtime.json'), JSON.stringify({
+  fs.writeFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), JSON.stringify({
     scanner: 'stock-scanner',
     mode: 'live-market',
     last_scan_time: '2026-06-19T15:01:00.000Z',

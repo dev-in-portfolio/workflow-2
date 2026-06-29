@@ -61,10 +61,11 @@ function tempRepo() {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'live-preflight-'));
   const dataDir = path.join(repoRoot, 'data');
   fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
   fs.writeFileSync(path.join(repoRoot, '.env.local'), 'TRADING_MODE=live\n');
   const oldMtime = new Date('2026-06-24T12:00:00.000Z');
   fs.utimesSync(path.join(repoRoot, '.env.local'), oldMtime, oldMtime);
-  fs.writeFileSync(path.join(dataDir, 'logs', 'scanner-runtime.json'), JSON.stringify({
+  fs.writeFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), JSON.stringify({
     updated_at: '2026-06-24T13:00:00.000Z',
     last_scan_time: '2026-06-24T13:00:00.000Z',
   }));

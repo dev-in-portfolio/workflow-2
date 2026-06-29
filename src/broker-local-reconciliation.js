@@ -82,7 +82,7 @@ function loadLocalState(options = {}) {
   const historyEntries = Array.isArray(options.localPerformanceHistory)
     ? options.localPerformanceHistory
     : readJsonl(options.performanceHistoryPath || path.join(options.dataDir, 'performance-history.jsonl'));
-  const scannerRuntime = options.scannerRuntime || readJson(options.scannerRuntimePath || path.join(options.dataDir, 'logs', 'scanner-runtime.json'));
+  const scannerRuntime = options.scannerRuntime || readJson(options.scannerRuntimePath || path.join(options.dataDir, 'state', 'scanner-runtime.json'));
   const trailingState = options.trailingState || loadTrailingState({ env: options.env || process.env, repoRoot: options.repoRoot });
   return {
     positions: options.localPositions || deriveLocalPositions(historyEntries),

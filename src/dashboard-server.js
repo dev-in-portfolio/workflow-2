@@ -247,9 +247,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const overnightStatusFilePath = path.join(dataDir, 'logs', 'overnight-status.json');
   const overnightStatusFile = readJsonFileIfPresent(overnightStatusFilePath);
   const overnightStatusFileMeta = fileMeta(overnightStatusFilePath, overnightStatusFile);
-  const scannerRuntimeFilePath = path.join(dataDir, 'logs', 'scanner-runtime.json');
-  const scannerRuntimeFile = readJsonFileIfPresent(scannerRuntimeFilePath);
-  const scannerRuntimeFileMeta = fileMeta(scannerRuntimeFilePath, scannerRuntimeFile);
+  const scannerRuntimeStatePath = path.join(dataDir, 'state', 'scanner-runtime.json');
+  const scannerRuntimeFile = readJsonFileIfPresent(scannerRuntimeStatePath);
+  const scannerRuntimeFileMeta = fileMeta(scannerRuntimeStatePath, scannerRuntimeFile);
   const preflightLatestPath = path.join(dataDir, 'runtime', 'live-preflight-latest.json');
   const preflightLatest = readJsonFileIfPresent(preflightLatestPath);
   const brokerLocalReconciliationPath = path.join(dataDir, 'runtime', 'broker-local-reconciliation-latest.json');

@@ -238,7 +238,7 @@ function buildProcessState(processDiscovery, scannerRuntimeOverride, { dataDir, 
   warnings.push(...duplicateWarnings);
   if (duplicateWarnings.length) recommendedActions.push('Resolve duplicate or mismatched local workflow processes.');
 
-  const scannerRuntimeFile = scannerRuntimeOverride || readJsonFile(path.join(dataDir, 'logs', 'scanner-runtime.json'));
+  const scannerRuntimeFile = scannerRuntimeOverride || readJsonFile(path.join(dataDir, 'state', 'scanner-runtime.json'));
   const lastScanMs = new Date(scannerRuntimeFile?.last_scan_time || scannerRuntimeFile?.updated_at || 0).getTime();
   const scannerRuntimeStale = Number.isFinite(lastScanMs) && lastScanMs > 0 && Number.isFinite(nowMs) && (nowMs - lastScanMs) > 5 * 60_000;
   if (scannerRuntimeStale) warnings.push('SCANNER_RUNTIME_STALE');
@@ -273,7 +273,7 @@ function buildFileState({ dataDir, repoRoot }) {
     env_local: statFile(path.join(repoRoot, '.env.local')),
     live_policy: statFile(path.join(dataDir, 'live-policy.json')),
     policy_history: statFile(path.join(dataDir, 'policy-history.jsonl')),
-    scanner_runtime: statFile(path.join(dataDir, 'logs', 'scanner-runtime.json')),
+    scanner_runtime: statFile(path.join(dataDir, 'state', 'scanner-runtime.json')),
     preflight_latest: statFile(path.join(dataDir, 'runtime', 'live-preflight-latest.json')),
   };
 }
