@@ -1,6 +1,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const { hashObject, nowIso } = require('./util');
+const { ok, fail } = require('./result');
 
 class InMemoryAuditStore {
   constructor() {
@@ -10,7 +11,7 @@ class InMemoryAuditStore {
   writeEvent(event) {
     const record = normalizeAuditEvent(event);
     this.events.push(record);
-    return record;
+    return ok(record);
   }
 
   findByEntity(entityId) {
@@ -29,9 +30,14 @@ class JsonlAuditWriter {
   }
 
   writeEvent(event) {
-    const record = normalizeAuditEvent(event);
-    fs.appendFileSync(this.filePath, `${JSON.stringify(record)}\n`, 'utf8');
-    return record;
+    let record;
+    try {
+      record = normalizeAuditEvent(event);
+      fs.appendFileSync(this.filePath, `${JSON.stringify(record)}\n`, 'utf8');
+      return ok(record);
+    } catch (err) {
+      return fail(err, ['AUDIT_WRITE_FAILED']);
+    }
   }
 }
 

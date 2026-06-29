@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { nowIso, safeNumber } = require('./util');
+const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
 const { readPaperOutcomesFromHistory, summarizeSetupFatigueState } = require('./setup-fatigue');
 const { resolveIntradayStockRegime } = require('./market-hours');
 
@@ -40,7 +40,7 @@ const DEFAULTS = {
 async function evaluateSessionGuards(options = {}) {
   const now = options.now || nowIso();
   const env = options.env || process.env;
-  const repoRoot = options.repoRoot || process.cwd();
+  const repoRoot = options.repoRoot || resolveRepoRoot();
   const setupFatigueSummary = options.setupFatigueSummary || summarizeSetupFatigueState(options.setupFatigueState || {});
   const intradayRegime = options.intradayRegime || resolveIntradayStockRegime(new Date(now), {
     openingNoiseMinutes: safeNumber(options.openingNoiseMinutes, 5),

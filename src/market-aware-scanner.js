@@ -1,9 +1,13 @@
 const { createStockScanner } = require('./stock-scanner');
 const { createOvernightScanner } = require('./overnight-scanner');
+const { buildScannerConfig } = require('./scanner-config');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { nowIso } = require('./util');
 const { resolveMarketRegime } = require('./market-hours');
 const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
+const { createLogger } = require('./logger');
+const { fail } = require('./result');
+const { ScannerError } = require('./errors');
 
 function createMarketAwareScanner(options = {}) {
   const env = options.env || process.env;
@@ -12,6 +16,7 @@ function createMarketAwareScanner(options = {}) {
   if (!localBaseUrl) {
     throw new Error('Market-aware scanner requires a local base URL');
   }
+  options.logger = options.logger || createLogger();
 
   const state = {
     timer: null,
@@ -36,9 +41,12 @@ function createMarketAwareScanner(options = {}) {
     || parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS);
   const overnightSymbols = options.overnightSymbols || runtimeEnv.OVERNIGHT_SCANNER_SYMBOLS || env.OVERNIGHT_SCANNER_SYMBOLS;
 
+  const stockScannerConfig = buildScannerConfig({ ...runtimeEnv, ...env });
+
   function buildStockScanner() {
     return (options.stockScannerFactory || createStockScanner)({
       env: runtimeEnv,
+      scannerConfig: stockScannerConfig,
       localBaseUrl,
       enabled: true,
       keepAlive: true,
@@ -98,7 +106,7 @@ function createMarketAwareScanner(options = {}) {
   async function runOnce(runOptions = {}) {
     const scanner = refreshRegime();
     if (typeof scanner.runOnce !== 'function') {
-      return { accepted: false, reason: 'ACTIVE_SCANNER_MISSING_RUN_ONCE', regime: state.activeRegime };
+      return fail(new ScannerError('Active scanner missing runOnce'), ['ACTIVE_SCANNER_MISSING_RUN_ONCE']);
     }
     const result = await scanner.runOnce(runOptions);
     return { ...result, regime: state.activeRegime };
@@ -111,9 +119,7 @@ function createMarketAwareScanner(options = {}) {
       try {
         refreshRegime();
       } catch (error) {
-        if (typeof options.logger === 'function') {
-          options.logger({ level: 'error', event: 'market_regime_switch_error', message: error.message });
-        }
+        options.logger({ level: 'error', event: 'market_regime_switch_error', message: error.message });
       }
     }, switchPollMs);
     if (!keepAlive) state.timer.unref?.();

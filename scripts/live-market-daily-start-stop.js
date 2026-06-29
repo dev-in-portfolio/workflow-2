@@ -5,7 +5,6 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   const result = await runLiveMarketDailyAutomation({
     action: actionArg,
     env,
-    repoRoot: process.cwd(),
   });
   process.stdout.write(`${formatAutomationSummary(result)}\n`);
   return result;

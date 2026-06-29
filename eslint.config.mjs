@@ -1,0 +1,51 @@
+import js from '@eslint/js';
+
+export default [
+  {
+    ignores: ['node_modules', 'dist', '.codex-remote-attachments'],
+  },
+  js.configs.recommended,
+  {
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'commonjs',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        require: 'readonly',
+        module: 'readonly',
+        exports: 'readonly',
+        fetch: 'readonly',
+        Response: 'readonly',
+        AbortController: 'readonly',
+        Buffer: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        globalThis: 'readonly',
+      },
+    },
+    rules: {
+      'semi': ['warn', 'always'],
+      'no-unused-vars': ['warn', { args: 'none', ignoreRestSiblings: true }],
+      'no-constant-condition': ['warn', { checkLoops: false }],
+      'no-fallthrough': 'warn',
+      'no-return-await': 'warn',
+      'prefer-const': 'warn',
+      'no-var': 'warn',
+      'eqeqeq': ['warn', 'smart'],
+      'curly': ['warn', 'multi-line'],
+      'no-trailing-spaces': 'warn',
+      'eol-last': ['warn', 'always'],
+      'no-multiple-empty-lines': ['warn', { max: 2, maxEOF: 1 }],
+      'comma-dangle': ['warn', 'always-multiline'],
+      'no-unreachable': 'warn',
+      'no-useless-assignment': 'warn',
+      'no-duplicate-imports': 'warn',
+      'no-useless-catch': 'warn',
+    },
+  },
+];

@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { classifyExitOutcome } = require('./anti-churn-engine');
-const { nowIso, safeNumber, minutesBetween } = require('./util');
+const { nowIso, safeNumber, minutesBetween, resolveRepoRoot } = require('./util');
+const { JsonFileStore } = require('./storage');
 
 const SetupFatigueReason = {
   SETUP_FATIGUE_ACTIVE: 'SETUP_FATIGUE_ACTIVE',
@@ -30,18 +31,19 @@ const DEFAULTS = {
   recentOutcomeLimit: 300,
 };
 
-function defaultSetupFatigueStatePath({ env = process.env, repoRoot = process.cwd() } = {}) {
-  return path.resolve(env.SETUP_FATIGUE_STATE_PATH || path.join(repoRoot, 'data', 'runtime', 'setup-fatigue-state.json'));
+function defaultSetupFatigueStatePath({ env = process.env, repoRoot = resolveRepoRoot() } = {}) {
+  return path.resolve(env.SETUP_FATIGUE_STATE_PATH || path.join(repoRoot, 'data', 'state', 'setup-fatigue-state.json'));
 }
 
 function loadSetupFatigueState(filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultSetupFatigueStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
+  const name = path.basename(filePath);
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = raw.trim() ? JSON.parse(raw) : {};
-    return normalizeSetupFatigueState(parsed);
+    const data = store.read(name);
+    return data ? normalizeSetupFatigueState(data) : normalizeSetupFatigueState({});
   } catch {
     return normalizeSetupFatigueState({});
   }
@@ -51,10 +53,10 @@ function saveSetupFatigueState(state, filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultSetupFatigueStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
   const payload = normalizeSetupFatigueState(state);
   payload.updated_at = nowIso();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  store.write(path.basename(filePath), payload);
   return payload;
 }
 
@@ -117,7 +119,7 @@ async function reconcileSetupFatigueState({
   paperOutcomes = null,
   now = nowIso(),
   env = process.env,
-  repoRoot = process.cwd(),
+  repoRoot = resolveRepoRoot(),
   setupFatigueEnabled = parseBoolish(env.SETUP_FATIGUE_ENABLED, DEFAULTS.enabled),
   threshold = safeNumber(env.SETUP_FATIGUE_THRESHOLD, DEFAULTS.threshold),
   decayPerHour = safeNumber(env.SETUP_FATIGUE_DECAY_PER_HOUR, DEFAULTS.decayPerHour),
@@ -285,14 +287,14 @@ function evaluateSetupFatigueCandidate({ setupFatigueState = null, setupKey = nu
   const normalizedKey = resolveSetupKey(setupKey);
   if (!normalizedKey) return null;
   const entry = normalizeSetupFatigueState(setupFatigueState).setups[normalizedKey] || null;
-  if (!entry) return {
+  if (!entry) {return {
     setup_key: normalizedKey,
     active: false,
     fatigue_score: 0,
     paused_until: null,
     reason_codes: [],
     explanation: '',
-  };
+  };}
   return {
     setup_key: normalizedKey,
     active: Boolean(entry.active),
@@ -603,6 +605,7 @@ module.exports = {
   SetupFatigueReason,
   defaultSetupFatigueStatePath,
   evaluateSetupFatigueCandidate,
+  isWithinRetentionWindow,
   loadSetupFatigueState,
   normalizeSetupFatigueState,
   readPaperOutcomesFromHistory,

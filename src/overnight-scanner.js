@@ -1,9 +1,12 @@
 const { buildProviderConfirmationFromContext, normalizeMarketData } = require('./market-data');
 const { parseBool } = require('./config');
-const { nowIso, safeNumber, clamp, hashObject } = require('./util');
+const { nowIso, safeNumber, clamp, hashObject, resolveRepoRoot } = require('./util');
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
 const { loadRecentSymbolMap, saveRecentSymbolMap } = require('./scanner-recent-symbols');
+const { createLogger } = require('./logger');
+const { fail } = require('./result');
+const { ScannerError } = require('./errors');
 
 const DEFAULT_SYMBOLS = ['BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'DOGE/USD', 'AVAX/USD', 'LINK/USD', 'DOT/USD'];
 const DEFAULT_SELL_NET_PROFIT_FLOOR_DOLLARS = 1.0;
@@ -33,6 +36,7 @@ function createOvernightScanner(options = {}) {
   if (!localFetch) {
     throw new Error('Overnight scanner requires local fetch support');
   }
+  options.logger = options.logger || createLogger();
 
   const apiKeyId = options.apiKeyId || env.ALPACA_API_KEY_ID || '';
   const apiSecretKey = options.apiSecretKey || env.ALPACA_API_SECRET_KEY || '';
@@ -70,7 +74,7 @@ function createOvernightScanner(options = {}) {
   const recentSymbolsEnabled = options.recentSymbolsEnabled ?? parseBool(env.SCANNER_RECENT_SYMBOLS_ENABLED, false);
   const state = {
     lastSentAtBySymbol: recentSymbolsEnabled
-      ? loadRecentSymbolMap({ env, repoRoot: process.cwd(), profile: 'crypto-only', maxAgeMs: cooldownMs })
+      ? loadRecentSymbolMap({ env, repoRoot: resolveRepoRoot(), profile: 'crypto-only', maxAgeMs: cooldownMs })
       : new Map(),
     running: false,
     timer: null,
@@ -79,13 +83,13 @@ function createOvernightScanner(options = {}) {
 
   async function runOnce(runOptions = {}) {
     if (!enabled) {
-      return { accepted: false, reason: 'DISABLED', candidates: [] };
+      return fail(new ScannerError('Scanner disabled'), ['DISABLED']);
     }
     if (!localBaseUrl) {
-      return { accepted: false, reason: 'LOCAL_BASE_URL_REQUIRED', candidates: [] };
+      return fail(new ScannerError('Local base URL required'), ['LOCAL_BASE_URL_REQUIRED']);
     }
     if (state.running) {
-      return { accepted: false, reason: 'RUN_ALREADY_IN_PROGRESS', candidates: [] };
+      return fail(new ScannerError('Run already in progress'), ['RUN_ALREADY_IN_PROGRESS']);
     }
 
     state.running = true;
@@ -231,9 +235,7 @@ function createOvernightScanner(options = {}) {
     }
     const tick = () => {
       runOnce({ runId: `scheduled_${Date.now()}` }).catch((error) => {
-        if (typeof options.logger === 'function') {
-          options.logger({ level: 'error', event: 'overnight_scanner_error', message: error.message });
-        }
+        options.logger({ level: 'error', event: 'overnight_scanner_error', message: error.message });
       });
     };
     state.timer = setInterval(tick, intervalMs);
@@ -310,12 +312,12 @@ function createOvernightScanner(options = {}) {
         buying_power: portfolio.buying_power,
       } : null,
       allocation,
-    }, { env, repoRoot: process.cwd() });
+    }, { env, repoRoot: resolveRepoRoot() });
   }
 
   function persistRecentSymbols() {
     if (!recentSymbolsEnabled) return;
-    saveRecentSymbolMap(state.lastSentAtBySymbol, { env, repoRoot: process.cwd(), profile: 'crypto-only' });
+    saveRecentSymbolMap(state.lastSentAtBySymbol, { env, repoRoot: resolveRepoRoot(), profile: 'crypto-only' });
   }
 }
 

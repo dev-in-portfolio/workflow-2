@@ -161,8 +161,6 @@ function deriveMarketActivitySignal(rawInput = {}, options = {}) {
       maxPriceDiffPct: policy.maxProviderPriceDiffPct ?? 0.5,
       maxTimeSkewSeconds: policy.maxProviderTimeSkewSeconds ?? 60,
     },
-    min_freshness_score: policy.minFreshnessScore ?? 55,
-    min_edge_score: policy.minEdgeScore ?? 60,
   });
 
   return {

@@ -1,14 +1,14 @@
 const fs = require('fs');
 const path = require('path');
-const { nowIso } = require('./util');
+const { nowIso, resolveRepoRoot } = require('./util');
 
 const DEFAULT_STALE_MS = 10 * 60 * 1000;
 
-function lockPathFor(repoRoot = process.cwd(), name) {
+function lockPathFor(repoRoot = resolveRepoRoot(), name) {
   return path.resolve(repoRoot, 'data', 'locks', `${name}.lock.json`);
 }
 
-function readProcessLock({ repoRoot = process.cwd(), name } = {}) {
+function readProcessLock({ repoRoot = resolveRepoRoot(), name } = {}) {
   const filePath = lockPathFor(repoRoot, name);
   try {
     return { path: filePath, exists: true, lock: JSON.parse(fs.readFileSync(filePath, 'utf8')) };
@@ -17,7 +17,7 @@ function readProcessLock({ repoRoot = process.cwd(), name } = {}) {
   }
 }
 
-function acquireProcessLock({ repoRoot = process.cwd(), name, owner = 'unknown', pid = process.pid, metadata = {}, staleMs = DEFAULT_STALE_MS } = {}) {
+function acquireProcessLock({ repoRoot = resolveRepoRoot(), name, owner = 'unknown', pid = process.pid, metadata = {}, staleMs = DEFAULT_STALE_MS } = {}) {
   if (!name) throw new Error('Process lock requires a name');
   const filePath = lockPathFor(repoRoot, name);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -43,7 +43,7 @@ function acquireProcessLock({ repoRoot = process.cwd(), name, owner = 'unknown',
   return { acquired: true, path: filePath, lock, replaced_stale: Boolean(existing.lock) };
 }
 
-function releaseProcessLock({ repoRoot = process.cwd(), name, pid = null } = {}) {
+function releaseProcessLock({ repoRoot = resolveRepoRoot(), name, pid = null } = {}) {
   const current = readProcessLock({ repoRoot, name });
   if (!current.exists) return { released: false, reason: 'LOCK_NOT_FOUND', path: current.path };
   if (pid !== null && current.lock?.pid && Number(current.lock.pid) !== Number(pid)) {
@@ -57,7 +57,7 @@ function releaseProcessLock({ repoRoot = process.cwd(), name, pid = null } = {})
   }
 }
 
-function listProcessLocks({ repoRoot = process.cwd() } = {}) {
+function listProcessLocks({ repoRoot = resolveRepoRoot() } = {}) {
   const dir = path.resolve(repoRoot, 'data', 'locks');
   try {
     return fs.readdirSync(dir)

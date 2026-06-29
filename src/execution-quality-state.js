@@ -1,9 +1,9 @@
-const fs = require('fs');
 const path = require('path');
-const { nowIso, safeNumber, clamp } = require('./util');
+const { nowIso, safeNumber, clamp, resolveRepoRoot, resolveDataPath } = require('./util');
+const { JsonFileStore } = require('./storage');
 
 const EXECUTION_QUALITY_STATE_VERSION = '2026-06-25.execution-quality-state.1';
-const DEFAULT_STATE_PATH = path.resolve(process.cwd(), 'data', 'runtime', 'execution-quality-state.json');
+const DEFAULT_STATE_PATH = resolveDataPath('state', 'execution-quality-state.json');
 
 function defaultExecutionQualityState() {
   return {
@@ -19,18 +19,20 @@ function resolveExecutionQualityStatePath(input = {}) {
   if (input?.executionQualityPath) return path.resolve(input.executionQualityPath);
   if (input?.filePath) return path.resolve(input.filePath);
   if (input?.path) return path.resolve(input.path);
-  if (input?.repoRoot) return path.resolve(input.repoRoot, 'data', 'runtime', 'execution-quality-state.json');
+  if (input?.repoRoot) return path.resolve(input.repoRoot, 'data', 'state', 'execution-quality-state.json');
   return DEFAULT_STATE_PATH;
 }
 
 function loadExecutionQualityState(input = {}) {
   const filePath = resolveExecutionQualityStatePath(input);
-  if (!filePath || !fs.existsSync(filePath)) {
+  const store = new JsonFileStore(path.dirname(filePath));
+  const name = path.basename(filePath);
+  if (!store.exists(name)) {
     return defaultExecutionQualityState();
   }
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    return normalizeExecutionQualityState(raw);
+    const raw = store.read(name);
+    return raw ? normalizeExecutionQualityState(raw) : defaultExecutionQualityState();
   } catch {
     return defaultExecutionQualityState();
   }
@@ -38,9 +40,9 @@ function loadExecutionQualityState(input = {}) {
 
 function saveExecutionQualityState(state, input = {}) {
   const filePath = resolveExecutionQualityStatePath(input);
+  const store = new JsonFileStore(path.dirname(filePath));
   const normalized = normalizeExecutionQualityState(state);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+  store.write(path.basename(filePath), normalized);
   return normalized;
 }
 

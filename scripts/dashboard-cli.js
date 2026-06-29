@@ -3,7 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { loadRuntimeEnv } = require('../src/runtime-env');
 const { createDashboardServer, DEFAULT_DASHBOARD_PORT, resolveDashboardPort } = require('../src/dashboard-server');
-const { nowIso } = require('../src/util');
+const { nowIso, resolveDataPath, resolveRepoRoot } = require('../src/util');
 
 function listenWithFallback(server, preferredPort, options = {}) {
   const hostname = options.hostname || '127.0.0.1';
@@ -37,13 +37,13 @@ function listenWithFallback(server, preferredPort, options = {}) {
 function main(env = process.env) {
   const runtimeEnv = loadRuntimeEnv(env);
   const dashboardPort = resolveDashboardPort(runtimeEnv) || DEFAULT_DASHBOARD_PORT;
-  const runtimeStatePath = path.join(process.cwd(), 'data', 'runtime', 'dashboard-runtime.json');
+  const runtimeStatePath = resolveDataPath('runtime', 'dashboard-runtime.json');
   const server = createDashboardServer({
     env: runtimeEnv,
     runtimeEnv,
     port: dashboardPort,
-    dashboardDir: path.join(process.cwd(), 'dashboard'),
-    dataDir: path.join(process.cwd(), 'data'),
+    dashboardDir: path.join(resolveRepoRoot(), 'dashboard'),
+    dataDir: resolveDataPath(),
     cacheMaxAgeMs: 2_000,
   });
 

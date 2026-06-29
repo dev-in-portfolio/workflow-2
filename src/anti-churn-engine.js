@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { nowIso, safeNumber } = require('./util');
+const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
+const { JsonFileStore } = require('./storage');
 
 const AntiChurnClassification = {
   CLEAN_WIN: 'clean_win',
@@ -69,18 +70,19 @@ const DEFAULTS = {
   retentionHours: 24,
 };
 
-function defaultAntiChurnStatePath({ env = process.env, repoRoot = process.cwd() } = {}) {
-  return path.resolve(env.ANTI_CHURN_STATE_PATH || path.join(repoRoot, 'data', 'runtime', 'anti-churn-state.json'));
+function defaultAntiChurnStatePath({ env = process.env, repoRoot = resolveRepoRoot() } = {}) {
+  return path.resolve(env.ANTI_CHURN_STATE_PATH || path.join(repoRoot, 'data', 'state', 'anti-churn-state.json'));
 }
 
 function loadAntiChurnState(filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultAntiChurnStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
+  const name = path.basename(filePath);
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = raw.trim() ? JSON.parse(raw) : {};
-    return normalizeAntiChurnState(parsed);
+    const data = store.read(name);
+    return data ? normalizeAntiChurnState(data) : normalizeAntiChurnState({});
   } catch {
     return normalizeAntiChurnState({});
   }
@@ -90,10 +92,10 @@ function saveAntiChurnState(state, filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultAntiChurnStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
   const payload = normalizeAntiChurnState(state);
   payload.updated_at = nowIso();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  store.write(path.basename(filePath), payload);
   return payload;
 }
 
@@ -126,7 +128,6 @@ function normalizeCooldownEntry(entry = {}, { fallbackKey = null } = {}) {
     ? entry.components.map((component) => normalizePenaltyComponent(component)).filter(Boolean)
     : [];
   const penalty = safeNumber(entry.penalty ?? entry.penalty_points ?? 0, 0);
-  const cooldownUntil = normalizeIso(entry.cooldown_until || entry.expires_at || null);
   const remainingSeconds = safeNumber(entry.remaining_seconds, null);
   const reasonCodes = normalizeReasonCodes(entry.reason_codes);
   const symbol = normalizeSymbol(entry.symbol || fallbackKey);
@@ -674,7 +675,7 @@ async function reconcileAntiChurnState({
   performanceHistoryPath = null,
   now = nowIso(),
   env = process.env,
-  repoRoot = process.cwd(),
+  repoRoot = resolveRepoRoot(),
   antiChurnEnabled = DEFAULTS.antiChurnEnabled,
   retentionHours = DEFAULTS.retentionHours,
   ...config
@@ -691,7 +692,7 @@ async function reconcileAntiChurnState({
   const historyPath = performanceHistoryPath || path.join(repoRoot, 'data', 'performance-history.jsonl');
   const outcomes = Array.isArray(paperOutcomes) ? paperOutcomes : readPaperOutcomesFromHistory(historyPath, config.historyMaxBytes || 512 * 1024);
   const recentOutcomes = normalizeOutcomeList(outcomes)
-    .filter((outcome) => isWithinRetentionWindow(outcome.recorded_at, now, retentionHours))
+    .filter((outcome) => require('./setup-fatigue').isWithinRetentionWindow(outcome.recorded_at, now, retentionHours))
     .sort((a, b) => new Date(a.recorded_at || 0).getTime() - new Date(b.recorded_at || 0).getTime());
 
   const symbolBuckets = new Map();

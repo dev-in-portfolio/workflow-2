@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { buildProviderConfirmationFromContext, normalizeMarketData } = require('./market-data');
 const { parseBool } = require('./config');
-const { nowIso, safeNumber, hashObject, clamp } = require('./util');
+const { nowIso, safeNumber, hashObject, clamp, resolveRepoRoot } = require('./util');
 const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
@@ -40,6 +40,7 @@ const {
   normalizeAntiChurnState,
   summarizeAntiChurnState,
 } = require('./anti-churn-engine');
+const { createLogger } = require('./logger');
 const { calculateRiskBudgetSize } = require('./risk-budget-sizing');
 const { calculateStructureAwareStop } = require('./structure-stops');
 
@@ -49,6 +50,7 @@ function createStockScanner(options = {}) {
   const localFetch = options.localFetch || globalThis.fetch;
   if (!marketFetch) throw new Error('Stock scanner requires fetch support');
   if (!localFetch) throw new Error('Stock scanner requires local fetch support');
+  options.logger = options.logger || createLogger();
 
   const apiKeyId = options.apiKeyId || env.ALPACA_API_KEY_ID || '';
   const apiSecretKey = options.apiSecretKey || env.ALPACA_API_SECRET_KEY || '';
@@ -172,11 +174,13 @@ function createStockScanner(options = {}) {
     if (!localBaseUrl) return { accepted: false, reason: 'LOCAL_BASE_URL_REQUIRED', candidates: [] };
     if (state.running) return { accepted: false, reason: 'RUN_ALREADY_IN_PROGRESS', candidates: [] };
 
-    state.running = true;
+      state.running = true;
     const receivedAt = nowIso();
     let previousCandidateLifecycleState = null;
     let scannerMode = 'hunt';
     let candidateLifecycleResult = null;
+    let executionQualityState = null;
+    let executionQualitySummary = null;
     try {
       const bundle = await fetchStockBundle({
         fetchImpl: marketFetch,
@@ -217,24 +221,24 @@ function createStockScanner(options = {}) {
       const account = accountState.data;
       const brokerState = buildScannerBrokerState({ accountState, positionsState, openOrdersState });
       const approvedPositions = filterApprovedPositions(positions, symbols);
-      const partialFillState = options.partialFillState || loadPartialFillState({ env, repoRoot: process.cwd() });
+      const partialFillState = options.partialFillState || loadPartialFillState({ env, repoRoot: resolveRepoRoot() });
       const partialFillSummary = summarizePartialFillState(partialFillState);
-      const executionQualityState = options.executionQualityState || loadExecutionQualityState({ env, repoRoot: process.cwd() });
-      const executionQualitySummary = summarizeExecutionQualityState(executionQualityState, {
+      executionQualityState = options.executionQualityState || loadExecutionQualityState({ env, repoRoot: resolveRepoRoot() });
+      executionQualitySummary = summarizeExecutionQualityState(executionQualityState, {
         now: receivedAt,
         decayPerHour: executionQualityDecayPerHour,
         minSizeMultiplier: minExecutionQualitySizeMultiplier,
       });
-      const previousAntiChurnState = options.antiChurnState || loadAntiChurnState({ env, repoRoot: process.cwd() });
+      const previousAntiChurnState = options.antiChurnState || loadAntiChurnState({ env, repoRoot: resolveRepoRoot() });
       let antiChurnState = normalizeAntiChurnState(previousAntiChurnState);
       if (!options.antiChurnState) {
         try {
           antiChurnState = await reconcileAntiChurnState({
             previousState: previousAntiChurnState,
-            performanceHistoryPath: resolvePerformanceHistoryPath(env, process.cwd()),
+            performanceHistoryPath: resolvePerformanceHistoryPath(env, resolveRepoRoot()),
             now: receivedAt,
             env,
-            repoRoot: process.cwd(),
+            repoRoot: resolveRepoRoot(),
             antiChurnEnabled,
             retentionHours: antiChurnRetentionHours,
             cleanWinCooldownSeconds: antiChurnCleanWinCooldownSeconds,
@@ -260,17 +264,15 @@ function createStockScanner(options = {}) {
           });
         } catch (error) {
           antiChurnState = normalizeAntiChurnState(previousAntiChurnState);
-          if (typeof options.logger === 'function') {
-            options.logger({ level: 'warn', event: 'anti_churn_state_reconcile_failed', message: error.message });
-          }
+          options.logger({ level: 'warn', event: 'anti_churn_state_reconcile_failed', message: error.message });
         }
       }
       if (!options.antiChurnState) {
-        saveAntiChurnState(antiChurnState, { env, repoRoot: process.cwd() });
+        saveAntiChurnState(antiChurnState, { env, repoRoot: resolveRepoRoot() });
       }
       const antiChurnSummary = summarizeAntiChurnState(antiChurnState);
-      const performanceHistoryPath = resolvePerformanceHistoryPath(env, process.cwd());
-      const previousSetupFatigueState = options.setupFatigueState || loadSetupFatigueState({ env, repoRoot: process.cwd() });
+      const performanceHistoryPath = resolvePerformanceHistoryPath(env, resolveRepoRoot());
+      const previousSetupFatigueState = options.setupFatigueState || loadSetupFatigueState({ env, repoRoot: resolveRepoRoot() });
       let setupFatigueState = normalizeSetupFatigueState(previousSetupFatigueState);
       if (!options.setupFatigueState) {
         try {
@@ -279,7 +281,7 @@ function createStockScanner(options = {}) {
             performanceHistoryPath,
             now: receivedAt,
             env,
-            repoRoot: process.cwd(),
+            repoRoot: resolveRepoRoot(),
             setupFatigueEnabled,
             threshold: setupFatigueThreshold,
             decayPerHour: setupFatigueDecayPerHour,
@@ -292,13 +294,11 @@ function createStockScanner(options = {}) {
           });
         } catch (error) {
           setupFatigueState = normalizeSetupFatigueState(previousSetupFatigueState);
-          if (typeof options.logger === 'function') {
-            options.logger({ level: 'warn', event: 'setup_fatigue_state_reconcile_failed', message: error.message });
-          }
+          options.logger({ level: 'warn', event: 'setup_fatigue_state_reconcile_failed', message: error.message });
         }
       }
       if (!options.setupFatigueState) {
-        saveSetupFatigueState(setupFatigueState, { env, repoRoot: process.cwd() });
+        saveSetupFatigueState(setupFatigueState, { env, repoRoot: resolveRepoRoot() });
       }
       const setupFatigueSummary = summarizeSetupFatigueState(setupFatigueState);
       const computedIntradayRegime = options.intradayRegime || resolveIntradayStockRegime(new Date(), {
@@ -310,7 +310,7 @@ function createStockScanner(options = {}) {
           ? await evaluateSessionGuards({
             now: receivedAt,
             env,
-            repoRoot: process.cwd(),
+            repoRoot: resolveRepoRoot(),
             performanceHistoryPath,
             setupFatigueState,
             setupFatigueSummary,
@@ -352,7 +352,7 @@ function createStockScanner(options = {}) {
       const skipTracker = createSkipTracker();
       const legacyRecentTradePenalties = loadRecentTradePenalties({
         env,
-        repoRoot: process.cwd(),
+        repoRoot: resolveRepoRoot(),
         now: receivedAt,
         windowMinutes: recentTradePenaltyMinutes,
         penalty: recentTradeRankPenalty,
@@ -397,15 +397,15 @@ function createStockScanner(options = {}) {
           skipTracker.record(reason, { symbol: '*', session_guard: true });
         }
       }
-      const previousTrailingState = loadTrailingState({ env, repoRoot: process.cwd() });
+      const previousTrailingState = loadTrailingState({ env, repoRoot: resolveRepoRoot() });
       const trailingState = updateTrailingSnapshot({
         positions: approvedPositions,
         startDollars: trailingProfitStartDollars,
         givebackDollars: trailingProfitGivebackDollars,
         previousState: previousTrailingState,
       });
-      saveTrailingState(trailingState, { env, repoRoot: process.cwd() });
-      previousCandidateLifecycleState = options.candidateLifecycleState || loadCandidateLifecycleState({ env, repoRoot: process.cwd() });
+      saveTrailingState(trailingState, { env, repoRoot: resolveRepoRoot() });
+      previousCandidateLifecycleState = options.candidateLifecycleState || loadCandidateLifecycleState({ env, repoRoot: resolveRepoRoot() });
       scannerMode = determineScannerMode({
         sessionGuards,
         portfolio,
@@ -474,7 +474,6 @@ function createStockScanner(options = {}) {
         spreadRankPenaltyThresholdPct,
         spreadRankPenaltyPerPct,
         spreadRankPenaltyCap,
-        intradayRegime,
         scannerMode,
         optionalHooks: {
           volatility_stop_enabled: Boolean(volatilityStopEnabled),
@@ -511,7 +510,7 @@ function createStockScanner(options = {}) {
       });
       candidateLifecycleResult = computedCandidateLifecycleResult;
       if (!options.candidateLifecycleState && candidateLifecycleResult?.state) {
-        saveCandidateLifecycleState(candidateLifecycleResult.state, { env, repoRoot: process.cwd() });
+        saveCandidateLifecycleState(candidateLifecycleResult.state, { env, repoRoot: resolveRepoRoot() });
       }
 
       const results = [];
@@ -590,8 +589,6 @@ function createStockScanner(options = {}) {
         candidate_lifecycle_summary: candidateLifecycleResult?.summary || summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
         skip_summary: skipTracker.summary(),
         recent_skips: skipTracker.recent(),
-        execution_quality_state: executionQualityState,
-        execution_quality_summary: executionQualitySummary,
       };
     } catch (error) {
       state.lastRunAt = receivedAt;
@@ -620,9 +617,7 @@ function createStockScanner(options = {}) {
     if (!enabled || state.timer) return controller;
     const tick = () => {
       runOnce({ runId: `stock_${Date.now()}` }).catch((error) => {
-        if (typeof options.logger === 'function') {
-          options.logger({ level: 'error', event: 'stock_scanner_error', message: error.message });
-        }
+        options.logger({ level: 'error', event: 'stock_scanner_error', message: error.message });
       });
     };
     state.timer = setInterval(tick, intervalMs);
@@ -874,7 +869,7 @@ function createStockScanner(options = {}) {
         positions: trailingState.positions,
       } : null,
       session_guard_overview: summarizeSessionGuards(sessionGuards),
-    }, { env, repoRoot: process.cwd() });
+    }, { env, repoRoot: resolveRepoRoot() });
   }
 
 }
@@ -1373,7 +1368,7 @@ function summarizePostResult(result = {}) {
   };
 }
 
-function loadRecentTradePenalties({ env = process.env, repoRoot = process.cwd(), now = nowIso(), windowMinutes = 5, penalty = 8, lossWindowMinutes = 10, lossPenalty = 60, stopWindowMinutes = 30, stopPenalty = 80, overrides = null } = {}) {
+function loadRecentTradePenalties({ env = process.env, repoRoot = resolveRepoRoot(), now = nowIso(), windowMinutes = 5, penalty = 8, lossWindowMinutes = 10, lossPenalty = 60, stopWindowMinutes = 30, stopPenalty = 80, overrides = null } = {}) {
   if ((!windowMinutes || !penalty) && (!lossWindowMinutes || !lossPenalty) && (!stopWindowMinutes || !stopPenalty)) return new Map();
   if (overrides) return normalizeRecentTradePenaltyMap(overrides, { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty, stopWindowMinutes, stopPenalty });
   const historyPath = resolvePerformanceHistoryPath(env, repoRoot);
@@ -1381,7 +1376,7 @@ function loadRecentTradePenalties({ env = process.env, repoRoot = process.cwd(),
   return normalizeRecentTradePenaltyMap(lines.map(parseJsonLine).filter(Boolean), { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty, stopWindowMinutes, stopPenalty });
 }
 
-function resolvePerformanceHistoryPath(env = process.env, repoRoot = process.cwd()) {
+function resolvePerformanceHistoryPath(env = process.env, repoRoot = resolveRepoRoot()) {
   const configured = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
   return path.resolve(repoRoot, configured || path.join('data', 'performance-history.jsonl'));
 }

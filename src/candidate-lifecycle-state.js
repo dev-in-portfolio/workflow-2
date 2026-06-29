@@ -1,6 +1,6 @@
-const fs = require('fs');
 const path = require('path');
-const { nowIso, safeNumber, clamp } = require('./util');
+const { nowIso, safeNumber, clamp, resolveRepoRoot } = require('./util');
+const { JsonFileStore } = require('./storage');
 
 const CandidateLifecycleReason = {
   CANDIDATE_QUEUE_WATCHING: 'CANDIDATE_QUEUE_WATCHING',
@@ -18,18 +18,19 @@ const CandidateLifecycleReason = {
   RANK_CONFIDENCE_DECAYED: 'RANK_CONFIDENCE_DECAYED',
 };
 
-function defaultCandidateLifecycleStatePath({ env = process.env, repoRoot = process.cwd() } = {}) {
-  return path.resolve(env.CANDIDATE_LIFECYCLE_STATE_PATH || path.join(repoRoot, 'data', 'runtime', 'candidate-lifecycle-state.json'));
+function defaultCandidateLifecycleStatePath({ env = process.env, repoRoot = resolveRepoRoot() } = {}) {
+  return path.resolve(env.CANDIDATE_LIFECYCLE_STATE_PATH || path.join(repoRoot, 'data', 'state', 'candidate-lifecycle-state.json'));
 }
 
 function loadCandidateLifecycleState(filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultCandidateLifecycleStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
+  const name = path.basename(filePath);
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = raw.trim() ? JSON.parse(raw) : {};
-    return normalizeCandidateLifecycleState(parsed);
+    const data = store.read(name);
+    return data ? normalizeCandidateLifecycleState(data) : normalizeCandidateLifecycleState({});
   } catch {
     return normalizeCandidateLifecycleState({});
   }
@@ -39,10 +40,10 @@ function saveCandidateLifecycleState(state, filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultCandidateLifecycleStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
   const payload = normalizeCandidateLifecycleState(state);
   payload.updated_at = nowIso();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  store.write(path.basename(filePath), payload);
   return payload;
 }
 
@@ -357,7 +358,7 @@ function reconcileCandidateLifecycleState({
     let blockedAt = normalizeIso(previous.blocked_at || null);
     let eligibleAt = normalizeIso(previous.eligible_at || null);
     let expiredAt = normalizeIso(previous.expired_at || null);
-    let enteredAt = normalizeIso(previous.entered_at || null);
+    const enteredAt = normalizeIso(previous.entered_at || null);
 
     if (expired) {
       status = 'expired';

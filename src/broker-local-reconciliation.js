@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const { nowIso, safeNumber } = require('./util');
+const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
+const { JsonFileStore } = require('./storage');
 const { loadTrailingState } = require('./position-trailing-state');
 
 async function reconcileBrokerLocalState(options = {}) {
   const checkedAt = options.now || nowIso();
-  const repoRoot = options.repoRoot || process.cwd();
+  const repoRoot = options.repoRoot || resolveRepoRoot();
   const dataDir = options.dataDir || path.join(repoRoot, 'data');
   const tolerance = {
     quantity: Math.max(0, safeNumber(options.quantityTolerance, 0.000001)),
@@ -348,22 +349,17 @@ function readJson(filePath) {
 }
 
 function readJsonl(filePath) {
+  const store = new JsonFileStore(path.dirname(filePath));
   try {
-    return fs.readFileSync(filePath, 'utf8')
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => {
-        try { return JSON.parse(line); } catch { return null; }
-      })
-      .filter(Boolean);
+    return store.readLines(path.basename(filePath));
   } catch {
     return [];
   }
 }
 
 function writeLatestReconciliation(result, filePath) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(result, null, 2)}\n`);
+  const store = new JsonFileStore(path.dirname(filePath));
+  store.write(path.basename(filePath), result);
 }
 
 function round(value) {

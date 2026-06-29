@@ -6,7 +6,7 @@ const { promisify } = require('util');
 const { URL } = require('url');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { isRegularUsMarketHours, resolveMarketRegime } = require('./market-hours');
-const { nowIso, safeNumber } = require('./util');
+const { nowIso, safeNumber, resolveRepoRoot, resolveDataPath } = require('./util');
 const { createLocalProcessController } = require('./local-process-controller');
 const { classifyExitProtection } = require('./exit-protection');
 const { readOperatorTimelineTail } = require('./operator-timeline');
@@ -33,7 +33,7 @@ const execFileAsync = (file, args, options = {}) => {
     const rand = Math.random().toString(36).substring(2, 15);
     const vbsPath = path.join(tempDir, `run-${rand}.vbs`);
     const outPath = path.join(tempDir, `out-${rand}.txt`);
-    
+
     const formattedCmd = [file, ...args].map((arg) => {
       if (/[ "()&^|<>]/g.test(arg) || arg === '') {
         return '"' + arg.replace(/"/g, '""') + '"';
@@ -42,7 +42,7 @@ const execFileAsync = (file, args, options = {}) => {
     }).join(' ');
 
     const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\ncode = WshShell.Run("cmd.exe /c ${formattedCmd.replace(/"/g, '""')} > ""${outPath}""", 0, True)\nWScript.Quit code\n`;
-    
+
     return fs.promises.writeFile(vbsPath, vbsContent, 'utf8')
       .then(() => promisify(execFile)('wscript.exe', [vbsPath], { windowsHide: true }))
       .then(() => {
@@ -52,8 +52,8 @@ const execFileAsync = (file, args, options = {}) => {
         return { stdout: '', stderr: '' };
       })
       .finally(() => {
-        try { if (fs.existsSync(vbsPath)) fs.unlinkSync(vbsPath); } catch {}
-        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
+        try { if (fs.existsSync(vbsPath)) fs.unlinkSync(vbsPath); } catch (_) { /* ignore */ }
+        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch (_) { /* ignore */ }
       });
   }
   return promisify(execFile)(file, args, options);
@@ -211,7 +211,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     throw new Error('Dashboard requires fetch support');
   }
 
-  const dataDir = context.dataDir || options.dataDir || path.resolve(process.cwd(), 'data');
+  const dataDir = context.dataDir || options.dataDir || path.resolve(resolveRepoRoot(), 'data');
   const nowProvider = options.nowProvider || (() => new Date());
   const currentDate = nowProvider();
   const now = nowIso();
@@ -627,7 +627,7 @@ async function fetchBrokerOpenOrders({ fetchImpl, env }) {
   }
 }
 
-function buildEnvLocalChangedAfterStartWarning({ repoRoot = process.cwd(), startedAt = null } = {}) {
+function buildEnvLocalChangedAfterStartWarning({ repoRoot = resolveRepoRoot(), startedAt = null } = {}) {
   const envLocalPath = path.resolve(repoRoot, '.env.local');
   let stat = null;
   try {
@@ -912,7 +912,7 @@ function resolveDashboardDir(dashboardDir) {
 }
 
 function resolveDataDir(dataDir) {
-  return dataDir ? path.resolve(dataDir) : path.resolve(process.cwd(), 'data');
+  return dataDir ? path.resolve(dataDir) : path.resolve(resolveRepoRoot(), 'data');
 }
 
 function parsePortList(raw, fallback) {
@@ -978,7 +978,7 @@ function readRelevantLogLines(dataDir, limit = DEFAULT_LOG_LINE_LIMIT) {
     for (const line of tail) {
       if (/error|warn|fail|eaddrinuse|stale|blocked|reject/i.test(line)) {
         lines.push({
-          file: path.relative(process.cwd(), filePath),
+          file: path.relative(resolveRepoRoot(), filePath),
           line,
         });
       }
@@ -1919,7 +1919,7 @@ function resolvePreferredDashboardPort(env = process.env) {
 }
 
 function resolveDashboardSnapshotPath() {
-  return path.resolve(process.cwd(), 'data', 'logs', 'overnight-status.json');
+  return path.resolve(resolveRepoRoot(), 'data', 'logs', 'overnight-status.json');
 }
 
 function summarizeBrokerLocalReconciliation(reconciliation = null) {

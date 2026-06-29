@@ -1,21 +1,21 @@
-const fs = require('fs');
 const path = require('path');
-const { nowIso } = require('./util');
+const { nowIso, resolveRepoRoot } = require('./util');
+const { JsonFileStore } = require('./storage');
 const { appendOperatorTimelineEvent } = require('./operator-timeline');
 
-function resolveScannerRuntimePath(env = process.env, repoRoot = process.cwd()) {
-  return path.resolve(env.SCANNER_RUNTIME_STATE_PATH || path.join(repoRoot, 'data', 'logs', 'scanner-runtime.json'));
+function resolveScannerRuntimePath(env = process.env, repoRoot = resolveRepoRoot()) {
+  return path.resolve(env.SCANNER_RUNTIME_STATE_PATH || path.join(repoRoot, 'data', 'state', 'scanner-runtime.json'));
 }
 
 function writeScannerRuntimeState(snapshot = {}, options = {}) {
-  const filePath = options.filePath || resolveScannerRuntimePath(options.env || process.env, options.repoRoot || process.cwd());
+  const filePath = options.filePath || resolveScannerRuntimePath(options.env || process.env, options.repoRoot || resolveRepoRoot());
+  const store = new JsonFileStore(path.dirname(filePath));
   const payload = {
     updated_at: nowIso(),
     ...snapshot,
   };
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+    store.write(path.basename(filePath), payload);
     appendOperatorTimelineEvent({
       timestamp: payload.last_scan_time || payload.updated_at,
       event_type: 'scanner.scan',

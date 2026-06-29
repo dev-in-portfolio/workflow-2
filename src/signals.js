@@ -88,7 +88,6 @@ function calculateSignalScores(signal, context = {}) {
 
 function scoreSignal(signal, context = {}) {
   const scores = calculateSignalScores(signal, context);
-  const freshness = scores.freshness_score;
   const contradiction = scores.contradiction_score;
   const risk = scores.risk_score;
   const confidence = scores.confidence_score;
@@ -157,8 +156,6 @@ function scoreSignal(signal, context = {}) {
     limit_price: signal.limit_price ?? null,
     volume: signal.volume ?? null,
     liquidity_score: signal.liquidity_score ?? null,
-    freshness_score: signal.freshness_score ?? null,
-    risk_score: signal.risk_score ?? null,
     sector: signal.sector ?? null,
     market_context: signal.market_context || null,
   };

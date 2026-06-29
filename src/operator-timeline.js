@@ -1,13 +1,13 @@
 const fs = require('fs');
 const path = require('path');
-const { nowIso } = require('./util');
+const { nowIso, resolveRepoRoot } = require('./util');
 
-function resolveOperatorTimelinePath(env = process.env, repoRoot = process.cwd()) {
+function resolveOperatorTimelinePath(env = process.env, repoRoot = resolveRepoRoot()) {
   return path.resolve(env.OPERATOR_TIMELINE_PATH || path.join(repoRoot, 'data', 'logs', 'operator-timeline.jsonl'));
 }
 
 function appendOperatorTimelineEvent(event = {}, options = {}) {
-  const filePath = options.filePath || resolveOperatorTimelinePath(options.env || process.env, options.repoRoot || process.cwd());
+  const filePath = options.filePath || resolveOperatorTimelinePath(options.env || process.env, options.repoRoot || resolveRepoRoot());
   const record = {
     timestamp: event.timestamp || event.at || nowIso(),
     event_type: event.event_type || event.type || 'operator_event',
@@ -26,7 +26,7 @@ function appendOperatorTimelineEvent(event = {}, options = {}) {
   return record;
 }
 
-function readOperatorTimelineTail({ filePath, env = process.env, repoRoot = process.cwd(), limit = 50 } = {}) {
+function readOperatorTimelineTail({ filePath, env = process.env, repoRoot = resolveRepoRoot(), limit = 50 } = {}) {
   const resolvedPath = filePath || resolveOperatorTimelinePath(env, repoRoot);
   try {
     const lines = fs.readFileSync(resolvedPath, 'utf8')

@@ -1,17 +1,17 @@
-const fs = require('fs');
 const path = require('path');
-const { nowIso, safeNumber } = require('./util');
+const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
+const { JsonFileStore } = require('./storage');
 
-function defaultTrailingStatePath({ env = process.env, repoRoot = process.cwd() } = {}) {
-  return env.POSITION_TRAILING_STATE_PATH || path.join(repoRoot, 'data', 'logs', 'position-trailing-state.json');
+function defaultTrailingStatePath({ env = process.env, repoRoot = resolveRepoRoot() } = {}) {
+  return env.POSITION_TRAILING_STATE_PATH || path.join(repoRoot, 'data', 'state', 'position-trailing-state.json');
 }
 
 function loadTrailingState(options = {}) {
   const filePath = options.filePath || defaultTrailingStatePath(options);
+  const store = new JsonFileStore(path.dirname(filePath));
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = raw.trim() ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    const data = store.read(path.basename(filePath));
+    return data && typeof data === 'object' ? data : {};
   } catch {
     return {};
   }
@@ -19,13 +19,13 @@ function loadTrailingState(options = {}) {
 
 function saveTrailingState(state, options = {}) {
   const filePath = options.filePath || defaultTrailingStatePath(options);
+  const store = new JsonFileStore(path.dirname(filePath));
   const payload = {
     version: '2026-06-21.live-market-trailing.1',
     updated_at: nowIso(),
     positions: state?.positions || {},
   };
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+  store.write(path.basename(filePath), payload);
   return payload;
 }
 

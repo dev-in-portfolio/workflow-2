@@ -1,52 +1,32 @@
-const { computePaperOutcome } = require('./paper-outcomes');
-const { isBrokerBackedExecutionAdapter, reconcileBrokerPortfolio } = require('./broker-reconciliation');
+const { reconcileBrokerPortfolio } = require('./broker-reconciliation');
 const { deriveMarketActivitySignal } = require('./market-activity');
-const { allocateBuyNotional } = require('./portfolio-allocation');
+const { computePaperOutcome } = require('./paper-outcomes');
 const { evaluateRiskGate } = require('./risk-gate');
-const { buildPaperOrderRequestFromSignal, resolveBuyOrderSizing, validatePaperOrderWebhookPayload } = require('./webhooks');
+const { assertRiskDecision } = require('./module-contracts');
+const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
 const {
-  assertExecutionRequest,
-  assertExecutionResult,
-  assertRiskDecision,
-  assertSignalCandidate,
-} = require('./module-contracts');
-const {
-  loadPartialFillState,
-  savePartialFillState,
-  summarizePartialFillState,
-  updatePartialFillStateFromOrder,
-} = require('./partial-fill-state');
-const { nowIso, safeNumber } = require('./util');
-
-function normalizeOrderStatus(order) {
-  return String(order?.status || order?.order_status || order?.fill_status || '').trim().toLowerCase();
-}
+  buildPaperResultFromOrder,
+  buildPartialFillMetadata,
+  confirmBrokerOrder,
+  detectOpenOrderConflict,
+  executeOrder,
+} = require('./trading/execution-orchestrator');
+const { buildPaperOrder, findPendingPartialConflict, resolveLiveBuyNotionalTarget } = require('./trading/order-builder');
+const { processSignal } = require('./trading/signal-processor');
 
 async function processTradingSignal(signalOrRequest = {}, options = {}) {
-  const signal = signalOrRequest.signal || signalOrRequest;
-  const marketContext = {
-    ...(signalOrRequest.market_context || signalOrRequest.marketContext || {}),
-    ...(options.marketContext || {}),
-  };
-  const performance = options.performance || null;
-  const audit = options.audit || null;
-  const policySnapshot = options.policySnapshot || performance?.getPolicySnapshot?.() || { policy: {} };
-  const policy = policySnapshot.policy || {};
-  const requestedPortfolio = signalOrRequest.portfolio || signalOrRequest.portfolio_context || {};
-  let partialFillState = options.partialFillState || loadPartialFillState({ env: options.env || process.env, repoRoot: options.repoRoot || process.cwd() });
-  const partialFillSummary = summarizePartialFillState(partialFillState);
-
-  const validation = validatePaperOrderWebhookPayload(signal);
-  if (!validation.pass) {
+  const signalResult = processSignal(signalOrRequest, options);
+  if (!signalResult.ok) {
     return {
       accepted: false,
-      stage: 'validation',
-      reason_codes: validation.reason_codes,
-      signal,
-      market_context: marketContext,
+      stage: signalResult.error.stage || 'validation',
+      reason_codes: signalResult.reasonCodes,
+      signal: signalResult.error.data?.signal || (signalOrRequest.signal || signalOrRequest),
+      market_context: signalResult.error.data?.marketContext || signalOrRequest.market_context || signalOrRequest.marketContext || {},
     };
   }
-  assertSignalCandidate(signal);
+
+  const { signal, marketContext, performance, audit, policySnapshot, policy, requestedPortfolio, partialFillState, partialFillSummary } = signalResult.value;
 
   const brokerReconciliation = await reconcileBrokerPortfolio({
     executionAdapter: options.executionAdapter,
@@ -88,75 +68,25 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     };
   }
 
-  const requestedBuyNotionalTarget = policy.buyNotionalTarget ?? options.buyNotionalTarget ?? 150;
-  const minBuyNotional = Math.max(1, Number(policy.minBuyNotional ?? options.minBuyNotional ?? 25) || 25);
-  const strictBrokerCash = isBuySignal(signal) && isBrokerBackedExecutionAdapter(options.executionAdapter);
-  const liveBuyBudget = isBuySignal(signal)
-    ? allocateBuyNotional({
-      targetNotional: requestedBuyNotionalTarget,
-      minBuyNotional,
-      portfolio,
-      requireBrokerCash: strictBrokerCash,
-    })
-    : { target: requestedBuyNotionalTarget, requested: requestedBuyNotionalTarget, cash_limited: false };
-  const effectiveBuyNotionalTarget = liveBuyBudget.notional ?? liveBuyBudget.target;
-  if (isBuySignal(signal) && (!liveBuyBudget.accepted || effectiveBuyNotionalTarget < minBuyNotional)) {
-    return {
-      accepted: false,
-      stage: 'decision',
-      reason_codes: [liveBuyBudget.reason || 'CASH_TOO_LOW_FOR_TARGET_SIZE'],
-      signal,
-      riskDecision,
-      broker_reconciliation: brokerReconciliation,
-      market_context: reconciledMarketContext,
-      sizing: {
-        requested_notional: requestedBuyNotionalTarget,
-        submitted_notional: effectiveBuyNotionalTarget,
-        min_buy_notional: minBuyNotional,
-        cash_limited: Boolean(liveBuyBudget.cash_limited),
-        allocation: liveBuyBudget,
-      },
-    };
-  }
-  const paperOrderRequest = buildPaperOrderRequestFromSignal(signal, {
+  const orderResult = buildPaperOrder(signal, riskDecision, {
+    ...options,
     policy,
-    positionSizeMultiplier: policy.positionSizeMultiplier,
-    buyNotionalTarget: effectiveBuyNotionalTarget,
+    portfolio,
   });
-  if (paperOrderRequest && isBuySignal(signal)) {
-    paperOrderRequest.requested_notional = requestedBuyNotionalTarget;
-    paperOrderRequest.submitted_notional = effectiveBuyNotionalTarget;
-    paperOrderRequest.min_buy_notional = minBuyNotional;
-    if (strictBrokerCash) paperOrderRequest.require_idempotency = true;
-  }
-  if (paperOrderRequest) assertExecutionRequest(paperOrderRequest);
-  if (!paperOrderRequest) {
-    if (isBuySignal(signal)) {
-      const buySizing = resolveBuyOrderSizing(signal, {
-        buyNotionalTarget: effectiveBuyNotionalTarget,
-      });
-      if (buySizing && buySizing.reason_codes?.length) {
-        return {
-          accepted: false,
-          stage: 'decision',
-          reason_codes: buySizing.reason_codes,
-          signal,
-          riskDecision,
-          broker_reconciliation: brokerReconciliation,
-          market_context: reconciledMarketContext,
-        };
-      }
-    }
+  if (!orderResult.accepted) {
     return {
       accepted: false,
       stage: 'decision',
-      reason_codes: ['NON_TRADE_DECISION'],
+      reason_codes: orderResult.reason_codes,
       signal,
       riskDecision,
       broker_reconciliation: brokerReconciliation,
       market_context: reconciledMarketContext,
+      ...(orderResult.sizing ? { sizing: orderResult.sizing } : {}),
     };
   }
+
+  const { paperOrderRequest } = orderResult;
 
   const partialConflict = findPendingPartialConflict(partialFillSummary, paperOrderRequest);
   if (partialConflict) {
@@ -189,59 +119,29 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     };
   }
 
-  const paperOrder = await options.executionAdapter.submitOrder(paperOrderRequest, {
-    market: reconciledMarketContext,
-    requireHumanApproval: policy.requireHumanApproval,
-  });
-  assertExecutionResult(paperOrder);
-
-  const confirmation = await confirmBrokerOrder(options.executionAdapter, paperOrder.order_id, {
-    attempts: options.confirmationAttempts,
-    delayMs: options.confirmationDelayMs,
-    maxDelayMs: options.confirmationMaxDelayMs,
+  const executionResult = await executeOrder(paperOrderRequest, signal, {
+    ...options,
+    policy,
+    reconciledMarketContext,
+    partialFillState,
   });
 
-  const paperResult = buildPaperResultFromOrder({
-    signal,
-    paperOrderRequest,
-    paperOrder,
-    confirmation,
-  });
-  partialFillState = updatePartialFillStateFromOrder(partialFillState, {
-    ...paperOrder,
-    ...(confirmation?.order || {}),
-    status: paperResult.status,
-    filled_quantity: paperResult.filled_quantity,
-    average_fill_price: paperResult.average_fill_price,
-    remaining_qty: paperResult.remaining_quantity,
-    symbol: paperOrderRequest.symbol,
-    side: paperOrderRequest.side,
-  }, {
-    request: paperOrderRequest,
-    now: paperResult.filled_at || nowIso(),
-  });
-  const updatedPartialFillSummary = summarizePartialFillState(partialFillState);
-  if (options.savePartialFillState !== false) {
-    savePartialFillState(partialFillState, { env: options.env || process.env, repoRoot: options.repoRoot || process.cwd() });
-  }
-  paperResult.partial_fill_state = updatedPartialFillSummary;
-
-  const paperOutcome = recordPaperOutcome(performance, signal, paperResult, options.outcomeSnapshot || null);
+  const paperOutcome = recordPaperOutcome(performance, signal, executionResult.paperResult, options.outcomeSnapshot || null);
 
   if (audit?.writeEvent) {
     audit.writeEvent({
       event_type: 'trading_signal_processed',
-      related_entity_id: paperOrder.order_id || signal.signal_id || null,
+      related_entity_id: executionResult.paperOrder.order_id || signal.signal_id || null,
       payload: {
         signal,
         riskDecision,
         brokerReconciliation,
         paperOrderRequest,
-        paperOrder,
-        confirmation,
-        paperResult,
+        paperOrder: executionResult.paperOrder,
+        confirmation: executionResult.confirmation,
+        paperResult: executionResult.paperResult,
         paperOutcome,
-        partialFillState: updatedPartialFillSummary,
+        partialFillState: executionResult.updatedPartialFillSummary,
       },
       source: options.source || 'server',
       severity: 'info',
@@ -254,55 +154,14 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     signal,
     riskDecision,
     paperOrderRequest,
-    paperOrder,
-    confirmation,
-    paperResult,
+    paperOrder: executionResult.paperOrder,
+    confirmation: executionResult.confirmation,
+    paperResult: executionResult.paperResult,
     paperOutcome,
     market_context: reconciledMarketContext,
     broker_reconciliation: brokerReconciliation,
-    partial_fill_state: updatedPartialFillSummary,
+    partial_fill_state: executionResult.updatedPartialFillSummary,
   };
-}
-
-function isBuySignal(signal = {}) {
-  return String(signal.side || signal.direction || '').trim().toLowerCase() === 'buy';
-}
-
-function findPendingPartialConflict(partialFillSummary = {}, request = {}) {
-  const symbol = String(request.symbol || '').trim().toUpperCase();
-  const side = String(request.side || '').trim().toLowerCase();
-  if (!symbol || !side) return null;
-  const active = [
-    ...(Array.isArray(partialFillSummary.partial_buys) ? partialFillSummary.partial_buys : []),
-    ...(Array.isArray(partialFillSummary.partial_sells) ? partialFillSummary.partial_sells : []),
-  ];
-  return active.find((order) => String(order.symbol || '').toUpperCase() === symbol && String(order.side || '').toLowerCase() === side) || null;
-}
-
-async function resolveLiveBuyNotionalTarget(executionAdapter, desiredTarget) {
-  const fallbackTarget = Math.max(1, Number(desiredTarget) || 150);
-  if (!executionAdapter || typeof executionAdapter.getAccount !== 'function') {
-    return { target: fallbackTarget, requested: fallbackTarget, cash_limited: false };
-  }
-
-  try {
-    const account = await executionAdapter.getAccount();
-    const availableNumbers = [
-      account?.buying_power,
-      account?.cash,
-      account?.available_buying_power,
-    ]
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value) && value > 0);
-    if (!availableNumbers.length) {
-      return { target: fallbackTarget, requested: fallbackTarget, cash_limited: false };
-    }
-    const maxSafeBudget = Math.max(1, Math.floor(Math.min(...availableNumbers) * 0.99 * 100) / 100);
-    const target = Math.min(fallbackTarget, maxSafeBudget);
-    return { target, requested: fallbackTarget, cash_limited: target < fallbackTarget, max_safe_budget: maxSafeBudget };
-  } catch {
-    return { target: fallbackTarget, requested: fallbackTarget, cash_limited: false };
-  }
 }
 
 async function processMarketInput(rawInput = {}, options = {}) {
@@ -340,180 +199,6 @@ async function processMarketInput(rawInput = {}, options = {}) {
     ...options,
     policySnapshot,
   });
-}
-
-async function detectOpenOrderConflict(executionAdapter, paperOrderRequest) {
-  if (!executionAdapter || typeof executionAdapter.getOpenOrders !== 'function') {
-    return { pass: true, reason_codes: [], open_orders: [] };
-  }
-
-  let openOrders = [];
-  try {
-    openOrders = await executionAdapter.getOpenOrders();
-  } catch (error) {
-    return {
-      pass: false,
-      reason_codes: ['OPEN_ORDER_CHECK_UNAVAILABLE'],
-      open_orders: [],
-      error: error.message,
-    };
-  }
-
-  const symbol = String(paperOrderRequest.symbol || '').trim().toUpperCase();
-  const desiredSide = String(paperOrderRequest.side || '').trim().toLowerCase();
-  const oppositeSide = desiredSide === 'buy' ? 'sell' : desiredSide === 'sell' ? 'buy' : null;
-  const openOrderStatuses = new Set([
-    'new',
-    'accepted',
-    'pending_new',
-    'partially_filled',
-    'submitted_to_paper',
-    'approved',
-    'proposal',
-    'proposed',
-    'approval_required',
-    'risk_checked',
-  ]);
-  const conflictingOpenOrders = (Array.isArray(openOrders) ? openOrders : []).filter((order) => {
-    const orderSymbol = String(order.symbol || '').trim().toUpperCase();
-    const orderSide = String(order.side || '').trim().toLowerCase();
-    const orderStatus = String(order.status || '').trim().toLowerCase();
-    return orderSymbol === symbol && oppositeSide && orderSide === oppositeSide && openOrderStatuses.has(orderStatus);
-  });
-
-  if (conflictingOpenOrders.length > 0) {
-    return {
-      pass: false,
-      reason_codes: ['OPEN_ORDER_CONFLICT', 'WASH_TRADE_RISK'],
-      open_orders: conflictingOpenOrders,
-    };
-  }
-
-  return { pass: true, reason_codes: [], open_orders: [] };
-}
-
-async function confirmBrokerOrder(executionAdapter, orderId, options = {}) {
-  if (!executionAdapter || typeof executionAdapter.getOrder !== 'function') {
-    return {
-      confirmed: false,
-      terminal: false,
-      confirmation_status: 'unavailable',
-      order: null,
-      attempts: 0,
-    };
-  }
-
-  const attempts = Math.max(1, Number(options.attempts || 3) || 3);
-  const delayMs = Math.max(0, Number(options.delayMs || 150) || 150);
-  const maxDelayMs = Math.max(delayMs, Number(options.maxDelayMs || 750) || 750);
-  let lastOrder = null;
-  let lastStatus = 'pending';
-  let lastError = null;
-
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      lastOrder = await executionAdapter.getOrder(orderId);
-      lastError = null;
-    } catch (error) {
-      lastError = error;
-      lastOrder = null;
-    }
-    if (!lastOrder) {
-      if (attempt < attempts - 1) {
-        await sleep(Math.min(maxDelayMs, delayMs * (attempt + 1)));
-        continue;
-      }
-      break;
-    }
-    lastStatus = normalizeOrderStatus(lastOrder);
-    if (['filled', 'partially_filled', 'reconciled'].includes(lastStatus)) {
-      return {
-        confirmed: true,
-        terminal: true,
-        confirmation_status: lastStatus,
-        order: lastOrder,
-        attempts: attempt + 1,
-      };
-    }
-    if (['rejected', 'cancelled', 'canceled', 'expired', 'failed'].includes(lastStatus)) {
-      return {
-        confirmed: false,
-        terminal: true,
-        confirmation_status: lastStatus,
-        order: lastOrder,
-        attempts: attempt + 1,
-      };
-    }
-    if (attempt < attempts - 1) {
-      await sleep(Math.min(maxDelayMs, delayMs * (attempt + 1)));
-    }
-  }
-
-  return {
-    confirmed: false,
-    terminal: false,
-    confirmation_status: lastStatus || 'pending',
-    order: lastOrder,
-    attempts,
-    error: lastError ? lastError.message : null,
-  };
-}
-
-function buildPaperResultFromOrder({ signal, paperOrderRequest, paperOrder, confirmation }) {
-  const order = confirmation?.order || paperOrder || {};
-  const status = normalizeOrderStatus(order) || normalizeOrderStatus(paperOrder) || confirmation?.confirmation_status || 'unknown';
-  const filledAt = order.fill?.at
-    || order.filled_at
-    || order.external_order?.filled_at
-    || order.updated_at
-    || signal.created_at
-    || nowIso();
-  const averageFillPrice = safeNumber(
-    order.fill?.average_fill_price
-      ?? order.average_fill_price
-      ?? order.external_order?.filled_avg_price
-      ?? order.external_order?.avg_fill_price
-      ?? order.limit_price
-      ?? paperOrderRequest.entry_price
-      ?? paperOrderRequest.limit_price
-      ?? signal.entry_price
-      ?? signal.price,
-    null,
-  );
-  const filledQuantity = safeNumber(
-    order.fill?.filled_quantity
-      ?? order.filled_quantity
-      ?? order.filled_qty
-      ?? order.external_order?.filled_qty
-      ?? order.external_order?.filled_quantity
-      ?? order.qty
-      ?? order.quantity
-      ?? paperOrderRequest.quantity
-      ?? 0,
-    0,
-  );
-  const submittedQuantity = safeNumber(order.qty ?? order.quantity ?? paperOrderRequest.quantity ?? null, null);
-  const remainingQuantity = safeNumber(
-    order.remaining_qty
-      ?? order.leaves_qty
-      ?? order.external_order?.leaves_qty
-      ?? order.external_order?.remaining_qty
-      ?? (Number.isFinite(submittedQuantity) ? Math.max(0, submittedQuantity - filledQuantity) : null),
-    null,
-  );
-
-  return {
-    order_id: order.order_id || paperOrder.order_id || paperOrderRequest.request_id || signal.signal_id || null,
-    status,
-    filled_at: filledAt,
-    average_fill_price: Number.isFinite(averageFillPrice) ? averageFillPrice : null,
-    filled_quantity: Number.isFinite(filledQuantity) ? filledQuantity : null,
-    submitted_quantity: Number.isFinite(submittedQuantity) ? submittedQuantity : null,
-    remaining_quantity: Number.isFinite(remainingQuantity) ? remainingQuantity : null,
-    estimated_fees: safeNumber(order.fill?.estimated_fees ?? order.estimated_fees ?? 0, 0),
-    original_signal: signal,
-    paper_order_request: paperOrderRequest,
-  };
 }
 
 function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = null) {
@@ -580,27 +265,6 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
   return outcome;
 }
 
-function buildPartialFillMetadata(paperResult = {}) {
-  const submitted = safeNumber(paperResult.submitted_quantity, null);
-  const filled = safeNumber(paperResult.filled_quantity, null);
-  const remaining = safeNumber(paperResult.remaining_quantity, null);
-  const fillPct = Number.isFinite(submitted) && submitted > 0 && Number.isFinite(filled)
-    ? filled / submitted
-    : null;
-  return {
-    status: paperResult.status || null,
-    submitted_quantity: submitted,
-    filled_quantity: filled,
-    remaining_quantity: remaining,
-    fill_percentage: Number.isFinite(fillPct) ? fillPct : null,
-    state_summary: paperResult.partial_fill_state || null,
-  };
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 module.exports = {
   buildPaperResultFromOrder,
   confirmBrokerOrder,
@@ -608,4 +272,5 @@ module.exports = {
   processMarketInput,
   processTradingSignal,
   recordPaperOutcome,
+  resolveLiveBuyNotionalTarget,
 };

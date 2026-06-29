@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveRepoRoot } = require('./util');
 
 function loadEnvFile(filePath, baseEnv = {}) {
   if (!filePath || !fs.existsSync(filePath)) {
@@ -23,7 +24,7 @@ function loadEnvFile(filePath, baseEnv = {}) {
   return { ...loaded, ...baseEnv };
 }
 
-function loadRuntimeEnv(baseEnv = process.env, cwd = process.cwd()) {
+function loadRuntimeEnv(baseEnv = process.env, cwd = resolveRepoRoot()) {
   const root = path.resolve(cwd);
   const dotEnv = path.join(root, '.env');
   const dotEnvLocal = path.join(root, '.env.local');

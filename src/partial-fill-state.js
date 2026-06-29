@@ -1,6 +1,6 @@
-const fs = require('fs');
 const path = require('path');
-const { nowIso, safeNumber } = require('./util');
+const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
+const { JsonFileStore } = require('./storage');
 
 const PartialFillReason = {
   PARTIAL_FILL_PENDING: 'PARTIAL_FILL_PENDING',
@@ -14,18 +14,19 @@ const PartialFillReason = {
   PARTIAL_STATE_MISMATCH: 'PARTIAL_STATE_MISMATCH',
 };
 
-function defaultPartialFillStatePath({ env = process.env, repoRoot = process.cwd() } = {}) {
-  return env.PARTIAL_FILL_STATE_PATH || path.join(repoRoot, 'data', 'runtime', 'partial-fill-state.json');
+function defaultPartialFillStatePath({ env = process.env, repoRoot = resolveRepoRoot() } = {}) {
+  return env.PARTIAL_FILL_STATE_PATH || path.join(repoRoot, 'data', 'state', 'partial-fill-state.json');
 }
 
 function loadPartialFillState(filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultPartialFillStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
+  const name = path.basename(filePath);
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = raw.trim() ? JSON.parse(raw) : {};
-    return normalizeState(parsed);
+    const data = store.read(name);
+    return data ? normalizeState(data) : normalizeState({});
   } catch {
     return normalizeState({});
   }
@@ -35,10 +36,10 @@ function savePartialFillState(state, filePathOrOptions = {}) {
   const filePath = typeof filePathOrOptions === 'string'
     ? filePathOrOptions
     : defaultPartialFillStatePath(filePathOrOptions);
+  const store = new JsonFileStore(path.dirname(filePath));
   const payload = normalizeState(state);
   payload.updated_at = nowIso();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  store.write(path.basename(filePath), payload);
   return payload;
 }
 

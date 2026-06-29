@@ -1,10 +1,11 @@
 const path = require('path');
 const { spawn } = require('child_process');
+const { createLogger } = require('./logger');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { DEFAULT_DASHBOARD_PORT } = require('./dashboard-server');
 const { getNewYorkMarketParts, isRegularUsMarketHours } = require('./market-hours');
 const { isUsMarketHoliday } = require('./us-market-holidays');
-const { nowIso } = require('./util');
+const { nowIso, resolveRepoRoot } = require('./util');
 
 const DASHBOARD_PROBE_LIMIT = 12;
 
@@ -23,11 +24,11 @@ function resolveAutomationAction(input = {}) {
 
 async function runLiveMarketDailyAutomation(options = {}) {
   const env = options.env || process.env;
-  const runtimeEnv = options.runtimeEnv || loadRuntimeEnv(env, options.repoRoot || process.cwd());
-  const repoRoot = path.resolve(options.repoRoot || process.cwd());
+  const runtimeEnv = options.runtimeEnv || loadRuntimeEnv(env, options.repoRoot || resolveRepoRoot());
+  const repoRoot = path.resolve(options.repoRoot || resolveRepoRoot());
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const spawnImpl = options.spawnImpl || spawn;
-  const logger = options.logger || console;
+  const logger = options.logger || createLogger();
   const action = resolveAutomationAction(options) || 'start';
   const now = options.now || new Date();
 
@@ -93,9 +94,7 @@ async function runLiveMarketDailyAutomation(options = {}) {
     actionResult,
   });
 
-  if (logger && typeof logger.log === 'function') {
-    logger.log(formatAutomationSummary(summary));
-  }
+  logger.log(formatAutomationSummary(summary));
 
   return summary;
 }
@@ -111,7 +110,7 @@ async function findDashboard({ env = process.env, fetchImpl = globalThis.fetch }
   return null;
 }
 
-async function launchDashboardAndWait({ env = process.env, repoRoot = process.cwd(), fetchImpl = globalThis.fetch, spawnImpl = spawn, logger = console } = {}) {
+async function launchDashboardAndWait({ env = process.env, repoRoot = resolveRepoRoot(), fetchImpl = globalThis.fetch, spawnImpl = spawn, logger = console } = {}) {
   const dashboardCli = path.join(repoRoot, 'scripts', 'dashboard-cli.js');
   const child = spawnImpl(process.execPath, [dashboardCli], {
     cwd: repoRoot,
@@ -125,9 +124,7 @@ async function launchDashboardAndWait({ env = process.env, repoRoot = process.cw
   });
   if (child.unref) child.unref();
 
-  if (logger && typeof logger.log === 'function') {
-    logger.log(`Dashboard not reachable; launched local dashboard helper pid ${child.pid || 'unknown'}.`);
-  }
+  logger.log(`Dashboard not reachable; launched local dashboard helper pid ${child.pid || 'unknown'}.`);
 
   const deadlines = Date.now() + 15_000;
   while (Date.now() < deadlines) {

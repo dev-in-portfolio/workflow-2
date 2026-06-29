@@ -1,4 +1,5 @@
 const { createStockScanner } = require('../src/stock-scanner');
+const { buildScannerConfig } = require('../src/scanner-config');
 const { loadRuntimeEnv } = require('../src/runtime-env');
 const { nowIso } = require('../src/util');
 const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('../src/volatile-stock-universe');
@@ -16,6 +17,7 @@ function main(env = process.env) {
   );
   const scanner = createStockScanner({
     env: runtimeEnv,
+    scannerConfig: buildScannerConfig(runtimeEnv),
     localBaseUrl,
     enabled: true,
     keepAlive: true,

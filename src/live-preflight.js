@@ -7,7 +7,7 @@ const { loadConfig } = require('./config');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { listProcessLocks } = require('./process-lock');
 const { evaluatePolicyHealth } = require('./policy-health');
-const { nowIso, safeNumber } = require('./util');
+const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
 
 const execFileAsync = (file, args, options = {}) => {
   if (process.platform === 'win32') {
@@ -15,7 +15,7 @@ const execFileAsync = (file, args, options = {}) => {
     const rand = Math.random().toString(36).substring(2, 15);
     const vbsPath = path.join(tempDir, `run-${rand}.vbs`);
     const outPath = path.join(tempDir, `out-${rand}.txt`);
-    
+
     const formattedCmd = [file, ...args].map((arg) => {
       if (/[ "()&^|<>]/g.test(arg) || arg === '') {
         return '"' + arg.replace(/"/g, '""') + '"';
@@ -24,7 +24,7 @@ const execFileAsync = (file, args, options = {}) => {
     }).join(' ');
 
     const vbsContent = `Set WshShell = CreateObject("WScript.Shell")\ncode = WshShell.Run("cmd.exe /c ${formattedCmd.replace(/"/g, '""')} > ""${outPath}""", 0, True)\nWScript.Quit code\n`;
-    
+
     return fs.promises.writeFile(vbsPath, vbsContent, 'utf8')
       .then(() => promisify(execFile)('wscript.exe', [vbsPath], { windowsHide: true }))
       .then(() => {
@@ -34,8 +34,8 @@ const execFileAsync = (file, args, options = {}) => {
         return { stdout: '', stderr: '' };
       })
       .finally(() => {
-        try { if (fs.existsSync(vbsPath)) fs.unlinkSync(vbsPath); } catch {}
-        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
+        try { if (fs.existsSync(vbsPath)) fs.unlinkSync(vbsPath); } catch (_) { /* ignore */ }
+        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch (_) { /* ignore */ }
       });
   }
   return promisify(execFile)(file, args, options);
@@ -51,7 +51,7 @@ const Reason = {
 };
 
 async function runLivePreflight(options = {}) {
-  const repoRoot = path.resolve(options.repoRoot || process.cwd());
+  const repoRoot = path.resolve(options.repoRoot || resolveRepoRoot());
   const dataDir = path.resolve(options.dataDir || path.join(repoRoot, 'data'));
   const checkedAt = options.now || nowIso();
   const nowMs = new Date(checkedAt).getTime();
@@ -145,7 +145,7 @@ function buildConfigState({ repoRoot, runtimeEnv, options, warnings, recommended
     && Number.isFinite(envLocalStat.mtime_ms)
     && Number.isFinite(runtimeStartedMs)
     && runtimeStartedMs > 0
-    && envLocalStat.mtime_ms > runtimeStartedMs
+    && envLocalStat.mtime_ms > runtimeStartedMs,
   );
   let loadedConfig = null;
   let loaded = true;
