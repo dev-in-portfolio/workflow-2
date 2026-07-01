@@ -265,3 +265,60 @@ test('feature flags can disable scoring output', async () => {
   assert.equal(hotList.status, 'off');
   assert.equal(hotList.dynamicHotList.length, 0);
 });
+
+test('dynamic hot list normalization preserves a stable entry schema', async () => {
+  const { dataDir } = tempWorkspace();
+  const hotListPath = resolveDynamicHotListPath({ dataDir });
+  const future = new Date(Date.now() + 30 * 60_000).toISOString();
+  const saved = saveDynamicHotList({
+    generatedAt: future,
+    lastScoredAt: future,
+    mode: 'active',
+    source: 'meme-monitor',
+    enabled: true,
+    stale: false,
+    dynamicHotList: [{
+      symbol: 'GME',
+      status: 'hot_hot',
+      memeHeatScore: 91,
+      marketConfirmationScore: 82,
+      marketConfirmationDetails: { tradable: true, halted: false },
+      reasonCodes: ['market_confirmation_passed'],
+      riskWarnings: [],
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    }],
+    hotHotList: [{
+      symbol: 'SOUN',
+      status: 'hot_hot',
+      memeHeatScore: 94,
+      marketConfirmationScore: 88,
+      marketConfirmationDetails: { tradable: true, halted: false },
+      reasonCodes: ['market_confirmation_passed'],
+      riskWarnings: [],
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    }],
+    expired: [],
+    rejected: [],
+  }, { dataDir, filePath: hotListPath, env: {} });
+
+  assert.equal(saved.summary.dynamicCount, 2);
+  assert.equal(saved.summary.hotHotCount, 1);
+  assert.equal(saved.summary.stale, false);
+  assert.equal(saved.summary.lastScoredAt, future);
+  assert.deepEqual(saved.hotHotList[0].marketConfirmationDetails, {
+    currentPrice: null,
+    previousClose: null,
+    openPrice: null,
+    volume: null,
+    averageVolume: null,
+    bid: null,
+    ask: null,
+    spreadPct: null,
+    liquidity: null,
+    ageSeconds: null,
+    stale: false,
+    tradable: true,
+    halted: false,
+    excluded: null,
+  });
+});

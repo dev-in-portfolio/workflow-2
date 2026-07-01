@@ -85,7 +85,7 @@ async function runPhaseBSources(options = {}) {
 
   const anyEnabled = Object.values(sourceRuntime).some(Boolean);
   const anyActive = [stocktwits, polygon, alphaVantage].some((entry) => entry.sourceStatus?.status === 'active');
-  const anyMissing = [stocktwits, polygon, alphaVantage].some((entry) => ['missing_credentials', 'rate_limited', 'error'].includes(String(entry.sourceStatus?.status || '').toLowerCase()));
+  const anyMissing = [stocktwits, polygon, alphaVantage].some((entry) => ['missing_credentials', 'rate_limited', 'error', 'timeout'].includes(String(entry.sourceStatus?.status || '').toLowerCase()));
 
   return {
     generatedAt: nowIso(),

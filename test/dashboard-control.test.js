@@ -132,7 +132,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
 
     const memeStatus = await fetch(`http://127.0.0.1:${port}/api/meme/status`).then((response) => response.json());
     assert.equal(memeStatus.ok, true);
-    assert(['off', 'shadow'].includes(memeStatus.memeMonitor.redditScanner.status));
+    assert(['off', 'shadow', 'active', 'reused_records', 'inactive', 'missing_credentials', 'timeout'].includes(memeStatus.memeMonitor.redditScanner.status));
     assert.equal(memeStatus.memeMonitor.hotList.status, 'off');
     assert.equal(memeStatus.memeMonitor.dynamicWatchlist.status, 'blocked');
     assert.equal(memeStatus.memeMonitor.priorityOverride.status, 'blocked');

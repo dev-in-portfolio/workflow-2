@@ -184,6 +184,7 @@ test('scanner rotation sells a weak position, rechecks broker state, and promote
     MEME_ROTATION_RECHECK_AFTER_EXIT: 'true',
     MEME_ROTATION_EXIT_TIMEOUT_SECONDS: '3',
     MEME_ROTATION_ENTRY_RECHECK_MAX_AGE_SECONDS: '3',
+    MAX_OPEN_POSITIONS: '1',
     SCANNER_RUNTIME_STATE_PATH: path.join(dataDir, 'state', 'scanner-runtime.json'),
   };
 
@@ -218,7 +219,13 @@ test('scanner rotation sells a weak position, rechecks broker state, and promote
       memeHeatScore: 94,
       marketConfirmationScore: 82,
       marketConfirmationDetails: { tradable: true, halted: false, spreadPct: 0.24 },
-      expiresAt: '2026-07-01T00:00:00.000Z',
+      phaseA: {
+        tradableStatus: 'tradable',
+        haltStatus: 'not_halted',
+        sourceConfirmations: { alpacaAssets: true, nasdaqHalts: true },
+      },
+      sourceConfirmations: { alpacaAssets: true, nasdaqHalts: true },
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       reasonCodes: ['market_confirmation_passed'],
       riskWarnings: [],
       priorityOverrideEligible: true,
@@ -354,6 +361,7 @@ test('scanner rotation blocks a candidate that goes stale after the exit', async
     MEME_ROTATION_RECHECK_AFTER_EXIT: 'true',
     MEME_ROTATION_EXIT_TIMEOUT_SECONDS: '3',
     MEME_ROTATION_ENTRY_RECHECK_MAX_AGE_SECONDS: '1',
+    MAX_OPEN_POSITIONS: '1',
     SCANNER_RUNTIME_STATE_PATH: path.join(dataDir, 'state', 'scanner-runtime.json'),
   };
   fs.writeFileSync(path.join(dataDir, 'state', 'meme-monitor-state.json'), JSON.stringify({
@@ -384,7 +392,13 @@ test('scanner rotation blocks a candidate that goes stale after the exit', async
       memeHeatScore: 94,
       marketConfirmationScore: 82,
       marketConfirmationDetails: { tradable: true, halted: false, spreadPct: 0.24 },
-      expiresAt: '2026-07-01T00:00:00.000Z',
+      phaseA: {
+        tradableStatus: 'tradable',
+        haltStatus: 'not_halted',
+        sourceConfirmations: { alpacaAssets: true, nasdaqHalts: true },
+      },
+      sourceConfirmations: { alpacaAssets: true, nasdaqHalts: true },
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       reasonCodes: ['market_confirmation_passed'],
       riskWarnings: [],
       priorityOverrideEligible: true,
@@ -495,6 +509,45 @@ test('scanner rotation blocks a candidate that goes stale after the exit', async
     scanner.stop();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('hot slot rotation blocks hot hot entries when tradability or halt status is unknown or risky', () => {
+  const config = resolveHotSlotRotationConfig({
+    MEME_HOT_SLOT_ROTATION_ENABLED: 'true',
+    MEME_HOT_SLOT_ROTATION_MIN_HEAT_SCORE: '90',
+    MEME_HOT_SLOT_ROTATION_MIN_MARKET_SCORE: '75',
+  });
+
+  const unknownSafety = selectHotHotRotationCandidate({
+    buyCandidates: [{ symbol: 'GME', priorityOverrideSortScore: 100 }],
+    hotHotEntries: [{
+      symbol: 'GME',
+      status: 'hot_hot',
+      memeHeatScore: 96,
+      marketConfirmationScore: 88,
+      marketConfirmationDetails: { tradable: null, halted: null },
+      phaseA: { tradableStatus: 'unknown', haltStatus: 'unknown', sourceConfirmations: {} },
+      sourceConfirmations: { alpacaAssets: false, nasdaqHalts: false },
+    }],
+    config,
+  });
+
+  const haltedSafety = selectHotHotRotationCandidate({
+    buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+    hotHotEntries: [{
+      symbol: 'SOUN',
+      status: 'hot_hot',
+      memeHeatScore: 96,
+      marketConfirmationScore: 88,
+      marketConfirmationDetails: { tradable: true, halted: true },
+      phaseA: { tradableStatus: 'tradable', haltStatus: 'halted', sourceConfirmations: { alpacaAssets: true, nasdaqHalts: false } },
+      sourceConfirmations: { alpacaAssets: true, nasdaqHalts: false },
+    }],
+    config,
+  });
+
+  assert.equal(unknownSafety, null);
+  assert.equal(haltedSafety, null);
 });
 
 function buildResponse(payload) {

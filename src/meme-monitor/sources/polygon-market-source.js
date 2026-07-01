@@ -1,5 +1,5 @@
 const { scoreMarketConfirmation } = require('../market-confirmation-score');
-const { nowIso } = require('../../util');
+const { fetchWithTimeout, nowIso } = require('../../util');
 
 async function fetchPolygonMarketSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKey = String(env?.POLYGON_API_KEY || '').trim();
@@ -18,7 +18,7 @@ async function fetchPolygonMarketSignals({ env = process.env, fetchImpl = global
   try {
     const out = [];
     for (const symbol of symbols) {
-      const snapshotResponse = await fetchWithTimeout(fetchImpl, `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}?apiKey=${encodeURIComponent(apiKey)}`, timeoutMs);
+      const snapshotResponse = await fetchWithTimeout(fetchImpl, `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}?apiKey=${encodeURIComponent(apiKey)}`, { timeoutMs });
       if (snapshotResponse.status === 429) {
         return {
           sourceStatus: normalizeSourceStatus({ source: 'polygon', enabled: true, available: false, status: 'rate_limited', symbolsConfirmed: out.length, lastRunAt: null, lastError: 'rate_limited', blockedReason: 'rate_limited' }),
@@ -121,16 +121,6 @@ function normalizeSourceStatus(entry = {}) {
     symbolsConfirmed: Number.isFinite(Number(entry.symbolsConfirmed)) ? Number(entry.symbolsConfirmed) : 0,
     blockedReason: entry.blockedReason || null,
   };
-}
-
-async function fetchWithTimeout(fetchImpl, url, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 5000));
-  try {
-    return await fetchImpl(url, { signal: controller.signal, headers: { 'user-agent': 'workflow-2-meme-monitor' } });
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function readJson(response) {

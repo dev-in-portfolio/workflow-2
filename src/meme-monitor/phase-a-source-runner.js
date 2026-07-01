@@ -1,9 +1,8 @@
 const { resolveMemeMonitorStatePath, loadMemeMonitorState } = require('../meme-monitor-state');
-const { resolveMemeSocialSourceConfig } = require('./social-source-config');
 const { createRedditCollector } = require('./reddit-collector');
 const { extractMentionsFromRecord } = require('./symbol-extractor');
 const { scoreMarketConfirmation } = require('./market-confirmation-score');
-const { nowIso, safeNumber } = require('../util');
+const { fetchWithTimeout, nowIso, safeNumber } = require('../util');
 
 function resolvePhaseASourceRuntime(env = process.env, runtimeState = null) {
   const featureState = runtimeState || loadMemeMonitorState({ env, filePath: resolveMemeMonitorStatePath({ env }) });
@@ -25,26 +24,40 @@ async function runPhaseASources(options = {}) {
   const sourceRuntime = resolvePhaseASourceRuntime(env, runtimeState);
   const timeoutMs = Math.max(1000, Number(env.MEME_PHASE_A_SOURCE_TIMEOUT_MS || options.timeoutMs || 5000) || 5000);
   const maxSymbolsPerRun = Math.max(1, Number(env.MEME_PHASE_A_MAX_SYMBOLS_PER_RUN || options.maxSymbolsPerRun || 50) || 50);
-  const sourceConfig = resolveMemeSocialSourceConfig(env, runtimeState);
   const sources = {};
   const records = [];
   const phaseASymbols = new Map();
   const phaseAMarketContextBySymbol = new Map();
+  const precollectedRedditRecords = Array.isArray(options.redditRecords) ? options.redditRecords : Array.isArray(options.records) ? options.records : [];
+  const redditRecordSource = options.redditRecordSource || 'reused_records';
 
   if (sourceRuntime.reddit) {
     const redditCollector = options.redditCollector || createRedditCollector({ env, fetchImpl });
-    const result = await redditCollector.collectSources({ env, repoRoot: options.repoRoot, dataDir: options.dataDir });
+    const result = precollectedRedditRecords.length
+      ? {
+          ok: true,
+          status: 'ok',
+          mode: 'reddit-oauth',
+          records: precollectedRedditRecords,
+          rejected: Array.isArray(options.redditRejected) ? options.redditRejected : [],
+          symbolsDetected: precollectedRedditRecords.length,
+          rejectedTokens: Array.isArray(options.redditRejected) ? options.redditRejected.length : 0,
+          sources: Array.isArray(options.redditSourceStates) ? options.redditSourceStates : [],
+          sourceMode: redditRecordSource,
+        }
+      : await redditCollector.collectSources({ env, repoRoot: options.repoRoot, dataDir: options.dataDir });
     sources.reddit = normalizeSourceStatus({
       source: 'reddit',
       enabled: true,
       available: Boolean(result.ok),
-      status: result.ok ? 'active' : result.status === 'missing_credentials' ? 'missing_credentials' : 'error',
+      status: result.ok ? (precollectedRedditRecords.length ? 'reused_records' : 'active') : result.status === 'missing_credentials' ? 'missing_credentials' : result.status === 'timeout' ? 'timeout' : 'error',
       lastRunAt: nowIso(),
       lastError: result.ok ? null : result.message || result.error || 'reddit_failed',
       symbolsDetected: Number(result.symbolsDetected || 0),
       rejectedTokens: Number(result.rejectedTokens || 0),
       tier: 'tiered',
       blockedReason: result.ok ? null : result.status || 'reddit_failed',
+      sourceMode: precollectedRedditRecords.length ? 'reused_records' : 'fresh_collect',
     });
     for (const record of result.records || []) {
       records.push(record);
@@ -214,7 +227,7 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
   try {
     const encodedSymbols = encodeURIComponent(symbols.join(','));
     const url = `${trimTrailingSlash(baseUrl)}/v2/stocks/snapshots?symbols=${encodedSymbols}&feed=iex`;
-    const response = await fetchImpl(url, { headers: alpacaHeaders(apiKeyId, apiSecretKey) });
+    const response = await fetchWithTimeout(fetchImpl, url, { timeoutMs, headers: alpacaHeaders(apiKeyId, apiSecretKey) });
     const body = await readJson(response);
     if (!response.ok) {
       return {
@@ -276,13 +289,13 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: 'source_not_found_or_inaccessible' }),
+      sourceStatus: normalizeSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
 }
 
-async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [] } = {}) {
+async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKeyId = String(env?.ALPACA_API_KEY_ID || '').trim();
   const apiSecretKey = String(env?.ALPACA_API_SECRET_KEY || '').trim();
   const baseUrl = String(env?.ALPACA_API_BASE_URL || '').trim() || 'https://paper-api.alpaca.markets';
@@ -299,7 +312,7 @@ async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [] } = {}) {
     };
   }
   try {
-    const response = await fetchImpl(`${trimTrailingSlash(baseUrl)}/v2/assets`, { headers: alpacaHeaders(apiKeyId, apiSecretKey) });
+    const response = await fetchWithTimeout(fetchImpl, `${trimTrailingSlash(baseUrl)}/v2/assets`, { timeoutMs, headers: alpacaHeaders(apiKeyId, apiSecretKey) });
     const body = await readJson(response);
     if (!response.ok) {
       return {
@@ -335,13 +348,13 @@ async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [] } = {}) {
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: error.message, blockedReason: 'source_not_found_or_inaccessible' }),
+      sourceStatus: normalizeSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
 }
 
-async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [] } = {}) {
+async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000 } = {}) {
   const feedUrl = String(env?.NASDAQ_HALTS_RSS_URL || 'https://www.nasdaqtrader.com/Trader.aspx?id=TradeHaltRSS');
   if (!symbols.length) {
     return {
@@ -350,7 +363,7 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [] } = {}) {
     };
   }
   try {
-    const response = await fetchImpl(feedUrl, { headers: { 'user-agent': env?.REDDIT_USER_AGENT || 'workflow-2-meme-monitor' } });
+    const response = await fetchWithTimeout(fetchImpl, feedUrl, { timeoutMs, headers: { 'user-agent': env?.REDDIT_USER_AGENT || 'workflow-2-meme-monitor' } });
     const text = await response.text();
     if (!response.ok) {
       return {
@@ -373,13 +386,13 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [] } = {}) {
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: 'error', blockedSymbols: 0, lastRunAt: null, lastError: error.message, blockedReason: 'source_not_found_or_inaccessible' }),
+      sourceStatus: normalizeSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', blockedSymbols: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
 }
 
-async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [] } = {}) {
+async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000 } = {}) {
   const lookbackDays = Math.max(1, Number(env?.MEME_SEC_EDGAR_LOOKBACK_DAYS || 5) || 5);
   if (!symbols.length) {
     return {
@@ -388,7 +401,7 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [] } = {}) {
     };
   }
   try {
-    const tickerMap = await fetchSecTickerMap(fetchImpl);
+    const tickerMap = await fetchSecTickerMap(fetchImpl, timeoutMs);
     const out = [];
     for (const symbol of symbols) {
       const entry = tickerMap.get(symbol.toUpperCase());
@@ -405,7 +418,7 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [] } = {}) {
         continue;
       }
       const cik = String(entry.cik).padStart(10, '0');
-      const filings = await fetchSecFilings(fetchImpl, cik);
+      const filings = await fetchSecFilings(fetchImpl, cik, timeoutMs);
       const recent = filterRecentFilings(filings, lookbackDays);
       const riskWarnings = [];
       const reasonCodes = ['sec_edgar_source_active'];
@@ -452,14 +465,15 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [] } = {}) {
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'secEdgar', enabled: true, available: false, status: 'error', catalystsDetected: 0, riskWarnings: 0, lastRunAt: null, lastError: error.message, blockedReason: 'source_not_found_or_inaccessible' }),
+      sourceStatus: normalizeSourceStatus({ source: 'secEdgar', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', catalystsDetected: 0, riskWarnings: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
 }
 
-async function fetchSecTickerMap(fetchImpl) {
-  const response = await fetchImpl('https://www.sec.gov/files/company_tickers.json', {
+async function fetchSecTickerMap(fetchImpl, timeoutMs = 5000) {
+  const response = await fetchWithTimeout(fetchImpl, 'https://www.sec.gov/files/company_tickers.json', {
+    timeoutMs,
     headers: { 'user-agent': 'workflow-2-meme-monitor' },
   });
   if (!response.ok) return new Map();
@@ -474,8 +488,9 @@ async function fetchSecTickerMap(fetchImpl) {
   return map;
 }
 
-async function fetchSecFilings(fetchImpl, cik) {
-  const response = await fetchImpl(`https://data.sec.gov/submissions/CIK${cik}.json`, {
+async function fetchSecFilings(fetchImpl, cik, timeoutMs = 5000) {
+  const response = await fetchWithTimeout(fetchImpl, `https://data.sec.gov/submissions/CIK${cik}.json`, {
+    timeoutMs,
     headers: { 'user-agent': 'workflow-2-meme-monitor' },
   });
   if (!response.ok) return [];
@@ -587,7 +602,13 @@ function normalizeSourceStatus(entry = {}) {
     riskWarnings: Number.isFinite(Number(entry.riskWarnings)) ? Number(entry.riskWarnings) : null,
     tier: entry.tier || null,
     blockedReason: entry.blockedReason || null,
+    sourceMode: entry.sourceMode || null,
   };
+}
+
+function isTimeoutError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  return error?.name === 'AbortError' || code === 'ABORT_ERR' || code === 'ETIMEDOUT' || code === 'UND_ERR_ABORTED' || String(error?.message || '').toLowerCase().includes('timed out');
 }
 
 function alpacaHeaders(apiKeyId, apiSecretKey) {

@@ -1,7 +1,7 @@
 const { resolveMemeSocialSourceConfig } = require('./social-source-config');
 const { saveMemeMonitorStatus } = require('./meme-monitor-status');
 const { resolveMemeMonitorStatusPath } = require('./meme-monitor-status');
-const { nowIso } = require('../util');
+const { fetchWithTimeout, nowIso } = require('../util');
 const { URLSearchParams } = require('url');
 
 function createRedditCollector(options = {}) {
@@ -20,6 +20,7 @@ function createRedditCollector(options = {}) {
     const sourceStates = [];
     const collected = [];
     const rejected = [];
+    const seenRecords = new Set();
 
     const redditClientId = config.redditClientId || config.REDDIT_CLIENT_ID || '';
     const redditClientSecret = config.redditClientSecret || config.REDDIT_CLIENT_SECRET || '';
@@ -27,7 +28,7 @@ function createRedditCollector(options = {}) {
 
     if (!redditClientId || !redditClientSecret) {
       for (const source of config.sourceDefinitions) {
-        sourceStates.push(buildInactiveSourceState(source, 'missing_credentials', 'Unable to validate subreddit'));
+        sourceStates.push(buildInactiveSourceState(source, 'missing_credentials', 'Unable to validate subreddit', 'missing_credentials'));
       }
       const payload = {
         ok: false,
@@ -44,13 +45,18 @@ function createRedditCollector(options = {}) {
       return payload;
     }
 
-    const tokenResult = await getAccessToken({ ...config, redditClientId, redditClientSecret, redditUserAgent });
+    const tokenResult = await getAccessToken({ ...config, redditClientId, redditClientSecret, redditUserAgent }, fetchImpl);
     if (!tokenResult.ok) {
       const sourceStatus = tokenResult.error === 'reddit_auth_failed'
         ? 'error'
         : 'inactive';
       for (const source of config.sourceDefinitions) {
-        sourceStates.push(buildInactiveSourceState(source, sourceStatus === 'error' ? 'reddit_auth_failed' : 'source_unavailable', tokenResult.message || tokenResult.error || 'Unable to validate subreddit', sourceStatus));
+        sourceStates.push(buildInactiveSourceState(
+          source,
+          sourceStatus,
+          tokenResult.message || tokenResult.error || 'Unable to validate subreddit',
+          sourceStatus === 'error' ? 'reddit_auth_failed' : 'source_unavailable',
+        ));
       }
       const payload = {
         ok: false,
@@ -78,7 +84,12 @@ function createRedditCollector(options = {}) {
       if (result.sourceState) {
         sourceStates[sourceStates.length - 1] = result.sourceState;
       }
-      collected.push(...result.records);
+      for (const record of result.records) {
+        const recordKey = buildRecordKey(record);
+        if (recordKey && seenRecords.has(recordKey)) continue;
+        if (recordKey) seenRecords.add(recordKey);
+        collected.push(record);
+      }
       rejected.push(...result.rejected);
       if (sourceStates[sourceStates.length - 1]?.status === 'active') {
         sourceStates[sourceStates.length - 1] = {
@@ -104,22 +115,33 @@ function createRedditCollector(options = {}) {
     return payload;
   }
 
-  async function getAccessToken(config) {
+  async function getAccessToken(config, fetchImpl) {
     if (accessToken && Date.now() < tokenExpiresAt) {
       return { ok: true, accessToken };
     }
 
     const body = new URLSearchParams({ grant_type: 'client_credentials' });
     const auth = Buffer.from(`${config.redditClientId}:${config.redditClientSecret}`).toString('base64');
-    const response = await fetchImpl('https://www.reddit.com/api/v1/access_token', {
-      method: 'POST',
-      headers: {
-        authorization: `Basic ${auth}`,
-        'content-type': 'application/x-www-form-urlencoded',
-        'user-agent': config.redditUserAgent,
-      },
-      body,
-    });
+    let response;
+    try {
+      response = await fetchWithTimeout(fetchImpl, 'https://www.reddit.com/api/v1/access_token', {
+        method: 'POST',
+        timeoutMs: config.redditTimeoutMs || 5000,
+        headers: {
+          authorization: `Basic ${auth}`,
+          'content-type': 'application/x-www-form-urlencoded',
+          'user-agent': config.redditUserAgent,
+        },
+        body,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'timeout',
+        error: 'reddit_auth_timeout',
+        message: error?.message || 'Reddit auth timed out',
+      };
+    }
     const payload = await safeJson(response);
     if (!response.ok) {
       return {
@@ -143,49 +165,85 @@ function createRedditCollector(options = {}) {
   }
 
   async function collectSourceListing(source, config, token, fetchImpl) {
-    const listingUrl = `https://oauth.reddit.com/r/${encodeURIComponent(source.source)}/hot?limit=${config.maxPostsPerSource}&raw_json=1`;
-    const response = await fetchImpl(listingUrl, {
-      headers: {
-        authorization: `Bearer ${token}`,
-        'user-agent': config.redditUserAgent,
-      },
-    });
-    const payload = await safeJson(response);
-    if (!response.ok) {
-      const blockedReason = classifyInactiveSource(source, response.status, payload);
-      return {
-        records: [],
-        rejected: [{ source, reason: payload?.error || payload?.message || `HTTP ${response.status}` }],
-        sourceState: blockedReason,
-      };
-    }
-    const posts = payload?.data?.children || [];
     const records = [];
     const rejected = [];
-    for (const child of posts.slice(0, config.maxPostsPerSource)) {
-      const post = child?.data || {};
-      const postRecord = normalizeRedditPost(post, source);
-      records.push(postRecord);
-      if (config.maxCommentsPerPost > 0 && post?.num_comments) {
-        const commentsResult = await collectCommentsForPost(post, source, token, config.maxCommentsPerPost, fetchImpl);
-        records.push(...commentsResult.records);
-        rejected.push(...commentsResult.rejected);
+    const listings = Array.isArray(config.redditListings) && config.redditListings.length ? config.redditListings : ['hot', 'rising'];
+    const seenThreads = new Set();
+
+    for (const listing of listings) {
+      const listingUrl = `https://oauth.reddit.com/r/${encodeURIComponent(source.source)}/${encodeURIComponent(listing)}?limit=${config.maxPostsPerSource}&raw_json=1`;
+      let response;
+      try {
+        response = await fetchWithTimeout(fetchImpl, listingUrl, {
+          timeoutMs: config.redditTimeoutMs || 5000,
+          headers: {
+            authorization: `Bearer ${token}`,
+            'user-agent': config.redditUserAgent,
+          },
+        });
+      } catch (error) {
+        return {
+          records: [],
+          rejected: [{ source: source.source, reason: error?.message || 'Reddit listing timed out' }],
+          sourceState: buildInactiveSourceState(source, 'timeout', error?.message || 'Reddit listing timed out', 'timeout'),
+        };
+      }
+      const payload = await safeJson(response);
+      if (!response.ok) {
+        return {
+          records: [],
+          rejected: [{ source: source.source, reason: payload?.error || payload?.message || `HTTP ${response.status}` }],
+          sourceState: classifyInactiveSource(source, response.status, payload),
+        };
+      }
+      const posts = payload?.data?.children || [];
+      for (const child of posts.slice(0, config.maxPostsPerSource)) {
+        const post = child?.data || {};
+        const threadKey = buildThreadKey(source.source, post.id || post.name || post.fullname || null);
+        if (threadKey && seenThreads.has(threadKey)) continue;
+        if (threadKey) seenThreads.add(threadKey);
+        const postRecord = normalizeRedditPost(post, source, listing);
+        records.push(postRecord);
+        if (config.maxCommentsPerPost > 0 && post?.num_comments) {
+          const commentsResult = await collectCommentsForPost(post, source, token, config, fetchImpl, listing);
+          for (const commentRecord of commentsResult.records) {
+            const recordKey = buildRecordKey(commentRecord);
+            if (recordKey && seenThreads.has(recordKey)) continue;
+            if (recordKey) seenThreads.add(recordKey);
+            records.push(commentRecord);
+          }
+          rejected.push(...commentsResult.rejected);
+        }
       }
     }
 
-    return { records, rejected };
+    return {
+      records,
+      rejected,
+      sourceState: buildActiveSourceState(source, records, rejected, listings),
+    };
   }
 
-  async function collectCommentsForPost(post, source, token, maxCommentsPerPost, fetchImpl) {
+  async function collectCommentsForPost(post, source, token, config, fetchImpl, listing) {
     const permalink = post?.permalink;
     if (!permalink) return { records: [], rejected: [] };
+    const maxCommentsPerPost = Math.max(0, Number(config.maxCommentsPerPost || 0));
     const commentsUrl = `https://oauth.reddit.com${permalink}.json?limit=${maxCommentsPerPost}&raw_json=1`;
-    const response = await fetchImpl(commentsUrl, {
-      headers: {
-        authorization: `Bearer ${token}`,
-        'user-agent': 'workflow-2-meme-monitor',
-      },
-    });
+    let response;
+    try {
+      response = await fetchWithTimeout(fetchImpl, commentsUrl, {
+        timeoutMs: config.redditTimeoutMs || 5000,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'user-agent': 'workflow-2-meme-monitor',
+        },
+      });
+    } catch (error) {
+      return {
+        records: [],
+        rejected: [{ source: source.source, reason: error?.message || 'Reddit comments timed out' }],
+      };
+    }
     const payload = await safeJson(response);
     if (!response.ok || !Array.isArray(payload)) {
       return {
@@ -200,7 +258,7 @@ function createRedditCollector(options = {}) {
     for (const child of commentListing.slice(0, maxCommentsPerPost)) {
       const comment = child?.data || {};
       if (!comment?.body) continue;
-      records.push(normalizeRedditComment(comment, source, post));
+      records.push(normalizeRedditComment(comment, source, post, listing));
     }
     return { records, rejected };
   }
@@ -210,7 +268,7 @@ function createRedditCollector(options = {}) {
   };
 }
 
-function normalizeRedditPost(post = {}, source) {
+function normalizeRedditPost(post = {}, source, listing = null) {
   return {
     kind: 'post',
     source: `reddit:${source.source}`,
@@ -219,6 +277,8 @@ function normalizeRedditPost(post = {}, source) {
       tier: source.tier,
       weight: source.tierWeight,
       status: source.status,
+      listing,
+      listingWeight: resolveListingWeight(listing),
     },
     sourceTier: source.tier,
     sourceWeight: source.tierWeight,
@@ -233,10 +293,12 @@ function normalizeRedditPost(post = {}, source) {
     text: post.title || post.selftext || '',
     commentCount: Number(post.num_comments || 0),
     url: post.permalink ? `https://www.reddit.com${post.permalink}` : null,
+    listing,
+    listingWeight: resolveListingWeight(listing),
   };
 }
 
-function normalizeRedditComment(comment = {}, source, post = {}) {
+function normalizeRedditComment(comment = {}, source, post = {}, listing = null) {
   return {
     kind: 'comment',
     source: `reddit:${source.source}`,
@@ -245,6 +307,8 @@ function normalizeRedditComment(comment = {}, source, post = {}) {
       tier: source.tier,
       weight: source.tierWeight,
       status: source.status,
+      listing,
+      listingWeight: resolveListingWeight(listing),
     },
     sourceTier: source.tier,
     sourceWeight: source.tierWeight,
@@ -258,6 +322,47 @@ function normalizeRedditComment(comment = {}, source, post = {}) {
     text: comment.body || '',
     commentCount: 1,
     url: comment.permalink ? `https://www.reddit.com${comment.permalink}` : (post.permalink ? `https://www.reddit.com${post.permalink}` : null),
+    listing,
+    listingWeight: resolveListingWeight(listing),
+  };
+}
+
+function resolveListingWeight(listing = '') {
+  const normalized = String(listing || '').trim().toLowerCase();
+  if (normalized === 'rising') return 1.25;
+  if (normalized === 'hot') return 1;
+  if (normalized === 'new') return 0.75;
+  return 1;
+}
+
+function buildThreadKey(source, threadId) {
+  const id = String(threadId || '').trim();
+  if (!id) return null;
+  return `${String(source || '').trim().toLowerCase()}::thread::${id}`;
+}
+
+function buildRecordKey(record = {}) {
+  const source = String(record.source || '').trim().toLowerCase();
+  const sourceId = String(record.sourceId || '').trim();
+  const threadId = String(record.threadId || '').trim();
+  const kind = String(record.kind || '').trim().toLowerCase();
+  if (source && sourceId) return `${source}::${kind || 'record'}::${sourceId}`;
+  if (source && threadId) return `${source}::thread::${threadId}::${kind || 'record'}`;
+  return null;
+}
+
+function buildActiveSourceState(source, records, rejected, listings) {
+  return {
+    source: source.source,
+    tier: source.tier,
+    status: 'active',
+    blockedReason: null,
+    lastScanAt: records.length ? records[0]?.createdAt || nowIso() : nowIso(),
+    lastError: null,
+    symbolsDetected: records.length,
+    rejectedTokens: rejected.length,
+    tierWeight: source.tierWeight,
+    listings: Array.isArray(listings) ? listings.slice() : [],
   };
 }
 
@@ -269,32 +374,33 @@ async function safeJson(response) {
   }
 }
 
-async function validateSource(source, config, token, fetchImpl) {
-  if (!source.enabled) {
-    return { sourceState: buildInactiveSourceState(source, 'disabled', 'Source disabled in config', 'disabled') };
-  }
+  async function validateSource(source, config, token, fetchImpl) {
+    if (!source.enabled) {
+      return { sourceState: buildInactiveSourceState(source, 'disabled', 'Source disabled in config', 'disabled') };
+    }
 
-  const aboutUrl = `https://oauth.reddit.com/r/${encodeURIComponent(source.source)}/about.json?raw_json=1`;
-  try {
-    const response = await fetchImpl(aboutUrl, {
-      headers: {
-        authorization: `Bearer ${token}`,
-        'user-agent': config.redditUserAgent,
-      },
-    });
-    const payload = await safeJson(response);
-    if (!response.ok) {
-      return { sourceState: classifyInactiveSource(source, response.status, payload) };
+    const aboutUrl = `https://oauth.reddit.com/r/${encodeURIComponent(source.source)}/about.json?raw_json=1`;
+    try {
+      const response = await fetchWithTimeout(fetchImpl, aboutUrl, {
+        timeoutMs: config.redditTimeoutMs || 5000,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'user-agent': config.redditUserAgent,
+        },
+      });
+      const payload = await safeJson(response);
+      if (!response.ok) {
+        return { sourceState: classifyInactiveSource(source, response.status, payload) };
     }
     const about = payload?.data || payload || {};
     if (about?.quarantine || about?.quarantined) {
-      return { sourceState: buildInactiveSourceState(source, 'quarantined', 'Subreddit is quarantined', 'inactive') };
+      return { sourceState: buildInactiveSourceState(source, 'inactive', 'Subreddit is quarantined', 'quarantined') };
     }
     if (String(about?.subreddit_type || '').toLowerCase() === 'private') {
-      return { sourceState: buildInactiveSourceState(source, 'private', 'Subreddit is private', 'inactive') };
+      return { sourceState: buildInactiveSourceState(source, 'inactive', 'Subreddit is private', 'private') };
     }
     if (String(about?.subreddit_type || '').toLowerCase() === 'banned') {
-      return { sourceState: buildInactiveSourceState(source, 'banned', 'Subreddit is banned', 'inactive') };
+      return { sourceState: buildInactiveSourceState(source, 'inactive', 'Subreddit is banned', 'banned') };
     }
     return {
       sourceState: {
@@ -309,28 +415,31 @@ async function validateSource(source, config, token, fetchImpl) {
         tierWeight: source.tierWeight,
       },
     };
-  } catch (error) {
-    return { sourceState: buildInactiveSourceState(source, 'inaccessible', error.message || 'Unable to validate subreddit', 'error') };
+    } catch (error) {
+      return { sourceState: buildInactiveSourceState(source, 'error', error.message || 'Unable to validate subreddit', 'source_not_found_or_inaccessible') };
+    }
   }
-}
 
-function classifyInactiveSource(source, statusCode, payload = null) {
-  if (statusCode === 429) {
-    return buildInactiveSourceState(source, 'rate_limited', payload?.message || payload?.error || 'Reddit rate limited the request', 'error');
+  function classifyInactiveSource(source, statusCode, payload = null) {
+    if (statusCode === 429) {
+    return buildInactiveSourceState(source, 'rate_limited', payload?.message || payload?.error || 'Reddit rate limited the request', 'rate_limited');
   }
   if (statusCode === 404) {
-    return buildInactiveSourceState(source, 'source_not_found_or_inaccessible', payload?.message || payload?.error || 'Source not found or inaccessible', 'inactive');
+    return buildInactiveSourceState(source, 'inactive', payload?.message || payload?.error || 'Source not found or inaccessible', 'source_not_found_or_inaccessible');
   }
   if (statusCode === 403) {
-    return buildInactiveSourceState(source, 'source_private_or_banned', payload?.message || payload?.error || 'Source is private, banned, or inaccessible', 'inactive');
+    return buildInactiveSourceState(source, 'inactive', payload?.message || payload?.error || 'Source is private, banned, or inaccessible', 'source_private_or_banned');
   }
-  if (statusCode === 401) {
-    return buildInactiveSourceState(source, 'missing_credentials', payload?.message || payload?.error || 'Credentials rejected by Reddit', 'error');
+    if (statusCode === 401) {
+      return buildInactiveSourceState(source, 'missing_credentials', payload?.message || payload?.error || 'Credentials rejected by Reddit', 'missing_credentials');
+    }
+    if (statusCode === 'timeout') {
+      return buildInactiveSourceState(source, 'timeout', payload?.message || payload?.error || 'Reddit timed out', 'timeout');
+    }
+    return buildInactiveSourceState(source, 'inactive', payload?.message || payload?.error || `HTTP ${statusCode}`, 'source_not_found_or_inaccessible');
   }
-  return buildInactiveSourceState(source, 'source_not_found_or_inaccessible', payload?.message || payload?.error || `HTTP ${statusCode}`, 'inactive');
-}
 
-function buildInactiveSourceState(source, blockedReason, lastError, status = 'inactive') {
+function buildInactiveSourceState(source, status, lastError, blockedReason = null) {
   return {
     source: source.source,
     tier: source.tier,

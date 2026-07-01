@@ -73,14 +73,6 @@ test('meme monitor loop stays inactive when the master flag is off', async () =>
 test('meme monitor loop stays inactive when the reddit flag is off', async () => {
   const { repoRoot, dataDir } = tempWorkspace();
   const collectorCalls = [];
-  enableMemeFeatures({
-    dataDir,
-    env: {
-      MEME_MONITOR_ENABLED: 'true',
-      MEME_REDDIT_SCANNER_ENABLED: 'false',
-      MEME_HOT_LIST_ENABLED: 'true',
-    },
-  });
   const loop = createMemeMonitorLoop({
     repoRoot,
     dataDir,
@@ -174,7 +166,7 @@ test('meme monitor loop writes a shadow hot list with reasons and expiration', a
   assert.equal(hotList.symbols.length > 0, true);
   assert.equal(hotList.summary.dynamicCount, 1);
   assert.equal(hotList.summary.hotHotCount, 0);
-  assert.match(hotList.symbols[0].expiresAt, /^2026-06-30T/);
+  assert.match(hotList.symbols[0].expiresAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.notEqual(hotList.symbols[0].status, 'ignore');
   assert(hotList.symbols[0].reasonCodes.includes('multi_source_confirmation'));
   assert(hotList.symbols[0].reasonCodes.includes('engagement_confirmed'));

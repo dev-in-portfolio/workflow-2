@@ -148,3 +148,38 @@ test('phase A runtime marks inactive sources without crashing when feature flags
   assert.equal(phaseA.phaseA.sources.reddit.blockedReason, 'source_disabled');
   assert.equal(Array.isArray(phaseA.phaseA.symbols), true);
 });
+
+test('phase A reuses collected Reddit records instead of recollecting when provided', async () => {
+  const phaseA = await runPhaseASources({
+    env: {
+      MEME_SOURCE_REDDIT_ENABLED: 'true',
+      MEME_SOURCE_ALPACA_MARKET_ENABLED: 'false',
+      MEME_SOURCE_ALPACA_ASSETS_ENABLED: 'false',
+      MEME_SOURCE_NASDAQ_HALTS_ENABLED: 'false',
+      MEME_SOURCE_SEC_EDGAR_ENABLED: 'false',
+    },
+    fetchImpl: async () => {
+      throw new Error('should not fetch Reddit when records are reused');
+    },
+    runtimeState: {
+      features: {},
+    },
+    redditRecords: [{
+      kind: 'post',
+      source: 'reddit:wallstreetbets',
+      sourceMeta: { source: 'wallstreetbets', tier: 'tier_1', weight: 1.35, status: 'active', listing: 'rising', listingWeight: 1.25 },
+      sourceId: 'p1',
+      threadId: 'p1',
+      author: 'user1',
+      createdAt: '2026-06-30T14:00:00.000Z',
+      engagement: 10,
+      title: 'GME is still hot',
+      body: '',
+    }],
+  });
+
+  assert.equal(phaseA.phaseA.sources.reddit.status, 'reused_records');
+  assert.equal(phaseA.phaseA.sources.reddit.sourceMode, 'reused_records');
+  assert.equal(phaseA.phaseA.sources.reddit.symbolsDetected > 0, true);
+  assert.equal(phaseA.symbolsBySymbol.GME.sourceConfirmations.reddit, true);
+});

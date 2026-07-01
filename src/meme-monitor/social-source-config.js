@@ -66,6 +66,9 @@ function normalizeSourceName(value) {
 
 function resolveMemeSocialSourceConfig(env = process.env, runtimeState = null) {
   const optionalHighNoiseEnabled = parseBool(env.MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE_ENABLED, false);
+  const redditListings = parseCsvList(env.MEME_REDDIT_LISTINGS, ['hot', 'rising'])
+    .map((listing) => String(listing || '').trim().toLowerCase())
+    .filter(Boolean);
   const legacySources = parseCsvList(env.MEME_REDDIT_SOURCES, []);
   const hasTierOverrides = [
     env.MEME_REDDIT_SOURCES_TIER_1,
@@ -128,6 +131,7 @@ function resolveMemeSocialSourceConfig(env = process.env, runtimeState = null) {
     redditClientId: env.REDDIT_CLIENT_ID || '',
     redditClientSecret: env.REDDIT_CLIENT_SECRET || '',
     redditUserAgent: env.REDDIT_USER_AGENT || 'workflow-2-meme-monitor',
+    redditListings: redditListings.length ? redditListings : ['hot', 'rising'],
     sources: activeSources.slice(),
     sourceDefinitions,
     tierConfig,

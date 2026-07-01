@@ -1,4 +1,4 @@
-const { nowIso } = require('../../util');
+const { fetchWithTimeout, nowIso } = require('../../util');
 const { URL } = require('url');
 
 async function fetchAlphaVantageSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
@@ -24,10 +24,10 @@ async function fetchAlphaVantageSignals({ env = process.env, fetchImpl = globalT
     for (const symbol of limitedSymbols) {
       const items = [];
       if (intradayEnabled) {
-        items.push(fetchWithTimeout(fetchImpl, buildUrl('TIME_SERIES_INTRADAY', { symbol, apiKey }), timeoutMs));
+        items.push(fetchWithTimeout(fetchImpl, buildUrl('TIME_SERIES_INTRADAY', { symbol, apiKey }), { timeoutMs }));
       }
       if (newsEnabled) {
-        items.push(fetchWithTimeout(fetchImpl, buildUrl('NEWS_SENTIMENT', { symbol, apiKey }), timeoutMs));
+        items.push(fetchWithTimeout(fetchImpl, buildUrl('NEWS_SENTIMENT', { symbol, apiKey }), { timeoutMs }));
       }
       const responses = await Promise.all(items);
       const payloads = [];
@@ -145,16 +145,6 @@ function normalizeSourceStatus(entry = {}) {
     newsItemsMatched: Number.isFinite(Number(entry.newsItemsMatched)) ? Number(entry.newsItemsMatched) : 0,
     blockedReason: entry.blockedReason || null,
   };
-}
-
-async function fetchWithTimeout(fetchImpl, url, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 5000));
-  try {
-    return await fetchImpl(url, { signal: controller.signal, headers: { 'user-agent': 'workflow-2-meme-monitor' } });
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function readJson(response) {

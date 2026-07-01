@@ -91,6 +91,8 @@ function normalizeDynamicHotList(payload = {}, input = {}) {
       dynamicCount: mergedDynamic.length,
       hotHotCount: mergedHotHot.length,
       expiredCount: expired.length,
+      stale,
+      lastScoredAt,
     },
   };
 
@@ -109,6 +111,36 @@ function normalizeEntry(entry = {}, policy = resolveMemeEscalationPolicy(process
     expires_at: expiresAt,
     expired,
     status: entry.status || (hasHotHotScore ? 'hot_hot' : 'dynamic_watch'),
+    lastDecision: entry.lastDecision || entry.status || (hasHotHotScore ? 'hot_hot' : 'dynamic_watch'),
+    memeHeatScore: numberOrNull(entry.memeHeatScore),
+    marketConfirmationScore: numberOrNull(entry.marketConfirmationScore),
+    marketConfirmationDetails: normalizeMarketConfirmationDetails(entry.marketConfirmationDetails),
+    priorityOverrideEligible: Boolean(entry.priorityOverrideEligible),
+    rotationEligible: Boolean(entry.rotationEligible),
+    reasonCodes: normalizeList(entry.reasonCodes),
+    riskWarnings: normalizeList(entry.riskWarnings),
+    sources: normalizeList(entry.sources),
+    sourceConfirmations: normalizeObject(entry.sourceConfirmations),
+    sourceProfile: normalizeObject(entry.sourceProfile),
+    phaseA: normalizeObject(entry.phaseA),
+    phaseB: normalizeObject(entry.phaseB),
+    sourceBreakdown: normalizeObject(entry.sourceBreakdown),
+    mentions15m: numberOrNull(entry.mentions15m),
+    mentions30m: numberOrNull(entry.mentions30m),
+    mentions60m: numberOrNull(entry.mentions60m),
+    uniqueUsers: numberOrNull(entry.uniqueUsers),
+    sourceCount: numberOrNull(entry.sourceCount),
+    topSources: normalizeList(entry.topSources),
+    threadCount: numberOrNull(entry.threadCount),
+    commentCount: numberOrNull(entry.commentCount),
+    engagementScore: numberOrNull(entry.engagementScore),
+    freshnessScore: numberOrNull(entry.freshnessScore),
+    mentionVelocity: numberOrNull(entry.mentionVelocity),
+    spamConcentration: numberOrNull(entry.spamConcentration),
+    listing: entry.listing || null,
+    listingWeight: numberOrNull(entry.listingWeight),
+    generatedAt: entry.generatedAt || entry.generated_at || null,
+    lastScoredAt: entry.lastScoredAt || entry.last_scored_at || null,
   };
 }
 
@@ -116,6 +148,39 @@ function isOlderThan(timestamp, ttlMinutes, nowMs = Date.now()) {
   const parsed = new Date(timestamp).getTime();
   if (!Number.isFinite(parsed)) return true;
   return (nowMs - parsed) > (Math.max(1, ttlMinutes) * 60_000);
+}
+
+function numberOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeList(value) {
+  return Array.isArray(value) ? value.slice() : [];
+}
+
+function normalizeObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : null;
+}
+
+function normalizeMarketConfirmationDetails(details = null) {
+  const source = normalizeObject(details) || {};
+  return {
+    currentPrice: source.currentPrice ?? null,
+    previousClose: source.previousClose ?? null,
+    openPrice: source.openPrice ?? null,
+    volume: source.volume ?? null,
+    averageVolume: source.averageVolume ?? null,
+    bid: source.bid ?? null,
+    ask: source.ask ?? null,
+    spreadPct: source.spreadPct ?? null,
+    liquidity: source.liquidity ?? null,
+    ageSeconds: source.ageSeconds ?? null,
+    stale: Boolean(source.stale),
+    tradable: source.tradable ?? null,
+    halted: source.halted ?? null,
+    excluded: source.excluded ?? null,
+  };
 }
 
 module.exports = {

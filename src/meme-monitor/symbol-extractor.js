@@ -25,6 +25,8 @@ const SYMBOL_NAME_ALIASES = new Map([
   ['apple', 'AAPL'],
   ['amazon', 'AMZN'],
   ['coinbase', 'COIN'],
+  ['robinhood', 'HOOD'],
+  ['reddit', 'RDDT'],
 ]);
 
 const PLAUSIBLE_MEME_TICKERS = new Set([

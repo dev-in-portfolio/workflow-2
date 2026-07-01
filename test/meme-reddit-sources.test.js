@@ -64,6 +64,13 @@ test('collector validates each subreddit and marks inaccessible sources inactive
         },
       });
     }
+    if (String(url).includes('/r/activeSource/rising')) {
+      return jsonResponse(200, {
+        data: {
+          children: [],
+        },
+      });
+    }
     throw new Error(`Unexpected request: ${url}`);
   };
 
@@ -78,6 +85,7 @@ test('collector validates each subreddit and marks inaccessible sources inactive
       MEME_REDDIT_SOURCES_TIER_3: ' ',
       MEME_REDDIT_SOURCES_TICKER_SPECIFIC: ' ',
       MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE: ' ',
+      MEME_REDDIT_LISTINGS: 'hot',
     },
   });
 
@@ -88,6 +96,107 @@ test('collector validates each subreddit and marks inaccessible sources inactive
   assert.equal(result.sources.find((entry) => entry.source === 'activeSource')?.symbolsDetected, 1);
   assert.equal(result.sources.find((entry) => entry.source === 'inactiveSource')?.status, 'inactive');
   assert.equal(result.sources.find((entry) => entry.source === 'inactiveSource')?.blockedReason, 'source_not_found_or_inaccessible');
+});
+
+test('collector honors configured listing modes, dedupes posts, and carries listing weights', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (String(url).includes('/api/v1/access_token')) {
+      return jsonResponse(200, { access_token: 'token', expires_in: 3600 });
+    }
+    if (String(url).includes('/r/activeSource/about.json')) {
+      return jsonResponse(200, { data: { subreddit_type: 'public' } });
+    }
+    if (String(url).includes('/r/activeSource/rising')) {
+      return jsonResponse(200, {
+        data: {
+          children: [{
+            data: {
+              id: 'post-1',
+              title: 'GME is heating up',
+              selftext: '',
+              author: 'user1',
+              created_utc: 1719756000,
+              score: 12,
+              num_comments: 0,
+              permalink: '/r/activeSource/comments/post-1',
+            },
+          }],
+        },
+      });
+    }
+    if (String(url).includes('/r/activeSource/hot')) {
+      return jsonResponse(200, {
+        data: {
+          children: [{
+            data: {
+              id: 'post-1',
+              title: 'Duplicate GME post',
+              selftext: '',
+              author: 'user1',
+              created_utc: 1719756000,
+              score: 9,
+              num_comments: 0,
+              permalink: '/r/activeSource/comments/post-1',
+            },
+          }],
+        },
+      });
+    }
+    if (String(url).includes('/r/activeSource/new')) {
+      return jsonResponse(200, { data: { children: [] } });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  const collector = createRedditCollector({ fetchImpl });
+  const result = await collector.collectSources({
+    env: {
+      REDDIT_CLIENT_ID: 'client',
+      REDDIT_CLIENT_SECRET: 'secret',
+      REDDIT_USER_AGENT: 'workflow-2-meme-monitor-test',
+      MEME_REDDIT_SOURCES_TIER_1: 'activeSource',
+      MEME_REDDIT_SOURCES_TIER_2: ' ',
+      MEME_REDDIT_SOURCES_TIER_3: ' ',
+      MEME_REDDIT_SOURCES_TICKER_SPECIFIC: ' ',
+      MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE: ' ',
+      MEME_REDDIT_LISTINGS: 'rising,hot,new',
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].listing, 'rising');
+  assert.equal(result.records[0].listingWeight, 1.25);
+  assert.equal(result.sources.find((entry) => entry.source === 'activeSource')?.status, 'active');
+  assert.deepEqual(result.sources.find((entry) => entry.source === 'activeSource')?.listings, ['rising', 'hot', 'new']);
+  assert.equal(calls.some((url) => String(url).includes('/r/activeSource/rising')), true);
+  assert.equal(calls.some((url) => String(url).includes('/r/activeSource/hot')), true);
+  assert.equal(calls.some((url) => String(url).includes('/r/activeSource/new')), true);
+});
+
+test('collector marks missing credentials as missing_credentials without crashing', async () => {
+  const collector = createRedditCollector({
+    fetchImpl: async () => {
+      throw new Error('should not fetch without credentials');
+    },
+  });
+  const result = await collector.collectSources({
+    env: {
+      REDDIT_CLIENT_ID: 'client',
+      REDDIT_USER_AGENT: 'workflow-2-meme-monitor-test',
+      MEME_REDDIT_SOURCES_TIER_1: 'activeSource',
+      MEME_REDDIT_SOURCES_TIER_2: ' ',
+      MEME_REDDIT_SOURCES_TIER_3: ' ',
+      MEME_REDDIT_SOURCES_TICKER_SPECIFIC: ' ',
+      MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE: ' ',
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'missing_credentials');
+  assert.equal(result.sources[0].status, 'missing_credentials');
 });
 
 test('tier 1 mentions carry more confidence than tier 2 mentions', () => {

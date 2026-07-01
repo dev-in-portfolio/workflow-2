@@ -198,10 +198,10 @@ function selectHotHotRotationCandidate({
     if (hotHotEntry.expired) continue;
     const heatScore = safeNumber(hotHotEntry.memeHeatScore, null);
     const marketScore = safeNumber(hotHotEntry.marketConfirmationScore, null);
-    const tradableStatus = resolveTradableStatus(hotHotEntry.marketConfirmationDetails);
+    const safety = resolveRotationSafety(hotHotEntry);
     if (!Number.isFinite(heatScore) || heatScore < config.minHeatScore) continue;
     if (!Number.isFinite(marketScore) || marketScore < config.minMarketScore) continue;
-    if (tradableStatus !== 'tradable') continue;
+    if (safety.blocked) continue;
     eligible.push({
       candidate,
       hotHotEntry,
@@ -463,6 +463,62 @@ function resolveTradableStatus(details = null) {
   if (details.tradable === false) return 'blocked';
   if (details.tradable === true) return 'tradable';
   return 'unknown';
+}
+
+function resolveRotationSafety(hotHotEntry = {}) {
+  const marketDetails = hotHotEntry.marketConfirmationDetails || {};
+  const phaseA = hotHotEntry.phaseA || {};
+  const sourceConfirmations = hotHotEntry.sourceConfirmations || {};
+  const phaseASourceConfirmations = phaseA.sourceConfirmations || {};
+  const phaseATradable = String(phaseA.tradableStatus || phaseA.tradable_status || '').toLowerCase();
+  const phaseAHalt = String(phaseA.haltStatus || phaseA.halt_status || '').toLowerCase();
+  const marketTradableStatus = resolveTradableStatus(marketDetails);
+  const tradableEvidence = [
+    marketDetails.tradable === true,
+    phaseATradable === 'tradable',
+    phaseA.tradable === true,
+    sourceConfirmations.alpacaAssets === true,
+    phaseASourceConfirmations.alpacaAssets === true,
+  ];
+  const blockedTradableEvidence = [
+    marketDetails.tradable === false,
+    ['blocked', 'not_found', 'excluded', 'halted'].includes(marketTradableStatus),
+    phaseATradable === 'blocked',
+    phaseATradable === 'not_found',
+  ];
+  const haltEvidence = [
+    marketDetails.halted === true,
+    phaseAHalt === 'halted',
+  ];
+  const notHaltEvidence = [
+    marketDetails.halted === false,
+    phaseAHalt === 'not_halted',
+    phaseAHalt === 'open',
+    sourceConfirmations.nasdaqHalts === true,
+    phaseASourceConfirmations.nasdaqHalts === true,
+  ];
+  const hasTradableEvidence = tradableEvidence.some(Boolean);
+  const hasBlockedEvidence = blockedTradableEvidence.some(Boolean);
+  const hasHaltEvidence = haltEvidence.some(Boolean);
+  const hasNotHaltedEvidence = notHaltEvidence.some(Boolean);
+  const unknownTradable = !hasTradableEvidence && !hasBlockedEvidence && marketTradableStatus === 'unknown' && !['tradable', 'blocked', 'not_found'].includes(phaseATradable);
+  const unknownHalt = !hasHaltEvidence && !hasNotHaltedEvidence && !['halted', 'not_halted', 'open'].includes(phaseAHalt) && marketDetails.halted !== false;
+  const blocked = Boolean(
+    marketDetails.excluded
+    || marketDetails.halted
+    || hasBlockedEvidence
+    || hasHaltEvidence
+    || unknownTradable
+    || unknownHalt,
+  );
+
+  return {
+    blocked,
+    tradableStatus: blocked
+      ? (marketDetails.excluded ? 'excluded' : marketDetails.halted ? 'halted' : phaseATradable || marketTradableStatus || 'unknown')
+      : (phaseATradable || marketTradableStatus || 'tradable'),
+    haltStatus: phaseAHalt || (marketDetails.halted ? 'halted' : hasNotHaltedEvidence ? 'not_halted' : 'unknown'),
+  };
 }
 
 function resolveCurrentPrice(snapshot = {}, position = {}) {

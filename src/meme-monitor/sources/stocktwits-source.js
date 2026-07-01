@@ -1,4 +1,4 @@
-const { nowIso } = require('../../util');
+const { fetchWithTimeout, nowIso } = require('../../util');
 
 async function fetchStocktwitsSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKey = String(env?.STOCKTWITS_API_KEY || '').trim();
@@ -17,7 +17,7 @@ async function fetchStocktwitsSignals({ env = process.env, fetchImpl = globalThi
   try {
     const out = [];
     for (const symbol of symbols) {
-      const response = await fetchWithTimeout(fetchImpl, `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(symbol)}.json?access_token=${encodeURIComponent(apiKey)}`, timeoutMs);
+      const response = await fetchWithTimeout(fetchImpl, `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(symbol)}.json?access_token=${encodeURIComponent(apiKey)}`, { timeoutMs });
       const body = await readJson(response);
       if (response.status === 429) {
         return {
@@ -101,16 +101,6 @@ function normalizeSourceStatus(entry = {}) {
     symbolsDetected: Number.isFinite(Number(entry.symbolsDetected)) ? Number(entry.symbolsDetected) : 0,
     blockedReason: entry.blockedReason || null,
   };
-}
-
-async function fetchWithTimeout(fetchImpl, url, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 5000));
-  try {
-    return await fetchImpl(url, { signal: controller.signal, headers: { 'user-agent': 'workflow-2-meme-monitor' } });
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function readJson(response) {

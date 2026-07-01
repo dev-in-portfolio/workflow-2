@@ -113,8 +113,9 @@ function createMemeMonitorLoop(options = {}) {
       dataDir,
       runOptions,
       runtimeState: featureState,
-      records: collectorResult.records || [],
-      mentions,
+      redditRecords: collectorResult.records || [],
+      redditRejected: collectorResult.rejected || [],
+      redditSourceStates: collectorResult.sources || [],
       candidateSymbols: heatScored.map((entry) => entry.symbol),
     });
     const phaseB = await refreshPhaseB({
@@ -152,8 +153,10 @@ function createMemeMonitorLoop(options = {}) {
       const merged = {
         symbol: entry.symbol,
         status: classification.status,
+        lastDecision: classification.status,
         memeHeatScore: entry.memeHeatScore,
         marketConfirmationScore: classification.marketConfirmationScore,
+        marketConfirmationDetails: classification.marketConfirmationDetails,
         priorityOverrideEligible: false,
         rotationEligible: false,
         mentions15m: entry.mentions15m,
@@ -166,6 +169,7 @@ function createMemeMonitorLoop(options = {}) {
         sourceConfirmations: phaseA.sourceConfirmationsBySymbol?.[entry.symbol] || null,
         phaseA: phaseA.symbolsBySymbol?.[entry.symbol] || null,
         phaseB: phaseB.symbolsBySymbol?.[entry.symbol] || null,
+        sourceBreakdown: phaseB.symbolsBySymbol?.[entry.symbol]?.sourceBreakdown || null,
         threadCount: entry.threadCount,
         commentCount: entry.commentCount,
         engagementScore: entry.engagementScore,
@@ -176,6 +180,9 @@ function createMemeMonitorLoop(options = {}) {
         riskWarnings: unionReasonCodes(entry.riskWarnings, classification.riskWarnings, marketConfirmation.riskWarnings),
         expiresAt: classification.expiresAt,
         marketConfirmationAvailable: classification.marketConfirmationAvailable,
+        generatedAt,
+        lastScoredAt: generatedAt,
+        sources: formatSourceContributors(entry.sourceProfile),
       };
       classified.push(merged);
     }
@@ -196,9 +203,12 @@ function createMemeMonitorLoop(options = {}) {
           marketConfirmationDetails: entry.marketConfirmationDetails,
           status: entry.status,
           lastDecision: entry.status,
+          generatedAt,
+          lastScoredAt: generatedAt,
           reasonCodes: entry.reasonCodes,
           riskWarnings: entry.riskWarnings,
           expiresAt: entry.expiresAt,
+          expired: false,
           mentions15m: entry.mentions15m,
           mentions30m: entry.mentions30m,
           mentions60m: entry.mentions60m,
@@ -209,6 +219,7 @@ function createMemeMonitorLoop(options = {}) {
           sourceConfirmations: phaseA.sourceConfirmationsBySymbol?.[entry.symbol] || null,
           phaseA: phaseA.symbolsBySymbol?.[entry.symbol] || null,
           phaseB: phaseB.symbolsBySymbol?.[entry.symbol] || null,
+          sourceBreakdown: phaseB.symbolsBySymbol?.[entry.symbol]?.sourceBreakdown || null,
           threadCount: entry.threadCount,
           commentCount: entry.commentCount,
           engagementScore: entry.engagementScore,
@@ -227,15 +238,21 @@ function createMemeMonitorLoop(options = {}) {
           marketConfirmationScore: entry.marketConfirmationScore,
           marketConfirmationDetails: entry.marketConfirmationDetails,
           status: 'hot_hot',
+          lastDecision: 'hot_hot',
           priorityOverrideEligible: false,
           rotationEligible: false,
+          generatedAt,
+          lastScoredAt: generatedAt,
           sources: formatSourceContributors(entry.sourceProfile),
+          sourceProfile: entry.sourceProfile,
           sourceConfirmations: phaseA.sourceConfirmationsBySymbol?.[entry.symbol] || null,
+          phaseA: phaseA.symbolsBySymbol?.[entry.symbol] || null,
           phaseB: phaseB.symbolsBySymbol?.[entry.symbol] || null,
+          sourceBreakdown: phaseB.symbolsBySymbol?.[entry.symbol]?.sourceBreakdown || null,
           reasonCodes: entry.reasonCodes,
           riskWarnings: entry.riskWarnings,
           expiresAt: entry.expiresAt,
-          lastDecision: entry.status,
+          expired: false,
         });
       }
     }
@@ -607,8 +624,9 @@ function buildStatus({ enabled, status, sources, lastError, lastRunAt, symbolsDe
       repoRoot,
       dataDir,
       runtimeState: featureState,
-      records: runOptions.records || [],
-      mentions: runOptions.mentions || [],
+      redditRecords: runOptions.redditRecords || runOptions.records || [],
+      redditRejected: runOptions.redditRejected || [],
+      redditSourceStates: runOptions.redditSourceStates || [],
       candidateSymbols: runOptions.candidateSymbols || [],
     });
     saveMemeMonitorStatus({

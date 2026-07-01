@@ -105,7 +105,7 @@ function classifyHotHotCandidate({
     expiresAt,
     marketConfirmationAvailable: marketConfirmation?.available !== false && marketScore !== null,
     marketConfirmationReasonCodes: marketReasons,
-    marketConfirmationDetails: marketConfirmation?.details || null,
+    marketConfirmationDetails: normalizeMarketConfirmationDetails(marketConfirmation?.details),
     sourceProfile,
   };
 }
@@ -114,6 +114,26 @@ function clampScore(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
   return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function normalizeMarketConfirmationDetails(details = null) {
+  const source = details && typeof details === 'object' ? details : {};
+  return {
+    currentPrice: source.currentPrice ?? null,
+    previousClose: source.previousClose ?? null,
+    openPrice: source.openPrice ?? null,
+    volume: source.volume ?? null,
+    averageVolume: source.averageVolume ?? null,
+    bid: source.bid ?? null,
+    ask: source.ask ?? null,
+    spreadPct: source.spreadPct ?? null,
+    liquidity: source.liquidity ?? null,
+    ageSeconds: source.ageSeconds ?? null,
+    stale: Boolean(source.stale),
+    tradable: source.tradable ?? null,
+    halted: source.halted ?? null,
+    excluded: source.excluded ?? null,
+  };
 }
 
 module.exports = {
