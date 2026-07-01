@@ -4,6 +4,14 @@
 
 Ready for dashboard/shadow inspection with safe defaults and operator controls. Scanner-influencing features remain hold-until-approved.
 
+## Next Step: Shadow-Only Validation
+
+Shadow-only validation means the dashboard may collect, score, display, and explain symbols, but those symbols must not influence scanner ranking, candidate selection, position slot rotation, or order submission.
+
+- Run the operator checklist in `docs/shadow-only-validation-runbook.md`.
+- Keep Auto Action locked and leave manual trade controls unavailable.
+- Treat any shadow result that changes scanner behavior as a blocker, not a launch signal.
+
 ## Ready Now
 
 - Dashboard / Watch tab
@@ -35,6 +43,7 @@ Ready for dashboard/shadow inspection with safe defaults and operator controls. 
 - Dedicated hot-slot rotation coverage is present in `test/hot-slot-rotation.test.js` and wired into both test scripts.
 - The Hot Slot Rotation blocker matrix was expanded with direct candidate, eviction, and plan checks.
 - New dashboard source-health and meme-action coverage verifies the corrected status handling.
+- Shadow-only guardrail coverage is added in `test/shadow-only-validation.test.js`.
 
 ## Remaining Operator Validation
 

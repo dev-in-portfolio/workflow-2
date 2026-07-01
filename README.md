@@ -26,6 +26,11 @@ This repository is a simplified Live Market trading control plane with a direct-
 - Auto Action remains locked until a safe implementation path exists.
 - Dynamic Watchlist, Priority Override, Hot Slot Rotation, and Regular Watch scanner ranking remain hold-until-approved and should stay off until shadow data is reviewed.
 
+## Shadow-Only Validation
+
+- Shadow-only validation means the dashboard may collect, score, display, and explain symbols, but those symbols must not influence scanner ranking, candidate selection, position slot rotation, or order submission.
+- The operator checklist and acceptance criteria live in [docs/shadow-only-validation-runbook.md](./docs/shadow-only-validation-runbook.md).
+
 ## Watch Tab
 
 - The Watch tab always uses four columns: `Regular Watch List`, `Regular Watch Movers List`, `Dynamic Hot List From Alerts`, and `Hot Hot List`.
