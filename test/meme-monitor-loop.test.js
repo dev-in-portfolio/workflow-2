@@ -20,30 +20,23 @@ function tempWorkspace() {
 
 function enableMemeFeatures({ dataDir, env }) {
   const filePath = resolveMemeMonitorStatePath({ dataDir });
-  updateMemeMonitorFeatureState({
-    featureKey: 'MEME_MONITOR_ENABLED',
-    enabled: true,
-    env,
-    filePath,
-    changedBy: 'test',
-    source: 'unit-test',
-  });
-  updateMemeMonitorFeatureState({
-    featureKey: 'MEME_REDDIT_SCANNER_ENABLED',
-    enabled: true,
-    env,
-    filePath,
-    changedBy: 'test',
-    source: 'unit-test',
-  });
-  updateMemeMonitorFeatureState({
-    featureKey: 'MEME_HOT_LIST_ENABLED',
-    enabled: true,
-    env,
-    filePath,
-    changedBy: 'test',
-    source: 'unit-test',
-  });
+  const featureKeys = [
+    'MEME_MONITOR_ENABLED',
+    'MEME_REDDIT_SCANNER_ENABLED',
+    'MEME_HOT_LIST_ENABLED',
+    'MEME_DYNAMIC_WATCHLIST_ENABLED',
+  ];
+  for (const featureKey of featureKeys) {
+    if (!env?.[featureKey]) continue;
+    updateMemeMonitorFeatureState({
+      featureKey,
+      enabled: true,
+      env,
+      filePath,
+      changedBy: 'test',
+      source: 'unit-test',
+    });
+  }
 }
 
 test('meme monitor loop stays inactive when the master flag is off', async () => {
@@ -171,6 +164,56 @@ test('meme monitor loop writes a shadow hot list with reasons and expiration', a
   assert(hotList.symbols[0].reasonCodes.includes('multi_source_confirmation'));
   assert(hotList.symbols[0].reasonCodes.includes('engagement_confirmed'));
   assert(hotList.symbols[0].reasonCodes.includes('market_confirmation_unavailable'));
+});
+
+test('meme monitor loop reports an active hot list when dynamic watchlist is effective', async () => {
+  const { repoRoot, dataDir } = tempWorkspace();
+  const env = {
+    MEME_MONITOR_ENABLED: 'true',
+    MEME_REDDIT_SCANNER_ENABLED: 'true',
+    MEME_HOT_LIST_ENABLED: 'true',
+    MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+    REDDIT_CLIENT_ID: 'test-client',
+    REDDIT_CLIENT_SECRET: 'test-secret',
+    REDDIT_USER_AGENT: 'workflow-2-meme-monitor-test',
+    MEME_DYNAMIC_MIN_SCORE: '50',
+    MEME_HOT_CANDIDATE_MIN_SCORE: '65',
+    MEME_HOT_HOT_MIN_SCORE: '80',
+  };
+  enableMemeFeatures({ dataDir, env });
+  const loop = createMemeMonitorLoop({
+    repoRoot,
+    dataDir,
+    env,
+    collector: {
+      collectSources: async () => ({
+        ok: true,
+        status: 'ok',
+        sources: ['wallstreetbets'],
+        records: [{
+          kind: 'post',
+          source: 'reddit:wallstreetbets',
+          sourceId: 'p1',
+          threadId: 'p1',
+          author: 'user1',
+          createdAt: '2026-06-30T14:00:00.000Z',
+          engagement: 12,
+          title: 'Buying $GME and SOUN today',
+          body: '',
+        }],
+        rejected: [],
+      }),
+    },
+  });
+
+  const status = await loop.refresh({ forceWrite: true });
+  const hotList = loadDynamicHotList({ dataDir, filePath: resolveDynamicHotListPath({ dataDir }) });
+
+  assert.equal(status.redditScanner.status, 'active');
+  assert.equal(status.hotList.status, 'active');
+  assert.equal(status.hotHotScoring.status, 'active');
+  assert.equal(hotList.mode, 'active');
+  assert.equal(hotList.status, 'active');
 });
 
 test('meme monitor loop preserves source status metadata and source contributors', async () => {

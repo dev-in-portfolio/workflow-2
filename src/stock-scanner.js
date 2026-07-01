@@ -233,19 +233,22 @@ function createStockScanner(options = {}) {
     let executionQualityState = null;
     let executionQualitySummary = null;
     try {
-      const bundle = await fetchStockBundle({
+    const bundle = await fetchStockBundle({
         fetchImpl: marketFetch,
         apiKeyId,
         apiSecretKey,
         baseUrl,
         symbols: memeWatchConfig.attentionSymbols,
       });
+      const twelveDataSymbols = memeWatchConfig.dynamicEnabled
+        ? memeWatchConfig.attentionSymbols
+        : symbols;
       const twelveDataQuotes = twelveDataApiKey
         ? await fetchTwelveDataBundle({
           fetchImpl: marketFetch,
           apiKey: twelveDataApiKey,
           baseUrl: twelveDataBaseUrl,
-          symbols,
+          symbols: twelveDataSymbols,
         })
         : {};
       const accountBaseUrl = options.accountBaseUrl || options.tradingBaseUrl || options.accountUrl || trimTrailingSlash(env.ALPACA_API_BASE_URL || 'https://paper-api.alpaca.markets');
@@ -650,6 +653,7 @@ function createStockScanner(options = {}) {
       }
 
       let rotationResult = null;
+      const suppressBuyPosting = Boolean(hotSlotRotationEnabled && rotationPlan?.accountFull);
       const shouldAttemptRotation = hotSlotRotationEnabled
         && rotationPlan?.rotationEligible
         && rotationPlan?.selectedCandidate
@@ -918,7 +922,9 @@ function createStockScanner(options = {}) {
       }
 
       const rotationCandidateSymbol = normalizeWatchSymbol(rotationPlan?.candidate);
-      const buyCandidatesToPost = shouldAttemptRotation && rotationCandidateSymbol
+      const buyCandidatesToPost = suppressBuyPosting
+        ? []
+        : shouldAttemptRotation && rotationCandidateSymbol
         ? buyCandidates.filter((candidate) => normalizeWatchSymbol(candidate?.symbol) !== rotationCandidateSymbol)
         : buyCandidates;
 
@@ -1154,6 +1160,8 @@ function createStockScanner(options = {}) {
           priority_override_applied: Boolean(candidate.payload?.market_context?.scanner?.priority_override_applied),
           priority_override_bonus: roundScore(candidate.priorityOverrideBonus || 0),
           priority_override_block_reason: candidate.payload?.market_context?.scanner?.priority_override_block_reason || null,
+          secondary_confirmation_available: Boolean(candidate.secondaryConfirmationAvailable),
+          secondary_confirmation_source: candidate.secondaryConfirmationSource || null,
           regular_watch_comparison: candidate.payload?.market_context?.scanner?.regular_watch_comparison || null,
           position_awareness_tags: Array.isArray(candidate.payload?.market_context?.scanner?.position_awareness_tags)
             ? candidate.payload.market_context.scanner.position_awareness_tags.slice()
@@ -1292,7 +1300,7 @@ function createStockScanner(options = {}) {
         positions: trailingState.positions,
       } : null,
       session_guard_overview: summarizeSessionGuards(sessionGuards),
-    }, { env, repoRoot: resolveRepoRoot() });
+    }, { env, repoRoot });
   }
 
 }
@@ -1606,6 +1614,8 @@ function buildCandidates(bundle, options = {}) {
       const isDynamicWatchSymbol = dynamicWatchlistSymbols.has(symbol);
       const isPriorityOverrideSymbol = priorityOverrideSymbols.has(symbol);
       const isPriorityOverrideApplied = isPriorityOverrideSymbol && candidate.payload.side === 'buy';
+      const secondaryConfirmationAvailable = Boolean(candidate.payload?.twelve_data_quote);
+      const secondaryConfirmationSource = secondaryConfirmationAvailable ? 'twelvedata' : 'alpaca-secondary';
       candidate.positionAwarenessTags = buildPositionAwarenessTags({
         symbol,
         candidate,
@@ -1626,11 +1636,15 @@ function buildCandidates(bundle, options = {}) {
       scannerContext.priority_override_applied = isPriorityOverrideApplied;
       scannerContext.priority_override_bonus = isPriorityOverrideApplied ? priorityOverrideBonus : 0;
       scannerContext.priority_override_block_reason = null;
+      scannerContext.secondary_confirmation_available = secondaryConfirmationAvailable;
+      scannerContext.secondary_confirmation_source = secondaryConfirmationSource;
       scannerContext.regular_watch_comparison = regularWatchComparison;
       candidate.dynamicWatchlistMember = isDynamicWatchSymbol;
       candidate.priorityOverrideEligible = isPriorityOverrideSymbol;
       candidate.priorityOverrideApplied = isPriorityOverrideApplied;
       candidate.priorityOverrideBonus = isPriorityOverrideApplied ? priorityOverrideBonus : 0;
+      candidate.secondaryConfirmationAvailable = secondaryConfirmationAvailable;
+      candidate.secondaryConfirmationSource = secondaryConfirmationSource;
       candidate.priorityOverrideSortScore = candidate.rankScore;
       candidate.regularWatchComparison = regularWatchComparison;
       candidate.regularWatchSortScore = Number.isFinite(Number(regularWatchComparison?.sortScore))

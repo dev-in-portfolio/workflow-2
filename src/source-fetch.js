@@ -217,11 +217,12 @@ function readSourceCache(cache = {}) {
     const storedAt = new Date(payload.storedAt || payload.stored_at || 0).getTime();
     if (!Number.isFinite(storedAt)) return null;
     const ttlSeconds = Math.max(0, Number(cache.ttlSeconds ?? payload.ttlSeconds ?? payload.ttl_seconds ?? 0) || 0);
+    if (ttlSeconds <= 0) return null;
     const ageSeconds = Math.max(0, (Date.now() - storedAt) / 1000);
     return {
       ...payload,
-      fresh: ttlSeconds > 0 ? ageSeconds <= ttlSeconds : true,
-      stale: ttlSeconds > 0 ? ageSeconds > ttlSeconds : false,
+      fresh: ageSeconds <= ttlSeconds,
+      stale: ageSeconds > ttlSeconds,
       ageSeconds,
       ttlSeconds,
     };

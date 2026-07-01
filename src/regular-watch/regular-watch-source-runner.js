@@ -20,21 +20,22 @@ function resolveRegularWatchSymbols(env = process.env) {
 function resolveRegularWatchSourceRuntime(env = process.env, runtimeState = null) {
   const featureState = runtimeState || loadRegularWatchState({ env, filePath: resolveRegularWatchStatePath({ env }) });
   const features = featureState.features || {};
-  const enabled = (key) => Boolean(features[key]?.effective || features[key]?.runtime || String(env?.[key] || '').toLowerCase() === 'true');
+  const runtimeEnabled = (key) => Boolean(features[key]?.effective || features[key]?.runtime || String(env?.[key] || '').toLowerCase() === 'true');
+  const effectiveOnly = (key) => Boolean(features[key]?.effective);
   return {
-    master: enabled('REGULAR_WATCH_INTELLIGENCE_ENABLED'),
-    marketConfirmation: enabled('REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED'),
-    assetValidation: enabled('REGULAR_WATCH_ASSET_VALIDATION_ENABLED'),
-    haltCheck: enabled('REGULAR_WATCH_HALT_CHECK_ENABLED'),
-    secRiskCheck: enabled('REGULAR_WATCH_SEC_RISK_CHECK_ENABLED'),
-    newsCatalyst: enabled('REGULAR_WATCH_NEWS_CATALYST_ENABLED'),
-    priorityScoring: enabled('REGULAR_WATCH_PRIORITY_SCORING_ENABLED'),
-    scannerRanking: enabled('REGULAR_WATCH_SCANNER_RANKING_ENABLED'),
-    positionAwareness: enabled('REGULAR_WATCH_POSITION_AWARENESS_ENABLED'),
-    polygonConfirmation: enabled('REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED'),
-    alphaVantageConfirmation: enabled('REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED'),
-    socialContext: enabled('REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED'),
-    optionsContext: enabled('REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED'),
+    master: runtimeEnabled('REGULAR_WATCH_INTELLIGENCE_ENABLED'),
+    marketConfirmation: runtimeEnabled('REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED'),
+    assetValidation: runtimeEnabled('REGULAR_WATCH_ASSET_VALIDATION_ENABLED'),
+    haltCheck: runtimeEnabled('REGULAR_WATCH_HALT_CHECK_ENABLED'),
+    secRiskCheck: runtimeEnabled('REGULAR_WATCH_SEC_RISK_CHECK_ENABLED'),
+    newsCatalyst: runtimeEnabled('REGULAR_WATCH_NEWS_CATALYST_ENABLED'),
+    priorityScoring: effectiveOnly('REGULAR_WATCH_PRIORITY_SCORING_ENABLED'),
+    scannerRanking: effectiveOnly('REGULAR_WATCH_SCANNER_RANKING_ENABLED'),
+    positionAwareness: effectiveOnly('REGULAR_WATCH_POSITION_AWARENESS_ENABLED'),
+    polygonConfirmation: runtimeEnabled('REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED'),
+    alphaVantageConfirmation: runtimeEnabled('REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED'),
+    socialContext: runtimeEnabled('REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED'),
+    optionsContext: runtimeEnabled('REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED'),
   };
 }
 

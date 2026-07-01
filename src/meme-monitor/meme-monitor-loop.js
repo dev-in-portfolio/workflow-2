@@ -284,12 +284,12 @@ function createMemeMonitorLoop(options = {}) {
 
     const hotListStatus = buildHotListStatus(hotListPayload, {
       enabled: hotListEnabled,
-      hotHotEnabled: hotListEnabled,
+      hotHotEnabled: Boolean(hotListEnabled && dynamicWatchlistEnabled),
       lastError: null,
     });
     const statusPayload = buildStatus({
       enabled: true,
-      status: hotListEnabled ? 'shadow' : 'off',
+      status: hotListMode,
       sources: collectorResult.sources || sourceConfig.sourceDefinitions,
       lastError: null,
       lastRunAt: generatedAt,
@@ -300,8 +300,8 @@ function createMemeMonitorLoop(options = {}) {
       phaseB: phaseB.phaseB || null,
       hotList: hotListStatus,
       hotHotScoring: {
-        enabled: Boolean(hotListEnabled && dynamicWatchlistEnabled),
-        status: hotListEnabled && dynamicWatchlistEnabled ? 'active' : 'off',
+        enabled: Boolean(hotListEnabled),
+        status: hotListMode,
         lastScoredAt: generatedAt,
         lastError: null,
         stale: false,
@@ -421,8 +421,8 @@ function buildStatus({ enabled, status, sources, lastError, lastRunAt, symbolsDe
       phaseB: loadMemeMonitorStatus({ dataDir, filePath: statusPath })?.phaseB || null,
       hotList: buildHotListStatus(idleHotList, { enabled: Boolean(hotListEnabled), lastError }),
       hotHotScoring: {
-        enabled: Boolean(hotListEnabled) && Boolean(dynamicWatchlistEnabled),
-        status: 'off',
+        enabled: Boolean(hotListEnabled),
+        status: hotListEnabled ? 'shadow' : 'off',
         lastScoredAt: null,
         lastError,
         stale: true,

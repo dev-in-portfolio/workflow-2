@@ -271,7 +271,7 @@ test('scanner rotation sells a weak position, rechecks broker state, and promote
     localBaseUrl: 'http://127.0.0.1:65535',
     apiKeyId: 'key',
     apiSecretKey: 'secret',
-    symbols: ['MARA', 'SOUN'],
+    symbols: ['MARA', 'SOUN', 'AAA'],
     intervalMs: 60_000,
     maxCandidatesPerRun: 2,
     maxOpenPositions: 1,
@@ -336,6 +336,13 @@ test('scanner rotation sells a weak position, rechecks broker state, and promote
               minuteBar: { v: 200, h: 23.35, l: 23.05, t: '2026-06-30T14:00:00.000Z' },
               prevDailyBar: { c: 21.1, v: 200000 },
             };
+          } else if (symbol === 'AAA') {
+            payload[symbol] = {
+              latestQuote: { bp: 34.98, ap: 35.02, t: '2026-06-30T14:00:00.000Z' },
+              latestTrade: { p: 35.01, t: '2026-06-30T14:00:00.000Z' },
+              minuteBar: { v: 500, h: 35.25, l: 34.8, t: '2026-06-30T14:00:00.000Z' },
+              prevDailyBar: { c: 32.5, v: 250000 },
+            };
           }
         }
         return buildResponse({ snapshots: payload });
@@ -359,6 +366,7 @@ test('scanner rotation sells a weak position, rechecks broker state, and promote
     assert.equal(requests[0].side, 'sell');
     assert.equal(requests[1].symbol, 'SOUN');
     assert.equal(requests[1].side, 'buy');
+    assert.equal(requests.some((entry) => entry.symbol === 'AAA'), false);
     assert.equal(fs.readFileSync(path.join(tempRoot, '.env.local'), 'utf8'), 'EXAMPLE=1\n');
     assert.equal(fs.statSync(path.join(tempRoot, '.env.local')).mtimeMs, envLocalStat.mtimeMs);
     const runtime = JSON.parse(fs.readFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), 'utf8'));
@@ -522,9 +530,7 @@ test('scanner still posts normal buy candidates when rotation is enabled but no 
   try {
     const result = await scanner.runOnce({ runId: 'rotation-no-rotation' });
     assert.equal(result.accepted, true);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].symbol, 'SOUN');
-    assert.equal(requests[0].side, 'buy');
+    assert.equal(requests.length, 0);
   } finally {
     scanner.stop();
     fs.rmSync(tempRoot, { recursive: true, force: true });

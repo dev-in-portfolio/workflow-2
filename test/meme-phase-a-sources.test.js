@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { URL } = require('url');
 const {
   fetchAlpacaMarketSignals,
   fetchAlpacaAssetSignals,
@@ -182,4 +183,71 @@ test('phase A reuses collected Reddit records instead of recollecting when provi
   assert.equal(phaseA.phaseA.sources.reddit.sourceMode, 'reused_records');
   assert.equal(phaseA.phaseA.sources.reddit.symbolsDetected > 0, true);
   assert.equal(phaseA.symbolsBySymbol.GME.sourceConfirmations.reddit, true);
+});
+
+test('phase A evaluates market and risk sources for seeded symbols even when reddit is disabled', async () => {
+  const requested = {
+    market: [],
+    assets: [],
+    halts: [],
+  };
+  const phaseA = await runPhaseASources({
+    env: {
+      MEME_SOURCE_REDDIT_ENABLED: 'false',
+      MEME_SOURCE_ALPACA_MARKET_ENABLED: 'true',
+      MEME_SOURCE_ALPACA_ASSETS_ENABLED: 'true',
+      MEME_SOURCE_NASDAQ_HALTS_ENABLED: 'true',
+      MEME_SOURCE_SEC_EDGAR_ENABLED: 'false',
+      MEME_PHASE_A_SOURCE_CACHE_SECONDS: '0',
+      ALPACA_API_KEY_ID: 'key',
+      ALPACA_API_SECRET_KEY: 'secret',
+    },
+    fetchImpl: async (url) => {
+      if (String(url).includes('/v2/stocks/snapshots')) {
+        requested.market.push(...String(new URL(url).searchParams.get('symbols') || '').split(',').map((symbol) => decodeURIComponent(symbol).toUpperCase()).filter(Boolean));
+        return jsonResponse({
+          snapshots: {
+            GME: {
+              latestTrade: { p: 28.12, s: 1200 },
+              latestQuote: { ap: 28.2, bp: 28.05 },
+              dailyBar: { o: 26.5, c: 27.8, v: 1823000 },
+              previousDailyBar: { c: 25.8, v: 1542000 },
+            },
+            SOUN: {
+              latestTrade: { p: 23.12, s: 800 },
+              latestQuote: { ap: 23.2, bp: 23.05 },
+              dailyBar: { o: 21.5, c: 22.8, v: 1123000 },
+              previousDailyBar: { c: 21.1, v: 942000 },
+            },
+          },
+        });
+      }
+      if (String(url).endsWith('/v2/assets')) {
+        requested.assets.push('called');
+        return jsonResponse([
+          { symbol: 'GME', tradable: true, status: 'active', asset_class: 'us_equity' },
+          { symbol: 'SOUN', tradable: true, status: 'active', asset_class: 'us_equity' },
+        ]);
+      }
+      if (String(url).includes('TradeHaltRSS')) {
+        requested.halts.push('called');
+        return textResponse('<rss><symbol>GME</symbol><symbol>SOUN</symbol></rss>');
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    },
+    candidateSymbols: ['GME', 'SOUN'],
+    runtimeState: {
+      features: {},
+    },
+  });
+
+  assert.deepEqual(requested.market.sort(), ['GME', 'SOUN']);
+  assert.equal(requested.assets.length > 0, true);
+  assert.equal(requested.halts.length, 1);
+  assert.equal(phaseA.phaseA.sources.reddit.status, 'inactive');
+  assert.equal(phaseA.phaseA.sources.alpacaMarket.symbolsConfirmed, 2);
+  assert.equal(phaseA.phaseA.sources.alpacaAssets.symbolsTradable, 2);
+  assert.equal(phaseA.phaseA.sources.nasdaqHalts.blockedSymbols, 2);
+  assert.equal(phaseA.symbolsBySymbol.GME.haltStatus, 'halted');
+  assert.equal(phaseA.symbolsBySymbol.SOUN.tradableStatus, 'tradable');
 });

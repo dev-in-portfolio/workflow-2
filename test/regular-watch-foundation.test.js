@@ -8,6 +8,7 @@ const {
   resolveRegularWatchStatePath,
   updateRegularWatchFeatureState,
 } = require('../src/regular-watch/regular-watch-feature-state');
+const { resolveRegularWatchSourceRuntime } = require('../src/regular-watch/regular-watch-source-runner');
 const {
   loadRegularWatchStatus,
   resolveRegularWatchStatusPath,
@@ -109,6 +110,28 @@ test('regular watch scanner ranking still requires config allowment', () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.error, 'feature_disabled_in_config');
+});
+
+test('regular watch two-key features only become active when effective', () => {
+  const runtimeState = {
+    features: {
+      REGULAR_WATCH_INTELLIGENCE_ENABLED: { effective: true, runtime: true },
+      REGULAR_WATCH_PRIORITY_SCORING_ENABLED: { effective: false, runtime: true },
+      REGULAR_WATCH_SCANNER_RANKING_ENABLED: { effective: false, runtime: true },
+      REGULAR_WATCH_POSITION_AWARENESS_ENABLED: { effective: false, runtime: true },
+    },
+  };
+  const runtime = resolveRegularWatchSourceRuntime({
+    REGULAR_WATCH_INTELLIGENCE_ENABLED: 'true',
+    REGULAR_WATCH_PRIORITY_SCORING_ENABLED: 'true',
+    REGULAR_WATCH_SCANNER_RANKING_ENABLED: 'true',
+    REGULAR_WATCH_POSITION_AWARENESS_ENABLED: 'true',
+  }, runtimeState);
+
+  assert.equal(runtime.master, true);
+  assert.equal(runtime.priorityScoring, false);
+  assert.equal(runtime.scannerRanking, false);
+  assert.equal(runtime.positionAwareness, false);
 });
 
 test('regular watch runtime state does not rewrite .env.local', () => {

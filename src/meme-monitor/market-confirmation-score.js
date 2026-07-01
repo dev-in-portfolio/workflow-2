@@ -26,7 +26,8 @@ function scoreMarketConfirmation(symbol, marketContext = null, options = {}) {
     ? ((ask - bid) / ((ask + bid) / 2)) * 100
     : safeNumber(context.spreadPct ?? context.spread_pct, null);
   const tradable = context.tradable ?? context.isTradable ?? context.is_tradable ?? null;
-  const halted = context.halted ?? context.isHalted ?? (String(context.halt_status || context.haltStatus || '').toLowerCase() === 'halted' ? true : null);
+  const haltStatusText = String(context.halt_status || context.haltStatus || '').trim().toLowerCase();
+  const halted = context.halted ?? context.isHalted ?? (haltStatusText === 'halted' ? true : (haltStatusText === 'not_halted' || haltStatusText === 'open' || haltStatusText === 'false' ? false : null));
   const excluded = Boolean(context.excluded ?? context.isExcluded ?? context.banned ?? false);
   const stale = Boolean(context.stale ?? context.marketDataStale ?? false);
   const ageSeconds = safeNumber(context.ageSeconds ?? context.age_seconds ?? null, null);
@@ -69,6 +70,8 @@ function scoreMarketConfirmation(symbol, marketContext = null, options = {}) {
     score -= 40;
     riskWarnings.push('possible_halt_risk');
   } else if (halted === false) {
+    reasonCodes.push('not_halted');
+  } else {
     reasonCodes.push('halt_status_unknown');
   }
 

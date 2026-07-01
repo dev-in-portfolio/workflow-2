@@ -1621,6 +1621,7 @@ test('stock scanner ignores dynamic watchlist symbols when the feature is disabl
       MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
       MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
       MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      TWELVEDATA_API_KEY: 'td-key',
     },
     snapshots: {
       AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
@@ -1663,6 +1664,7 @@ test('stock scanner ignores dynamic watchlist symbols when the feature is disabl
     const result = await harness.scanner.runOnce({ runId: 'dynamic-disabled-test' });
     assert.equal(result.accepted, true);
     assert.deepEqual(harness.requestedSymbols, ['AAA']);
+    assert.deepEqual(harness.secondaryRequestedSymbols, ['AAA']);
     const watchConfig = resolveScannerWatchConfig({
       env: {
         ...harness.env,
@@ -1690,6 +1692,7 @@ test('stock scanner includes fresh dynamic watchlist symbols and keeps expired s
       MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
       MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
       MEME_HOT_LIST_TTL_MINUTES: '120',
+      TWELVEDATA_API_KEY: 'td-key',
     },
     snapshots: {
       AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
@@ -1733,6 +1736,8 @@ test('stock scanner includes fresh dynamic watchlist symbols and keeps expired s
     assert.equal(result.accepted, true);
     assert.deepEqual(harness.requestedSymbols.sort(), ['AAA', 'HOT']);
     assert.equal(harness.requestedSymbols.includes('OLD'), false);
+    assert.deepEqual(harness.secondaryRequestedSymbols.sort(), ['AAA', 'HOT']);
+    assert.equal(harness.secondaryRequestedSymbols.includes('OLD'), false);
     const watchConfig = resolveScannerWatchConfig({
       env: {
         ...harness.env,
@@ -2049,6 +2054,7 @@ function createScannerHarness({
   }
 
   const requestedSymbols = [];
+  const secondaryRequestedSymbols = [];
   const postedSymbols = [];
 
   const scanner = createStockScanner({
@@ -2083,6 +2089,20 @@ function createScannerHarness({
         }
         return buildResponse({ snapshots: payload });
       }
+      if (url.includes('/quote?symbol=')) {
+        const parsed = new URL(url);
+        const symbolList = decodeURIComponent(parsed.searchParams.get('symbol') || '').split(',').map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean);
+        secondaryRequestedSymbols.push(...symbolList);
+        return buildResponse({
+          data: symbolList.map((symbol) => ({
+            symbol,
+            price: snapshots[symbol]?.latestTrade?.p || snapshots[symbol]?.latestQuote?.bp || 1,
+            previous_close: snapshots[symbol]?.prevDailyBar?.c || snapshots[symbol]?.dailyBar?.c || 1,
+            volume: snapshots[symbol]?.prevDailyBar?.v || snapshots[symbol]?.dailyBar?.v || 1,
+            datetime: snapshots[symbol]?.latestTrade?.t || snapshots[symbol]?.latestQuote?.t || new Date().toISOString(),
+          })),
+        });
+      }
       throw new Error(`Unexpected URL: ${url}`);
     },
     localFetch: async (_url, init = {}) => {
@@ -2095,6 +2115,7 @@ function createScannerHarness({
   return {
     scanner,
     requestedSymbols,
+    secondaryRequestedSymbols,
     postedSymbols,
     scannerRuntimePath: path.join(dataDir, 'state', 'scanner-runtime.json'),
     env: featureEnv,

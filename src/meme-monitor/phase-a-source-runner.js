@@ -32,6 +32,12 @@ async function runPhaseASources(options = {}) {
   const phaseAMarketContextBySymbol = new Map();
   const precollectedRedditRecords = Array.isArray(options.redditRecords) ? options.redditRecords : Array.isArray(options.records) ? options.records : [];
   const redditRecordSource = options.redditRecordSource || 'reused_records';
+  const seedSymbols = new Set(
+    [...normalizeSymbols(options.candidateSymbols || []), ...extractSymbolsFromRecords(precollectedRedditRecords, options)],
+  );
+  for (const symbol of seedSymbols) {
+    phaseASymbols.set(symbol, createPhaseASymbolEntry(symbol));
+  }
 
   if (sourceRuntime.reddit) {
     const redditCollector = options.redditCollector || createRedditCollector({ env, fetchImpl });
@@ -61,34 +67,22 @@ async function runPhaseASources(options = {}) {
       blockedReason: result.ok ? null : result.status || 'reddit_failed',
       sourceMode: precollectedRedditRecords.length ? 'reused_records' : 'fresh_collect',
     });
-    for (const record of result.records || []) {
-      records.push(record);
-      const extracted = extractMentionsFromRecord(record, {
-        sourceMeta: record.sourceMeta || null,
-        tradableSymbols: options.tradableSymbols,
-        isTradableSymbol: options.isTradableSymbol,
-        requireTradableMatch: options.requireTradableMatch,
-      });
-      for (const mention of extracted.mentions || []) {
-        const symbol = String(mention.symbol || '').toUpperCase();
-        if (!symbol) continue;
-        const entry = phaseASymbols.get(symbol) || createPhaseASymbolEntry(symbol);
-        entry.sourceConfirmations.reddit = true;
-        entry.socialHeatScore += Math.max(1, Number(mention.sourceWeight) || 1);
-        entry.socialMentions += 1;
-        entry.sourceDetails.reddit.push({
-          source: mention.source || 'reddit',
-          tier: mention.sourceTier || null,
-          status: mention.sourceStatus || null,
-        });
-        if (mention.sourceTier) {
-          entry.reasonCodes.add(`reddit_${mention.sourceTier}_signal`);
-        }
-        phaseASymbols.set(symbol, entry);
-      }
-    }
+    ingestRedditRecords({
+      records: result.records || [],
+      phaseASymbols,
+      recordsOut: records,
+      options,
+    });
   } else {
     sources.reddit = normalizeSourceStatus({ source: 'reddit', enabled: false, available: false, status: 'inactive', symbolsDetected: 0, rejectedTokens: 0, lastRunAt: null, lastError: null, blockedReason: 'source_disabled' });
+    if (precollectedRedditRecords.length) {
+      ingestRedditRecords({
+        records: precollectedRedditRecords,
+        phaseASymbols,
+        recordsOut: records,
+        options,
+      });
+    }
   }
 
   const symbols = [...phaseASymbols.keys()].slice(0, maxSymbolsPerRun);
@@ -597,6 +591,58 @@ function mergeMarketContext(base = null, next = null) {
   if (!base) return next || null;
   if (!next) return base;
   return { ...base, ...next };
+}
+
+function normalizeSymbols(symbols = []) {
+  return [...new Set((Array.isArray(symbols) ? symbols : [])
+    .map((symbol) => String(symbol || '').trim().toUpperCase())
+    .filter(Boolean))];
+}
+
+function extractSymbolsFromRecords(records = [], options = {}) {
+  const symbols = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    const extracted = extractMentionsFromRecord(record, {
+      sourceMeta: record.sourceMeta || null,
+      tradableSymbols: options.tradableSymbols,
+      isTradableSymbol: options.isTradableSymbol,
+      requireTradableMatch: options.requireTradableMatch,
+    });
+    for (const mention of extracted.mentions || []) {
+      const symbol = String(mention.symbol || '').toUpperCase();
+      if (symbol) symbols.push(symbol);
+    }
+  }
+  return symbols;
+}
+
+function ingestRedditRecords({ records = [], phaseASymbols, recordsOut = [], options = {} } = {}) {
+  for (const record of Array.isArray(records) ? records : []) {
+    recordsOut.push(record);
+    const extracted = extractMentionsFromRecord(record, {
+      sourceMeta: record.sourceMeta || null,
+      tradableSymbols: options.tradableSymbols,
+      isTradableSymbol: options.isTradableSymbol,
+      requireTradableMatch: options.requireTradableMatch,
+    });
+    for (const mention of extracted.mentions || []) {
+      const symbol = String(mention.symbol || '').toUpperCase();
+      if (!symbol) continue;
+      const entry = phaseASymbols.get(symbol) || createPhaseASymbolEntry(symbol);
+      entry.sourceConfirmations.reddit = true;
+      entry.socialHeatScore += Math.max(1, Number(mention.sourceWeight) || 1);
+      entry.socialMentions += 1;
+      entry.sourceDetails.reddit.push({
+        source: mention.source || 'reddit',
+        tier: mention.sourceTier || null,
+        status: mention.sourceStatus || null,
+      });
+      if (mention.sourceTier) {
+        entry.reasonCodes.add(`reddit_${mention.sourceTier}_signal`);
+      }
+      phaseASymbols.set(symbol, entry);
+    }
+  }
 }
 
 function normalizeSourceStatus(entry = {}) {
