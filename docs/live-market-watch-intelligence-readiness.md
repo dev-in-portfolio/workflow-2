@@ -33,6 +33,7 @@ Ready for dashboard/shadow inspection with safe defaults and operator controls. 
 - `npm test`: passed
 - `npm run ci`: passed
 - Dedicated hot-slot rotation coverage is present in `test/hot-slot-rotation.test.js` and wired into both test scripts.
+- The Hot Slot Rotation blocker matrix was expanded with direct candidate, eviction, and plan checks.
 - New dashboard source-health and meme-action coverage verifies the corrected status handling.
 
 ## Remaining Operator Validation
@@ -45,4 +46,3 @@ Ready for dashboard/shadow inspection with safe defaults and operator controls. 
 ## Deferred Item
 
 - `EXECUTION_ADAPTER_ENABLED` aliasing was deferred in this pass to avoid changing execution-adapter semantics while the legacy `PAPER_ADAPTER_ENABLED` gate remains in place.
-

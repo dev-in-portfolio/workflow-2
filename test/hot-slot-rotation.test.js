@@ -744,6 +744,401 @@ test('hot slot rotation blocks hot hot entries when tradability or halt status i
   assert.equal(haltedSafety, null);
 });
 
+test('hot slot rotation rejects hot hot candidates that fail the blocker matrix', () => {
+  const config = resolveHotSlotRotationConfig({
+    MEME_HOT_SLOT_ROTATION_ENABLED: 'true',
+    MEME_HOT_SLOT_ROTATION_MIN_HEAT_SCORE: '90',
+    MEME_HOT_SLOT_ROTATION_MIN_MARKET_SCORE: '75',
+  });
+
+  const cases = [
+    {
+      name: 'no hot hot candidate exists',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [],
+    },
+    {
+      name: 'candidate status is not hot_hot',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'shadow',
+        memeHeatScore: 96,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: true, halted: false },
+      }],
+    },
+    {
+      name: 'candidate is expired',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        expired: true,
+        memeHeatScore: 96,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: true, halted: false },
+      }],
+    },
+    {
+      name: 'meme heat score is below threshold',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        memeHeatScore: 89,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: true, halted: false },
+      }],
+    },
+    {
+      name: 'market confirmation score is below threshold',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        memeHeatScore: 96,
+        marketConfirmationScore: 74,
+        marketConfirmationDetails: { tradable: true, halted: false },
+      }],
+    },
+    {
+      name: 'tradability is unknown',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        memeHeatScore: 96,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: null, halted: null },
+        phaseA: { tradableStatus: 'unknown', haltStatus: 'unknown', sourceConfirmations: {} },
+      }],
+    },
+    {
+      name: 'tradability is blocked',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        memeHeatScore: 96,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: false, halted: false },
+      }],
+    },
+    {
+      name: 'candidate is halted',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        memeHeatScore: 96,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: true, halted: true },
+        phaseA: { tradableStatus: 'tradable', haltStatus: 'halted', sourceConfirmations: { alpacaAssets: true, nasdaqHalts: false } },
+      }],
+    },
+    {
+      name: 'candidate is excluded',
+      buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        memeHeatScore: 96,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: true, halted: false, excluded: true },
+      }],
+    },
+    {
+      name: 'no matching buy candidate exists',
+      buyCandidates: [{ symbol: 'MARA', priorityOverrideSortScore: 100 }],
+      hotHotEntries: [{
+        symbol: 'SOUN',
+        status: 'hot_hot',
+        memeHeatScore: 96,
+        marketConfirmationScore: 82,
+        marketConfirmationDetails: { tradable: true, halted: false },
+      }],
+    },
+  ];
+
+  for (const testCase of cases) {
+    const selection = selectHotHotRotationCandidate({
+      buyCandidates: testCase.buyCandidates,
+      hotHotEntries: testCase.hotHotEntries,
+      config,
+    });
+
+    assert.equal(selection, null, testCase.name);
+  }
+});
+
+test('hot slot rotation selects a deterministic eviction candidate and blocks unsafe positions', () => {
+  const baseConfig = resolveHotSlotRotationConfig({
+    MEME_HOT_SLOT_ROTATION_ENABLED: 'true',
+    MEME_ROTATION_REQUIRE_BREAKEVEN_OR_BETTER: 'true',
+    MEME_ROTATION_ALLOW_TINY_LOSS: 'false',
+    MEME_ROTATION_PROTECT_STRONG_RUNNERS: 'true',
+  });
+  const permissiveConfig = resolveHotSlotRotationConfig({
+    MEME_HOT_SLOT_ROTATION_ENABLED: 'true',
+    MEME_ROTATION_REQUIRE_BREAKEVEN_OR_BETTER: 'true',
+    MEME_ROTATION_ALLOW_TINY_LOSS: 'true',
+    MEME_ROTATION_MAX_ALLOWED_LOSS_DOLLARS: '1',
+    MEME_ROTATION_PROTECT_STRONG_RUNNERS: 'true',
+  });
+  const hotHotCandidate = { heatScore: 94, marketScore: 82, candidate: { symbol: 'SOUN' } };
+
+  const blockedCases = [
+    {
+      name: 'missing symbol',
+      position: {},
+      snapshots: {},
+      config: baseConfig,
+      blockReason: 'rotation_blocked_no_eligible_position',
+    },
+    {
+      name: 'zero quantity',
+      position: { symbol: 'MARA', qty: 0, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } } },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_no_eligible_position',
+    },
+    {
+      name: 'missing entry price',
+      position: { symbol: 'MARA', qty: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } } },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_no_eligible_position',
+    },
+    {
+      name: 'missing current price',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: {} },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_no_eligible_position',
+    },
+    {
+      name: 'losing position blocked by default',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 9.7, bp: 9.68, ap: 9.72 }, prevDailyBar: { c: 9.8, v: 100000 } } },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_eviction_not_breakeven',
+    },
+    {
+      name: 'gross breakeven but net negative after spread and slippage',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10, bp: 9.7, ap: 10.3 }, prevDailyBar: { c: 10, v: 100000 } } },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_eviction_not_breakeven',
+    },
+    {
+      name: 'strong runner blocked',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.5, bp: 10.48, ap: 10.52 }, prevDailyBar: { c: 10, v: 100000 } } },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_strong_runner',
+    },
+    {
+      name: 'accelerating position blocked',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.3, bp: 10.28, ap: 10.32 }, prevDailyBar: { c: 10, v: 100000 }, minuteBar: { v: 220000 } } },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_strong_runner',
+    },
+    {
+      name: 'open sell order conflict',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } } },
+      openOrders: [{ symbol: 'MARA', side: 'sell', status: 'new', type: 'limit' }],
+      config: baseConfig,
+      blockReason: 'rotation_blocked_open_order_conflict',
+    },
+    {
+      name: 'open buy order conflict',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } } },
+      openOrders: [{ symbol: 'MARA', side: 'buy', status: 'new', type: 'limit' }],
+      config: baseConfig,
+      blockReason: 'rotation_blocked_open_order_conflict',
+    },
+    {
+      name: 'partial-fill conflict',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } } },
+      partialFillSummary: { partial_sells: [{ symbol: 'MARA', remaining_qty: 1, side: 'sell' }] },
+      config: baseConfig,
+      blockReason: 'rotation_blocked_partial_fill_state',
+    },
+    {
+      name: 'protective order conflict',
+      position: { symbol: 'MARA', qty: 10, avg_entry_price: 10 },
+      snapshots: { MARA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } } },
+      openOrders: [{ symbol: 'MARA', side: 'sell', status: 'new', type: 'trailing_stop' }],
+      config: baseConfig,
+      blockReason: 'rotation_blocked_open_order_conflict',
+    },
+  ];
+
+  for (const testCase of blockedCases) {
+    const evaluation = evaluateRotationPositionCandidate(testCase.position, {
+      snapshots: testCase.snapshots,
+      openOrders: testCase.openOrders,
+      partialFillSummary: testCase.partialFillSummary,
+      trailingState: testCase.trailingState,
+      hotHotCandidate,
+      config: testCase.config,
+    });
+
+    assert.equal(evaluation.eligible, false, testCase.name);
+    assert.equal(evaluation.blockReason, testCase.blockReason, testCase.name);
+    assert(Array.isArray(evaluation.reasonCodes) && evaluation.reasonCodes.length > 0, testCase.name);
+  }
+
+  const flatBreakevenRemainsBlocked = evaluateRotationPositionCandidate({
+    symbol: 'MARA',
+    qty: 10,
+    avg_entry_price: 10,
+  }, {
+    snapshots: {
+      MARA: { latestQuote: { p: 10, bp: 10, ap: 10.01 }, prevDailyBar: { c: 10, v: 100000 } },
+    },
+    hotHotCandidate,
+    config: permissiveConfig,
+  });
+  assert.equal(flatBreakevenRemainsBlocked.eligible, false);
+  assert.equal(flatBreakevenRemainsBlocked.blockReason, 'rotation_blocked_eviction_spread_slippage');
+
+  const allowedWeakFlat = evaluateRotationPositionCandidate({
+    symbol: 'MARA',
+    qty: 10,
+    avg_entry_price: 10,
+  }, {
+    snapshots: {
+      MARA: { latestQuote: { p: 10.08, bp: 10.07, ap: 10.09 }, prevDailyBar: { c: 10, v: 100000 } },
+    },
+    hotHotCandidate,
+    config: baseConfig,
+  });
+  assert.equal(allowedWeakFlat.eligible, true);
+  assert.equal(allowedWeakFlat.reasonCodes.includes('rotation_eviction_candidate_selected'), true);
+  assert.equal(Number.isFinite(allowedWeakFlat.netPnl), true);
+
+  const tieBreak = selectRotationEvictionCandidate({
+    positions: [
+      { symbol: 'BBB', qty: 10, avg_entry_price: 10 },
+      { symbol: 'AAA', qty: 10, avg_entry_price: 10 },
+    ],
+    snapshots: {
+      AAA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } },
+      BBB: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } },
+    },
+    hotHotCandidate,
+    config: baseConfig,
+  });
+  const tieBreakRepeat = selectRotationEvictionCandidate({
+    positions: [
+      { symbol: 'BBB', qty: 10, avg_entry_price: 10 },
+      { symbol: 'AAA', qty: 10, avg_entry_price: 10 },
+    ],
+    snapshots: {
+      AAA: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } },
+      BBB: { latestQuote: { p: 10.1, bp: 10.09, ap: 10.11 }, prevDailyBar: { c: 10, v: 100000 } },
+    },
+    hotHotCandidate,
+    config: baseConfig,
+  });
+  assert.equal(tieBreak.candidate.symbol, 'AAA');
+  assert.equal(tieBreakRepeat.candidate.symbol, 'AAA');
+});
+
+test('hot slot rotation plan covers feature, dependency, broker, account, and empty-eviction blockers', () => {
+  const hotHotEntries = [{
+    symbol: 'SOUN',
+    status: 'hot_hot',
+    memeHeatScore: 94,
+    marketConfirmationScore: 82,
+    marketConfirmationDetails: { tradable: true, halted: false },
+    phaseA: { tradableStatus: 'tradable', haltStatus: 'not_halted', sourceConfirmations: { alpacaAssets: true, nasdaqHalts: true } },
+    sourceConfirmations: { alpacaAssets: true, nasdaqHalts: true },
+  }];
+
+  const disabled = evaluateHotSlotRotationPlan({
+    config: resolveHotSlotRotationConfig({ MEME_HOT_SLOT_ROTATION_ENABLED: 'false' }),
+  });
+  assert.equal(disabled.rotationEligible, false);
+  assert.equal(disabled.status, 'off');
+  assert.equal(disabled.lastDecision, 'rotation_blocked_feature_disabled');
+
+  const dependencyBlocked = evaluateHotSlotRotationPlan({
+    featureState: { status: 'blocked', blocked_reason: 'MEME_PRIORITY_OVERRIDE_ENABLED is off' },
+    config: resolveHotSlotRotationConfig({ MEME_HOT_SLOT_ROTATION_ENABLED: 'true' }),
+  });
+  assert.equal(dependencyBlocked.rotationEligible, false);
+  assert.equal(dependencyBlocked.status, 'blocked');
+  assert.equal(dependencyBlocked.blockReason, 'MEME_PRIORITY_OVERRIDE_ENABLED is off');
+
+  const brokerUnavailable = evaluateHotSlotRotationPlan({
+    config: resolveHotSlotRotationConfig({ MEME_HOT_SLOT_ROTATION_ENABLED: 'true' }),
+    brokerState: { available: false, account_available: false, positions_available: true, open_orders_available: true },
+  });
+  assert.equal(brokerUnavailable.rotationEligible, false);
+  assert.equal(brokerUnavailable.status, 'error');
+  assert.equal(brokerUnavailable.lastDecision, 'rotation_blocked_broker_reconciliation_failed');
+
+  const accountNotFull = evaluateHotSlotRotationPlan({
+    config: resolveHotSlotRotationConfig({ MEME_HOT_SLOT_ROTATION_ENABLED: 'true' }),
+    portfolio: { remaining_position_slots: 1 },
+    buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+    hotHotEntries,
+  });
+  assert.equal(accountNotFull.rotationEligible, false);
+  assert.equal(accountNotFull.status, 'active');
+  assert.equal(accountNotFull.lastDecision, 'rotation_blocked_account_not_full');
+  assert.equal(accountNotFull.selectedCandidate?.symbol, 'SOUN');
+
+  const accountFullNoCandidate = evaluateHotSlotRotationPlan({
+    config: resolveHotSlotRotationConfig({ MEME_HOT_SLOT_ROTATION_ENABLED: 'true' }),
+    portfolio: { remaining_position_slots: 0 },
+    buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+    hotHotEntries: [{
+      symbol: 'SOUN',
+      status: 'shadow',
+      memeHeatScore: 94,
+      marketConfirmationScore: 82,
+      marketConfirmationDetails: { tradable: true, halted: false },
+    }],
+  });
+  assert.equal(accountFullNoCandidate.rotationEligible, false);
+  assert.equal(accountFullNoCandidate.lastDecision, 'rotation_blocked_no_eligible_position');
+  assert.equal(accountFullNoCandidate.selectedCandidate, null);
+
+  const accountFullNoEviction = evaluateHotSlotRotationPlan({
+    config: resolveHotSlotRotationConfig({ MEME_HOT_SLOT_ROTATION_ENABLED: 'true' }),
+    portfolio: { remaining_position_slots: 0 },
+    buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+    hotHotEntries,
+    positions: [{ symbol: 'MARA', qty: 0, avg_entry_price: 10 }],
+    snapshots: { MARA: { latestQuote: { p: 9.8, bp: 9.79, ap: 9.81 }, prevDailyBar: { c: 9.9, v: 100000 } } },
+  });
+  assert.equal(accountFullNoEviction.rotationEligible, false);
+  assert.equal(accountFullNoEviction.lastDecision, 'rotation_blocked_no_eligible_position');
+  assert.equal(accountFullNoEviction.selectedCandidate?.symbol, 'SOUN');
+  assert.equal(accountFullNoEviction.selectedEviction, null);
+
+  const recheckDisabled = evaluateHotSlotRotationPlan({
+    config: resolveHotSlotRotationConfig({
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'true',
+      MEME_ROTATION_RECHECK_AFTER_EXIT: 'false',
+    }),
+    portfolio: { remaining_position_slots: 0 },
+    buyCandidates: [{ symbol: 'SOUN', priorityOverrideSortScore: 100 }],
+    hotHotEntries,
+  });
+  assert.equal(recheckDisabled.rotationEligible, false);
+  assert.equal(recheckDisabled.status, 'blocked');
+  assert.equal(recheckDisabled.blockReason, 'rotation_blocked_recheck_after_exit_disabled');
+});
+
 function buildResponse(payload) {
   return {
     ok: true,

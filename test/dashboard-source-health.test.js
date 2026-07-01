@@ -67,6 +67,42 @@ test('dashboard source health includes runtime reddit and regular watch sources'
           symbolsDetected: 0,
           blockedReason: 'source_disabled',
         },
+        {
+          source: 'wallstreetbetselite',
+          tier: 'tier_1',
+          status: 'missing_credentials',
+          lastScanAt: null,
+          lastError: 'missing_credentials',
+          symbolsDetected: 0,
+          blockedReason: 'missing_credentials',
+        },
+        {
+          source: 'wallstreetbetsnew',
+          tier: 'tier_1',
+          status: 'source_not_found_or_inaccessible',
+          lastScanAt: null,
+          lastError: 'source_not_found_or_inaccessible',
+          symbolsDetected: 0,
+          blockedReason: 'source_not_found_or_inaccessible',
+        },
+        {
+          source: 'amcstock',
+          tier: 'ticker_specific',
+          status: 'quarantined_or_restricted',
+          lastScanAt: null,
+          lastError: 'quarantined_or_restricted',
+          symbolsDetected: 0,
+          blockedReason: 'quarantined_or_restricted',
+        },
+        {
+          source: 'daytrading',
+          tier: 'tier_2',
+          status: 'error',
+          lastScanAt: null,
+          lastError: 'unexpected_error',
+          symbolsDetected: 0,
+          blockedReason: 'unexpected_error',
+        },
       ],
       symbolsDetected: 4,
       rejectedTokens: 0,
@@ -201,6 +237,10 @@ test('dashboard source health includes runtime reddit and regular watch sources'
     const regular = sourceHealth.find((entry) => entry.source === 'stocks');
     const reusedRecords = sourceHealth.find((entry) => entry.source === 'wallstreetbetsnew');
     const sourceDisabled = sourceHealth.find((entry) => entry.source === 'shortsqueeze');
+    const missingCredentials = sourceHealth.find((entry) => entry.source === 'wallstreetbetselite');
+    const inaccessible = sourceHealth.find((entry) => entry.source === 'wallstreetbetsnew' && entry.status === 'source_not_found_or_inaccessible');
+    const quarantined = sourceHealth.find((entry) => entry.source === 'amcstock');
+    const errored = sourceHealth.find((entry) => entry.source === 'daytrading');
 
     assert.equal(reddit.status, 'active');
     assert.equal(reddit.group, 'meme_monitor');
@@ -210,6 +250,14 @@ test('dashboard source health includes runtime reddit and regular watch sources'
     assert.equal(reusedRecords.ok, true);
     assert.equal(sourceDisabled.status, 'source_disabled');
     assert.equal(sourceDisabled.ok, true);
+    assert.equal(missingCredentials.status, 'missing_credentials');
+    assert.equal(missingCredentials.ok, false);
+    assert.equal(inaccessible.status, 'source_not_found_or_inaccessible');
+    assert.equal(inaccessible.ok, false);
+    assert.equal(quarantined.status, 'quarantined_or_restricted');
+    assert.equal(quarantined.ok, false);
+    assert.equal(errored.status, 'error');
+    assert.equal(errored.ok, false);
     assert.equal(phaseB.status, 'rate_limited');
     assert.equal(phaseB.ok, false);
     assert.equal(regular.status, 'active');

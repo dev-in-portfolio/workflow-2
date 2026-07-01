@@ -94,3 +94,103 @@ test('dashboard meme actions treat active and shadow as successful monitor state
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('dashboard meme actions reject off and missing credentials states and surface failures safely', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-meme-actions-negative-'));
+  const dataDir = path.join(tempRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+
+  const memeMonitor = {
+    start: async () => ({ redditScanner: { status: 'off' } }),
+    refresh: async () => ({ redditScanner: { status: 'missing_credentials' } }),
+    stop: async () => ({ redditScanner: { status: 'off' } }),
+    clearError: async () => ({ ok: true }),
+  };
+
+  const server = createDashboardServer({
+    port: 0,
+    dashboardDir: path.resolve(process.cwd(), 'dashboard'),
+    dataDir,
+    memeMonitor,
+    env: {
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
+    },
+    fetchImpl: global.fetch,
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const startResult = await fetch(`http://127.0.0.1:${port}/api/meme/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start-shadow-scan' }),
+    }).then((response) => response.json());
+    assert.equal(startResult.ok, false);
+    assert.equal(startResult.status, 'blocked');
+
+    const refreshResult = await fetch(`http://127.0.0.1:${port}/api/meme/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'refresh-hot-list-now' }),
+    }).then((response) => response.json());
+    assert.equal(refreshResult.ok, false);
+    assert.equal(refreshResult.status, 'blocked');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('dashboard meme actions surface thrown errors without pretending success', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-meme-actions-error-'));
+  const dataDir = path.join(tempRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+
+  const memeMonitor = {
+    start: async () => { throw new Error('meme start failed'); },
+    refresh: async () => { throw new Error('meme refresh failed'); },
+    stop: async () => ({ redditScanner: { status: 'off' } }),
+    clearError: async () => ({ ok: true }),
+  };
+
+  const server = createDashboardServer({
+    port: 0,
+    dashboardDir: path.resolve(process.cwd(), 'dashboard'),
+    dataDir,
+    memeMonitor,
+    env: {
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
+    },
+    fetchImpl: global.fetch,
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/meme/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start-shadow-scan' }),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 500);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.status, 'error');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
