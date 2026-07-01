@@ -25,11 +25,11 @@ test('dashboard source health includes runtime reddit and regular watch sources'
     version: '2026-06-30.meme-monitor-status.1',
     updated_at: '2026-06-30T14:05:00.000Z',
     enabled: true,
-    redditScanner: {
-      enabled: true,
-      status: 'shadow',
-      lastRunAt: '2026-06-30T14:05:00.000Z',
-      lastError: null,
+      redditScanner: {
+        enabled: true,
+        status: 'shadow',
+        lastRunAt: '2026-06-30T14:05:00.000Z',
+        lastError: null,
       sources: [
         {
           source: 'wallstreetbets2',
@@ -44,6 +44,24 @@ test('dashboard source health includes runtime reddit and regular watch sources'
           source: 'CryptoCurrency',
           tier: 'optional_high_noise',
           status: 'off',
+          lastScanAt: null,
+          lastError: null,
+          symbolsDetected: 0,
+          blockedReason: 'source_disabled',
+        },
+        {
+          source: 'wallstreetbetsnew',
+          tier: 'tier_1',
+          status: 'reused_records',
+          lastScanAt: '2026-06-30T14:05:00.000Z',
+          lastError: null,
+          symbolsDetected: 2,
+          blockedReason: null,
+        },
+        {
+          source: 'shortsqueeze',
+          tier: 'tier_1',
+          status: 'source_disabled',
           lastScanAt: null,
           lastError: null,
           symbolsDetected: 0,
@@ -181,11 +199,17 @@ test('dashboard source health includes runtime reddit and regular watch sources'
     const disabledOptional = sourceHealth.find((entry) => entry.source === 'CryptoCurrency');
     const phaseB = sourceHealth.find((entry) => entry.source === 'stocktwits');
     const regular = sourceHealth.find((entry) => entry.source === 'stocks');
+    const reusedRecords = sourceHealth.find((entry) => entry.source === 'wallstreetbetsnew');
+    const sourceDisabled = sourceHealth.find((entry) => entry.source === 'shortsqueeze');
 
     assert.equal(reddit.status, 'active');
     assert.equal(reddit.group, 'meme_monitor');
     assert.equal(disabledOptional.status, 'off');
     assert.equal(disabledOptional.ok, true);
+    assert.equal(reusedRecords.status, 'reused_records');
+    assert.equal(reusedRecords.ok, true);
+    assert.equal(sourceDisabled.status, 'source_disabled');
+    assert.equal(sourceDisabled.ok, true);
     assert.equal(phaseB.status, 'rate_limited');
     assert.equal(phaseB.ok, false);
     assert.equal(regular.status, 'active');

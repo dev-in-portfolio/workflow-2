@@ -41,3 +41,56 @@ test('dashboard control exposes feature toggles without manual trade controls', 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('dashboard meme actions treat active and shadow as successful monitor states', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-meme-actions-'));
+  const dataDir = path.join(tempRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+
+  const memeMonitor = {
+    start: async () => ({ redditScanner: { status: 'active' } }),
+    refresh: async () => ({ redditScanner: { status: 'shadow' } }),
+    stop: async () => ({ redditScanner: { status: 'off' } }),
+    clearError: async () => ({ ok: true }),
+  };
+
+  const server = createDashboardServer({
+    port: 0,
+    dashboardDir: path.resolve(process.cwd(), 'dashboard'),
+    dataDir,
+    memeMonitor,
+    env: {
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
+    },
+    fetchImpl: global.fetch,
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const startResult = await fetch(`http://127.0.0.1:${port}/api/meme/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'start-shadow-scan' }),
+    }).then((response) => response.json());
+    assert.equal(startResult.ok, true);
+    assert.equal(startResult.status, 'ok');
+
+    const refreshResult = await fetch(`http://127.0.0.1:${port}/api/meme/action`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'refresh-hot-list-now' }),
+    }).then((response) => response.json());
+    assert.equal(refreshResult.ok, true);
+    assert.equal(refreshResult.status, 'ok');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

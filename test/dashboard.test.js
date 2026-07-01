@@ -827,6 +827,8 @@ test('dashboard snapshot includes watch data when watch fixtures exist', async (
     lastRunAt: '2026-06-19T15:01:00.000Z',
     lastError: null,
   }, null, 2));
+  const dynamicHotExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+  const hotHotExpiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
   fs.writeFileSync(path.join(dataDir, 'runtime', 'dynamic-hot-list.json'), JSON.stringify({
     generatedAt: '2026-06-19T15:02:00.000Z',
     lastScoredAt: '2026-06-19T15:02:00.000Z',
@@ -844,7 +846,7 @@ test('dashboard snapshot includes watch data when watch fixtures exist', async (
       lastDecision: 'dynamic_watch',
       reasonCodes: ['multi_source_confirmation', 'market_confirmation_unavailable'],
       riskWarnings: ['social_signal_only'],
-      expiresAt: '2026-07-01T15:32:00.000Z',
+      expiresAt: dynamicHotExpiresAt,
       mentions15m: 12,
       mentions30m: 18,
       mentions60m: 24,
@@ -892,7 +894,7 @@ test('dashboard snapshot includes watch data when watch fixtures exist', async (
       rotationEligible: false,
       reasonCodes: ['market_confirmation_passed'],
       riskWarnings: [],
-      expiresAt: '2026-07-01T15:32:00.000Z',
+      expiresAt: hotHotExpiresAt,
       lastDecision: 'hot_hot',
       sourceProfile: {
         sourceCount: 1,

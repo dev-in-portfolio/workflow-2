@@ -43,7 +43,7 @@ const DEFAULT_TRADER_PORTS = [3001, 3000, 3002, 3003, 3004, 3005, 3006, 3007, 30
 const DEFAULT_REFRESH_MAX_AGE_MS = 2_000;
 const DEFAULT_RECENT_ENTRY_LIMIT = 12;
 const DEFAULT_LOG_LINE_LIMIT = 20;
-const DASHBOARD_RUNTIME_VERSION = '2026-06-21.live-market-simplified.1';
+const DASHBOARD_RUNTIME_VERSION = '2026-07-01.live-market-watch-intelligence.1';
 const execFileAsync = (file, args, options = {}) => {
   if (process.platform === 'win32') {
     const tempDir = process.env.TEMP || 'C:\\Windows\\Temp';
@@ -1702,8 +1702,8 @@ function normalizeRuntimeSourceHealth(value, group, scope) {
     .map((entry) => {
       const status = String(entry.status || 'inactive').toLowerCase();
       const blockedReason = String(entry.blockedReason || entry.blocked_reason || '').toLowerCase();
-      const disabled = status === 'off' || status === 'disabled' || blockedReason === 'source_disabled';
-      const ok = disabled || status === 'active' || status === 'shadow';
+      const disabled = status === 'off' || status === 'disabled' || status === 'source_disabled' || blockedReason === 'source_disabled';
+      const ok = disabled || status === 'active' || status === 'shadow' || status === 'reused_records';
       return {
         source: entry.source || null,
         ok,
@@ -3209,7 +3209,7 @@ async function handleMemeAction(memeMonitor, body = {}, context = {}) {
 
   if (action === 'start-shadow-scan' || action === 'start' || action === 'shadow-start') {
     const result = await memeMonitor.start();
-    const started = result?.redditScanner?.status === 'shadow';
+    const started = isSuccessfulMemeRunStatus(result?.redditScanner?.status);
     return {
       ok: started,
       status: started ? 'ok' : 'blocked',
@@ -3232,7 +3232,7 @@ async function handleMemeAction(memeMonitor, body = {}, context = {}) {
 
   if (action === 'refresh-hot-scores-now' || action === 'refresh-hot-list-now' || action === 'refresh-hot-list' || action === 'refresh') {
     const result = await memeMonitor.refresh({ forceWrite: true });
-    const refreshed = result?.redditScanner?.status === 'shadow';
+    const refreshed = isSuccessfulMemeRunStatus(result?.redditScanner?.status);
     return {
       ok: refreshed,
       status: refreshed ? 'ok' : 'blocked',
@@ -3308,6 +3308,10 @@ async function handleMemeAction(memeMonitor, body = {}, context = {}) {
     error: 'unknown_action',
     message: `Unknown meme action: ${action}`,
   };
+}
+
+function isSuccessfulMemeRunStatus(status) {
+  return ['shadow', 'active'].includes(String(status || '').toLowerCase());
 }
 
 async function handleRegularWatchAction(body = {}, context = {}) {
