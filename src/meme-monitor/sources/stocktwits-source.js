@@ -1,6 +1,6 @@
 const path = require('path');
 const { nowIso } = require('../../util');
-const { buildSourceStatus, fetchJsonWithTimeout } = require('../../source-fetch');
+const { buildSourceStatus, fetchJsonWithTimeout, redactSourceMessage } = require('../../source-fetch');
 
 async function fetchStocktwitsSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKey = String(env?.STOCKTWITS_API_KEY || '').trim();
@@ -43,7 +43,7 @@ async function fetchStocktwitsSignals({ env = process.env, fetchImpl = globalThi
     };
   } catch (error) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: error?.name === 'AbortError' ? 'timeout' : 'error', symbolsDetected: 0, lastRunAt: null, lastError: error.message, blockedReason: error?.name === 'AbortError' ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: error?.name === 'AbortError' ? 'timeout' : 'error', symbolsDetected: 0, lastRunAt: null, lastError: redactSourceMessage(error.message), blockedReason: error?.name === 'AbortError' ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }

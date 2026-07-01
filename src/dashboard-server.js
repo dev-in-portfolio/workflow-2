@@ -35,6 +35,7 @@ const {
   saveRegularWatchStatus,
 } = require('./regular-watch/regular-watch-status');
 const { runRegularWatchSources } = require('./regular-watch/regular-watch-source-runner');
+const { redactSourceMessage } = require('./source-fetch');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -584,17 +585,20 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     liveMarketRules,
   });
   const sourceHealth = buildSourceHealth([
-    liveStatus,
-    dailyLiveResults,
-    riskPolicy,
-    performanceTuning,
-    overnightStatus,
-  ], {
-    overnightStatusFile: overnightStatusFileMeta,
-    performanceHistory,
-    policyHistory,
-    recentLogLines,
-  });
+      liveStatus,
+      dailyLiveResults,
+      riskPolicy,
+      performanceTuning,
+      overnightStatus,
+    ], {
+      overnightStatusFile: overnightStatusFileMeta,
+      performanceHistory,
+      policyHistory,
+      recentLogLines,
+    }, {
+      memeMonitorStatus,
+      regularWatchStatus,
+    });
 
   const alerts = buildAlerts({
     sourceHealth,
@@ -1644,7 +1648,7 @@ function summarizePolicyHistory(entries = []) {
     .reverse();
 }
 
-function buildSourceHealth(endpointResults, fileResults) {
+function buildSourceHealth(endpointResults, fileResults, runtimeResults = {}) {
   const sources = endpointResults.map((result) => ({
     source: result.source,
     ok: result.ok,
@@ -1652,6 +1656,10 @@ function buildSourceHealth(endpointResults, fileResults) {
     error: result.error || null,
     kind: 'endpoint',
   }));
+  sources.push(...normalizeRuntimeSourceHealth(runtimeResults.memeMonitorStatus?.redditScanner?.sources, 'meme_monitor', 'reddit_scanner'));
+  sources.push(...normalizeRuntimeSourceHealth(runtimeResults.memeMonitorStatus?.phaseA?.sources, 'meme_monitor', 'phase_a'));
+  sources.push(...normalizeRuntimeSourceHealth(runtimeResults.memeMonitorStatus?.phaseB?.sources, 'meme_monitor', 'phase_b'));
+  sources.push(...normalizeRuntimeSourceHealth(runtimeResults.regularWatchStatus?.sources, 'regular_watch', 'regular_watch'));
   sources.push({
     source: 'data/logs/overnight-status.json',
     ok: Boolean(fileResults.overnightStatusFile?.exists),
@@ -1681,6 +1689,38 @@ function buildSourceHealth(endpointResults, fileResults) {
     kind: 'file',
   });
   return sources;
+}
+
+function normalizeRuntimeSourceHealth(value, group, scope) {
+  const entries = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? Object.values(value)
+      : [];
+  return entries
+    .filter(Boolean)
+    .map((entry) => {
+      const status = String(entry.status || 'inactive').toLowerCase();
+      const blockedReason = String(entry.blockedReason || entry.blocked_reason || '').toLowerCase();
+      const disabled = status === 'off' || status === 'disabled' || blockedReason === 'source_disabled';
+      const ok = disabled || status === 'active' || status === 'shadow';
+      return {
+        source: entry.source || null,
+        ok,
+        status,
+        error: entry.lastError ? redactSourceMessage(entry.lastError) : null,
+        kind: 'source',
+        group,
+        scope,
+        tier: entry.tier || null,
+        blockedReason: entry.blockedReason || entry.blocked_reason || null,
+        lastScanAt: entry.lastScanAt || entry.last_scan_at || null,
+        lastRunAt: entry.lastRunAt || entry.last_run_at || null,
+        lastError: entry.lastError ? redactSourceMessage(entry.lastError) : null,
+        cache: entry.cache || null,
+        symbolsDetected: Number.isFinite(Number(entry.symbolsDetected ?? entry.symbols_detected)) ? Number(entry.symbolsDetected ?? entry.symbols_detected) : 0,
+      };
+    });
 }
 
 function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null, candidateLifecycleSummary = null, setupFatigueSummary = null, sessionGuards = null, memeMonitorState = null, memeMonitorStatus = null }) {

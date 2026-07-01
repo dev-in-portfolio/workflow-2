@@ -86,6 +86,8 @@ test('collector validates each subreddit and marks inaccessible sources inactive
       MEME_REDDIT_SOURCES_TICKER_SPECIFIC: ' ',
       MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE: ' ',
       MEME_REDDIT_LISTINGS: 'hot',
+      MEME_REDDIT_SOURCE_CACHE_SECONDS: '0',
+      MEME_REDDIT_VALIDATION_CACHE_SECONDS: '0',
     },
   });
 
@@ -94,7 +96,7 @@ test('collector validates each subreddit and marks inaccessible sources inactive
   assert.equal(calls.some((url) => String(url).includes('/api/v1/access_token')), true);
   assert.equal(result.sources.find((entry) => entry.source === 'activeSource')?.status, 'active');
   assert.equal(result.sources.find((entry) => entry.source === 'activeSource')?.symbolsDetected, 1);
-  assert.equal(result.sources.find((entry) => entry.source === 'inactiveSource')?.status, 'inactive');
+  assert.equal(result.sources.find((entry) => entry.source === 'inactiveSource')?.status, 'source_not_found_or_inaccessible');
   assert.equal(result.sources.find((entry) => entry.source === 'inactiveSource')?.blockedReason, 'source_not_found_or_inaccessible');
 });
 
@@ -162,6 +164,8 @@ test('collector honors configured listing modes, dedupes posts, and carries list
       MEME_REDDIT_SOURCES_TICKER_SPECIFIC: ' ',
       MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE: ' ',
       MEME_REDDIT_LISTINGS: 'rising,hot,new',
+      MEME_REDDIT_SOURCE_CACHE_SECONDS: '0',
+      MEME_REDDIT_VALIDATION_CACHE_SECONDS: '0',
     },
   });
 

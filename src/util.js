@@ -82,6 +82,8 @@ function roundEquityPrice(value) {
 }
 
 async function fetchWithTimeout(fetchImpl, url, { timeoutMs = 5000, headers = {}, ...init } = {}) {
+  // New external source adapters should prefer src/source-fetch.js so cache,
+  // status classification, and redaction stay consistent across the app.
   const controller = new AbortController();
   const resolvedTimeoutMs = Math.max(1000, Number(timeoutMs) || 5000);
   const timer = setTimeout(() => controller.abort(), resolvedTimeoutMs);

@@ -4,6 +4,7 @@ const { fetchStocktwitsSignals } = require('./sources/stocktwits-source');
 const { fetchPolygonMarketSignals } = require('./sources/polygon-market-source');
 const { fetchAlphaVantageSignals } = require('./sources/alpha-vantage-source');
 const { buildCrossSourceConfirmation } = require('./cross-source-confirmation');
+const { buildSourceStatus } = require('../source-fetch');
 
 function resolvePhaseBSourceRuntime(env = process.env, runtimeState = null) {
   const featureState = runtimeState || loadMemeMonitorState({ env, filePath: resolveMemeMonitorStatePath({ env }) });
@@ -106,16 +107,16 @@ async function runPhaseBSources(options = {}) {
 
 function inactiveSource(source) {
   return {
-    sourceStatus: {
+    sourceStatus: buildSourceStatus({
       source,
       enabled: false,
       available: false,
-      status: 'inactive',
+      status: 'off',
       lastRunAt: null,
       lastScanAt: null,
       lastError: null,
       blockedReason: 'source_disabled',
-    },
+    }),
     symbols: [],
   };
 }

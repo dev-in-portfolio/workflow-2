@@ -26,6 +26,8 @@ This repository is a simplified Live Market trading control plane with a direct-
 - The dashboard Actions tab shows each feature's category, config allowment, runtime toggle, effective state, and any block reason so you can see why something is on or off.
 - Meme Monitor Reddit sources are tiered through `MEME_REDDIT_SOURCES_TIER_1`, `MEME_REDDIT_SOURCES_TIER_2`, `MEME_REDDIT_SOURCES_TIER_3`, `MEME_REDDIT_SOURCES_TICKER_SPECIFIC`, and `MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE`.
 - Optional high-noise sources stay off by default unless you explicitly enable them.
+- Reddit collection is safe to leave partially configured: missing credentials, private or banned communities, quarantines, inaccessible subreddits, and rate limits are marked inactive instead of crashing the scanner.
+- Reddit source validation and listing calls use the shared source-fetch path with cache support so repeated scans do less work, and the dashboard source-health view shows active, inactive, and error states without exposing secrets.
 - Auto Action remains locked until a safe implementation path exists.
 
 ## Architecture
@@ -132,6 +134,7 @@ The dashboard is read-only and starts on `http://127.0.0.1:1111` when free, or t
 It also opens your browser automatically when launched from `npm run dashboard`, unless you disable that with `DASHBOARD_OPEN_BROWSER=false`.
 For a one-double-click launch on Windows, use [`start-dashboard.cmd`](/C:/Users/dtoro/OneDrive/Documents/Workflow2/start-dashboard.cmd).
 If you want to pin a different local dashboard port, set `TRADER_DASHBOARD_PORT` in your environment. The dashboard still defaults to `1111`.
+The Watch tab now shows which source groups contributed to each symbol, and the source-health summary keeps meme-monitor and regular-watch source states visible in one place.
 
 For the dedicated standalone entrypoint, use:
 

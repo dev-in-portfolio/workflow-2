@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolveRepoRoot, nowIso } = require('../util');
+const { defaultCacheMeta, normalizeCacheMeta } = require('../source-fetch');
 
 function resolveMemeMonitorStatusPath(input = {}) {
   if (typeof input === 'string') return path.resolve(input);
@@ -141,12 +142,16 @@ function saveMemeMonitorStatus(status, input = {}) {
 
 function normalizeSourceStatuses(value = []) {
   return (Array.isArray(value) ? value : []).map((entry) => ({
+    ...entry,
     source: entry?.source || null,
-    tier: entry?.tier || null,
+    enabled: Boolean(entry?.enabled),
+    available: Boolean(entry?.available),
     status: String(entry?.status || 'inactive').toLowerCase(),
-    blockedReason: entry?.blockedReason || entry?.blocked_reason || null,
-    lastScanAt: entry?.lastScanAt || entry?.last_scan_at || null,
+    lastRunAt: entry?.lastRunAt || entry?.last_run_at || null,
+    lastScanAt: entry?.lastScanAt || entry?.last_scan_at || entry?.lastRunAt || entry?.last_run_at || null,
     lastError: entry?.lastError || entry?.last_error || null,
+    blockedReason: entry?.blockedReason || entry?.blocked_reason || null,
+    cache: normalizeCacheMeta(entry?.cache || defaultCacheMeta()),
     symbolsDetected: Number.isFinite(Number(entry?.symbolsDetected ?? entry?.symbols_detected))
       ? Number(entry?.symbolsDetected ?? entry?.symbols_detected)
       : 0,

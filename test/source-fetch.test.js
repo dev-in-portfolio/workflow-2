@@ -5,7 +5,9 @@ const path = require('path');
 const test = require('node:test');
 const {
   buildSourceStatus,
+  classifyHttpSourceStatus,
   fetchJsonWithTimeout,
+  redactSourceMessage,
   redactSourceUrl,
   readSourceCache,
   writeSourceCache,
@@ -17,6 +19,13 @@ test('source url redaction hides keys and tokens', () => {
   const redacted = redactSourceUrl('https://example.com/query?apiKey=abc123&token=secret&symbol=SPCX');
   assert.equal(redacted.includes('abc123'), false);
   assert.equal(redacted.includes('secret'), false);
+  assert.equal(redacted.includes('REDACTED'), true);
+});
+
+test('source message redaction hides embedded credentials', () => {
+  const redacted = redactSourceMessage('request failed with token=secret and Authorization: Bearer abc123');
+  assert.equal(redacted.includes('secret'), false);
+  assert.equal(redacted.includes('abc123'), false);
   assert.equal(redacted.includes('REDACTED'), true);
 });
 
@@ -90,6 +99,18 @@ test('source status builder preserves cache metadata', () => {
   assert.equal(status.cache.used, true);
   assert.equal(status.cache.hit, true);
   assert.equal(status.cache.ageSeconds, 3);
+});
+
+test('source status classifier maps auth and access failures', () => {
+  const missing = classifyHttpSourceStatus(401, { error: 'bad token' });
+  const banned = classifyHttpSourceStatus(403, { message: 'restricted' });
+  const notFound = classifyHttpSourceStatus(404, { message: 'missing' });
+  const rateLimited = classifyHttpSourceStatus(429, { error: 'slow down' });
+
+  assert.equal(missing.status, 'missing_credentials');
+  assert.equal(banned.status, 'quarantined_or_restricted');
+  assert.equal(notFound.status, 'source_not_found_or_inaccessible');
+  assert.equal(rateLimited.status, 'rate_limited');
 });
 
 test('stocktwits and polygon sources degrade safely on missing credentials and rate limits', async () => {

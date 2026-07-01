@@ -15,6 +15,12 @@ const REDACT_QUERY_KEYS = new Set([
   'key',
 ]);
 
+const REDACT_TEXT_PATTERNS = [
+  /(authorization\s*:\s*)(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi,
+  /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi,
+  /\b((?:apikey|api_key|access_token|client_secret|password|token|secret))=([^&\s]+)/gi,
+];
+
 function redactSourceUrl(value) {
   if (!value) return '';
   try {
@@ -28,6 +34,26 @@ function redactSourceUrl(value) {
   } catch {
     return String(value).replace(/([?&](?:apikey|api_key|access_token|token|secret|client_secret|password|key)=)[^&]*/gi, '$1REDACTED');
   }
+}
+
+function redactSourceMessage(value) {
+  if (value === undefined || value === null) return '';
+  const text = typeof value === 'string'
+    ? value
+    : typeof value === 'object'
+      ? extractMessage(value) || JSON.stringify(value)
+      : String(value);
+  let redacted = redactSourceUrl(text);
+  for (const pattern of REDACT_TEXT_PATTERNS) {
+    if (pattern.source.includes('authorization')) {
+      redacted = redacted.replace(pattern, '$1$2 REDACTED');
+    } else if (pattern.source.includes('bearer') || pattern.source.includes('basic')) {
+      redacted = redacted.replace(pattern, '$1 REDACTED');
+    } else {
+      redacted = redacted.replace(pattern, '$1=REDACTED');
+    }
+  }
+  return redacted;
 }
 
 async function fetchJsonWithTimeout(fetchImpl, url, options = {}) {
@@ -50,7 +76,7 @@ async function fetchJsonWithTimeout(fetchImpl, url, options = {}) {
     };
   }
   const response = await fetchWithTimeout(fetchImpl, url, options);
-  const text = await response.text();
+  const text = await readResponseText(response);
   let body = null;
   try {
     body = text ? JSON.parse(text) : {};
@@ -90,7 +116,7 @@ async function fetchTextWithTimeout(fetchImpl, url, options = {}) {
     };
   }
   const response = await fetchWithTimeout(fetchImpl, url, options);
-  const text = await response.text();
+  const text = await readResponseText(response);
   if (options.cache && response.ok) {
     writeSourceCache(options.cache, text);
   }
@@ -124,12 +150,17 @@ async function fetchWithTimeout(fetchImpl, url, { timeoutMs = 5000, headers = {}
 
 function classifyHttpSourceStatus(statusCode, payload = null, fallback = 'source_not_found_or_inaccessible') {
   const code = Number(statusCode);
-  if (code === 401) return { status: 'missing_credentials', blockedReason: 'missing_credentials', lastError: extractMessage(payload) || 'Credentials rejected', available: false };
-  if (code === 403) return { status: 'inactive', blockedReason: 'source_private_or_banned', lastError: extractMessage(payload) || 'Source inaccessible', available: false };
-  if (code === 404) return { status: 'inactive', blockedReason: 'source_not_found_or_inaccessible', lastError: extractMessage(payload) || 'Source not found', available: false };
-  if (code === 429) return { status: 'rate_limited', blockedReason: 'rate_limited', lastError: extractMessage(payload) || 'Rate limited', available: false };
-  if (code >= 500) return { status: 'error', blockedReason: fallback, lastError: extractMessage(payload) || `HTTP ${code}`, available: false };
-  return { status: 'inactive', blockedReason: fallback, lastError: extractMessage(payload) || `HTTP ${code}`, available: false };
+  const message = redactSourceMessage(payload) || `HTTP ${code}`;
+  if (code === 401) return { status: 'missing_credentials', blockedReason: 'missing_credentials', lastError: message || 'Credentials rejected', available: false };
+  if (code === 403) {
+    const text = String(message || '').toLowerCase();
+    const blockedReason = /quarant|restrict/.test(text) ? 'quarantined_or_restricted' : 'source_private_or_banned';
+    return { status: blockedReason, blockedReason, lastError: message || 'Source inaccessible', available: false };
+  }
+  if (code === 404) return { status: 'source_not_found_or_inaccessible', blockedReason: 'source_not_found_or_inaccessible', lastError: message || 'Source not found', available: false };
+  if (code === 429) return { status: 'rate_limited', blockedReason: 'rate_limited', lastError: message || 'Rate limited', available: false };
+  if (code >= 500) return { status: 'error', blockedReason: fallback, lastError: message || `HTTP ${code}`, available: false };
+  return { status: 'source_not_found_or_inaccessible', blockedReason: fallback, lastError: message || `HTTP ${code}`, available: false };
 }
 
 function buildSourceStatus(input = {}) {
@@ -281,6 +312,21 @@ function extractMessage(payload = null) {
   return payload.message || payload.error || payload.detail || payload.raw || null;
 }
 
+async function readResponseText(response) {
+  if (response && typeof response.text === 'function') {
+    return response.text();
+  }
+  if (response && typeof response.json === 'function') {
+    try {
+      const payload = await response.json();
+      return typeof payload === 'string' ? payload : JSON.stringify(payload ?? {});
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 module.exports = {
   buildSourceStatus,
   classifyHttpSourceStatus,
@@ -290,6 +336,7 @@ module.exports = {
   fetchWithTimeout,
   normalizeCacheMeta,
   readSourceCache,
+  redactSourceMessage,
   redactSourceUrl,
   resolveSourceCachePath,
   resolveCacheResult,

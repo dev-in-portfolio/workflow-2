@@ -4,7 +4,7 @@ const { createRedditCollector } = require('./reddit-collector');
 const { extractMentionsFromRecord } = require('./symbol-extractor');
 const { scoreMarketConfirmation } = require('./market-confirmation-score');
 const { nowIso, safeNumber } = require('../util');
-const { buildSourceStatus, classifyHttpSourceStatus, fetchJsonWithTimeout, fetchTextWithTimeout } = require('../source-fetch');
+const { buildSourceStatus, classifyHttpSourceStatus, fetchJsonWithTimeout, fetchTextWithTimeout, redactSourceMessage } = require('../source-fetch');
 
 function resolvePhaseASourceRuntime(env = process.env, runtimeState = null) {
   const featureState = runtimeState || loadMemeMonitorState({ env, filePath: resolveMemeMonitorStatePath({ env }) });
@@ -289,7 +289,7 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
     };
   } catch (error) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: redactSourceMessage(error.message), blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -352,7 +352,7 @@ async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs
     };
   } catch (error) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: redactSourceMessage(error.message), blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -394,7 +394,7 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs
     };
   } catch (error) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', blockedSymbols: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', blockedSymbols: 0, lastRunAt: null, lastError: redactSourceMessage(error.message), blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -473,7 +473,7 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 
     };
   } catch (error) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'secEdgar', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', catalystsDetected: 0, riskWarnings: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'secEdgar', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', catalystsDetected: 0, riskWarnings: 0, lastRunAt: null, lastError: redactSourceMessage(error.message), blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }

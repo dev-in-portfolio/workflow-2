@@ -1,7 +1,7 @@
 const path = require('path');
 const { scoreMarketConfirmation } = require('../market-confirmation-score');
 const { nowIso } = require('../../util');
-const { buildSourceStatus, fetchJsonWithTimeout } = require('../../source-fetch');
+const { buildSourceStatus, fetchJsonWithTimeout, redactSourceMessage } = require('../../source-fetch');
 
 async function fetchPolygonMarketSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKey = String(env?.POLYGON_API_KEY || '').trim();
@@ -64,7 +64,7 @@ async function fetchPolygonMarketSignals({ env = process.env, fetchImpl = global
     };
   } catch (error) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: false, status: error?.name === 'AbortError' ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: error?.name === 'AbortError' ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: false, status: error?.name === 'AbortError' ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: redactSourceMessage(error.message), blockedReason: error?.name === 'AbortError' ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
