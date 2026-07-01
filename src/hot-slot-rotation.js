@@ -57,6 +57,18 @@ function evaluateHotSlotRotationPlan({
 
   if (!config.enabled) return base;
 
+  if (!config.recheckAfterExit) {
+    return {
+      ...base,
+      enabled: true,
+      status: 'blocked',
+      lastDecision: 'rotation_blocked_recheck_after_exit_disabled',
+      decision: 'rotation_blocked_recheck_after_exit_disabled',
+      reasonCodes: ['rotation_blocked_recheck_after_exit_disabled'],
+      blockReason: 'rotation_blocked_recheck_after_exit_disabled',
+    };
+  }
+
   const featureStatus = String(featureState?.status || '').toLowerCase();
   if (featureStatus === 'blocked' || featureState?.blocked_reason) {
     return {

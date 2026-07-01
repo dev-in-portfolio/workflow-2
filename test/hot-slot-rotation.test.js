@@ -166,6 +166,21 @@ test('hot slot rotation plan stays off when feature or dependency is disabled', 
   assert.equal(dependencyBlocked.lastDecision, 'rotation_blocked_dependency_disabled');
 });
 
+test('hot slot rotation blocks when post-exit reconciliation is disabled', () => {
+  const plan = evaluateHotSlotRotationPlan({
+    featureState: { status: 'active', configured: true, runtime: true, effective: true },
+    config: resolveHotSlotRotationConfig({
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'true',
+      MEME_ROTATION_RECHECK_AFTER_EXIT: 'false',
+    }),
+    portfolio: buildPortfolioSnapshot({ positions: [], openOrders: [], account: { buying_power: 500 } }),
+  });
+
+  assert.equal(plan.status, 'blocked');
+  assert.equal(plan.lastDecision, 'rotation_blocked_recheck_after_exit_disabled');
+  assert.equal(plan.blockReason, 'rotation_blocked_recheck_after_exit_disabled');
+});
+
 test('hot slot rotation runtime flags the broker reconciliation wait state', () => {
   const runtime = summarizeHotSlotRotationRuntime({
     status: 'active',
