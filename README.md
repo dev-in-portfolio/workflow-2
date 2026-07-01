@@ -24,6 +24,7 @@ This repository is a simplified Live Market trading control plane with a direct-
 - Meme Monitor and Regular Watch each split controls into runtime-only display toggles, two-key toggles that need both config allowment and a dashboard toggle, source toggles that can be validated at runtime, and locked controls that stay disabled.
 - The dashboard Actions tab shows each feature's category, config allowment, runtime toggle, effective state, and any block reason so you can see why something is on or off.
 - Auto Action remains locked until a safe implementation path exists.
+- Dynamic Watchlist, Priority Override, Hot Slot Rotation, and Regular Watch scanner ranking remain hold-until-approved and should stay off until shadow data is reviewed.
 
 ## Watch Tab
 
@@ -151,7 +152,8 @@ The repo ships with these defaults:
 - `LIVE_TRADING_ENABLED=false`
 - `REQUIRE_HUMAN_APPROVAL=true`
 - `AUDIT_LOG_ENABLED=true`
-- `PAPER_ADAPTER_ENABLED=true` as the execution-adapter safety gate required for live mode.
+- `PAPER_ADAPTER_ENABLED=true` as the legacy execution-adapter safety gate required for live mode.
+- `EXECUTION_ADAPTER_ENABLED` is deferred compatibility naming and is not the active gate in this pass.
 - `MIN_CONFIDENCE_FOR_PAPER=72`
 - `MIN_LIQUIDITY_SCORE=40`
 - `MIN_PROVIDER_CONFIRMATION_SCORE=70`
