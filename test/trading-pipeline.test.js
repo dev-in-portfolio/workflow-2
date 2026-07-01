@@ -21,6 +21,7 @@ const {
   createMinimalTradingServer,
   PerformanceStore,
   buildThresholdProposal,
+  summarizeExitEfficiency,
   comparePolicyPerformance,
   deriveMarketActivitySignal,
   scoreSummary,
@@ -707,10 +708,10 @@ test('risk gate blocks when the open position count reaches the cap', () => {
   assert.equal(expandedDecision.decision, 'APPROVED_FOR_PAPER');
 });
 
-test('default policy snapshot allows wider open-position concurrency', () => {
+test('default policy snapshot keeps the open-position cap at two', () => {
   const store = new PerformanceStore();
   const snapshot = store.getPolicySnapshot();
-  assert.equal(snapshot.policy.maxOpenPositions, 12);
+  assert.equal(snapshot.policy.maxOpenPositions, 2);
 });
 
 test('risk gate blocks when fill quality degrades', () => {
@@ -1347,6 +1348,94 @@ test('processTradingSignal blocks conflicting open orders before broker submissi
   assert.equal(submitCount, 0);
 });
 
+test('processTradingSignal allows scale-in buys when the broker already has same-side exposure', async () => {
+  let submitCount = 0;
+  const executionAdapter = {
+    async getAccount() {
+      return { cash: '500', buying_power: '500' };
+    },
+    async getPositions() {
+      return [{ symbol: 'F', qty: '1', avg_entry_price: '12' }];
+    },
+    async getOpenOrders() {
+      return [
+        {
+          symbol: 'F',
+          side: 'buy',
+          status: 'new',
+          id: 'open-order-1',
+        },
+      ];
+    },
+    async submitOrder(request) {
+      submitCount += 1;
+      return { order_id: request.request_id, status: 'accepted', request };
+    },
+    async getOrder() {
+      return { id: 'order-1', status: 'filled', qty: '1', filled_qty: '1' };
+    },
+  };
+  const performance = new PerformanceStore();
+  performance.setPolicySnapshot({
+    source: 'test',
+    captured_at: '2026-06-16T00:00:00.000Z',
+    report_date: '2026-06-16',
+    policy: {
+      killSwitch: false,
+      paperAdapterEnabled: true,
+      requireHumanApproval: true,
+      minConfidenceForPaper: 72,
+      minFreshnessScore: 55,
+      minSourceQualityScore: 40,
+      minProviderConfirmationScore: 70,
+      minEdgeScore: 60,
+      minLiquidityScore: 40,
+      minVolume: 1000,
+      buyNotionalTarget: 200,
+      maxOpenPositions: 2,
+    },
+  });
+
+  const result = await processTradingSignal({
+    signal: {
+      signal_id: 'sig-scale-in',
+      symbol: 'F',
+      asset_type: 'stock',
+      strategy_name: 'breakout',
+      timeframe: '5m',
+      direction: 'bullish',
+      action_candidate: 'paper_buy',
+      side: 'buy',
+      allow_scale_in: true,
+      notional: 1,
+      confidence_score: 95,
+      freshness_score: 95,
+      source_quality_score: 95,
+      contradiction_score: 0,
+      risk_score: 10,
+      provider_confirmation_score: 95,
+      edge_score: 90,
+      volume: 100000,
+      stop_loss: 13,
+      take_profit: 15,
+      entry_price: 13.75,
+      price: 13.75,
+      created_at: '2026-06-16T00:00:00.000Z',
+    },
+    portfolio: { available: true, trade_count_today: 0, daily_loss: 0, position_notional: 0, open_positions_count: 1 },
+  }, {
+    executionAdapter,
+    performance,
+    policySnapshot: performance.getPolicySnapshot(),
+    buyNotionalTarget: 200,
+    source: 'test',
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.stage, 'order_confirmed');
+  assert.equal(submitCount, 1);
+});
+
 test('buy sizing targets about $200 and stays within budget', () => {
   const fractionalSizing = resolveBuyOrderSizing({
     signal_id: 'sig-fractional',
@@ -1855,7 +1944,7 @@ test('unsafe config is rejected', () => {
     MIN_VOLUME: '250',
   });
   assert.equal(relaxedConfig.MIN_VOLUME, 250);
-  assert.equal(config.MAX_OPEN_POSITIONS, 12);
+  assert.equal(config.MAX_OPEN_POSITIONS, 2);
   assert.equal(config.AUTO_POLICY_REFRESH, false);
   assert.equal(config.AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT, 2);
   assert.equal(config.AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE, 50);
@@ -2559,6 +2648,9 @@ test('performance store records outcomes and suggests tuning', () => {
   assert(Array.isArray(tuning.suggestions));
   assert(tuning.threshold_proposal.proposed_policy.minConfidenceForPaper >= 72);
   assert.equal(typeof tuning.threshold_proposal.proposed_policy.minEdgeScore, 'number');
+  assert.equal(typeof tuning.threshold_proposal.proposed_policy.positionStopLossDollars, 'number');
+  assert.equal(typeof tuning.threshold_proposal.proposed_policy.trailingProfitStartDollars, 'number');
+  assert.equal(typeof tuning.threshold_proposal.proposed_policy.sellProfitThresholdPct, 'number');
   assert.equal(typeof tuning.report.rejection_rate, 'number');
   assert(tuning.policy_snapshot);
   assert(report.policy_snapshot);
@@ -3287,6 +3379,90 @@ test('threshold proposal blocks buckets with high execution drag', () => {
   assert(proposal.proposed_policy.positionSizeMultiplier < 1);
   assert(proposal.notes.some((note) => note.toLowerCase().includes('execution drag')));
   assert(proposal.notes.some((note) => note.toLowerCase().includes('relative drag')));
+});
+
+test('threshold proposal tightens trailing when sale captures too little of peak profit', () => {
+  const proposal = buildThresholdProposal({
+    currentPolicy: {
+      minConfidenceForPaper: 72,
+      minFreshnessScore: 55,
+      minSourceQualityScore: 40,
+      minProviderConfirmationScore: 70,
+      minEdgeScore: 60,
+      maxContradictionScore: 50,
+      maxRiskScore: 70,
+      minLiquidityScore: 40,
+      positionSizeMultiplier: 1,
+      sellProfitThresholdPct: 5,
+      sellNetProfitFloorDollars: 1,
+      positionStopLossDollars: 2,
+      positionStopLossNotionalPct: 0.75,
+      positionStopLossMaxDollars: 4,
+      trailingProfitStartDollars: 5,
+      trailingProfitGivebackDollars: 3,
+    },
+    paperOutcomes: [
+      { calibration_bucket: '80-89', gross_pnl: 2, net_pnl: 1.8, pnl: 2, win_loss: 'win', max_favorable_excursion: 10, max_adverse_excursion: 1, execution_drag: 0.2 },
+      { calibration_bucket: '80-89', gross_pnl: 2.5, net_pnl: 2.2, pnl: 2.5, win_loss: 'win', max_favorable_excursion: 11, max_adverse_excursion: 1, execution_drag: 0.3 },
+      { calibration_bucket: '80-89', gross_pnl: 1.5, net_pnl: 1.3, pnl: 1.5, win_loss: 'win', max_favorable_excursion: 9, max_adverse_excursion: 1, execution_drag: 0.2 },
+    ],
+    riskDecisions: [
+      { decision: 'APPROVED_FOR_PAPER', reason_codes: [] },
+      { decision: 'APPROVED_FOR_PAPER', reason_codes: [] },
+      { decision: 'APPROVED_FOR_PAPER', reason_codes: [] },
+    ],
+  });
+
+  assert(proposal.reason_codes.includes('LOW_PEAK_CAPTURE_TIGHTEN_TRAILING'));
+  assert(proposal.proposed_policy.trailingProfitStartDollars < 5);
+  assert(proposal.proposed_policy.trailingProfitGivebackDollars < 3);
+  assert(proposal.notes.some((note) => note.toLowerCase().includes('peak capture')));
+});
+
+test('threshold proposal raises profit floor when fees and sale costs erase real gains', () => {
+  const proposal = buildThresholdProposal({
+    currentPolicy: {
+      minConfidenceForPaper: 72,
+      minFreshnessScore: 55,
+      minSourceQualityScore: 40,
+      minProviderConfirmationScore: 70,
+      minEdgeScore: 60,
+      maxContradictionScore: 50,
+      maxRiskScore: 70,
+      minLiquidityScore: 40,
+      positionSizeMultiplier: 1,
+      sellProfitThresholdPct: 5,
+      sellNetProfitFloorDollars: 1,
+      positionStopLossDollars: 2,
+      positionStopLossNotionalPct: 0.75,
+      positionStopLossMaxDollars: 4,
+      trailingProfitStartDollars: 5,
+      trailingProfitGivebackDollars: 2,
+    },
+    paperOutcomes: [
+      { calibration_bucket: '70-79', gross_pnl: 1.5, net_pnl: -0.2, pnl: 1.5, win_loss: 'loss', max_favorable_excursion: 2, max_adverse_excursion: 1, fees: 0.6, execution_drag: 1.7 },
+      { calibration_bucket: '70-79', gross_pnl: 1.4, net_pnl: -0.1, pnl: 1.4, win_loss: 'loss', max_favorable_excursion: 2.2, max_adverse_excursion: 1, fees: 0.5, execution_drag: 1.5 },
+      { calibration_bucket: '70-79', gross_pnl: 1.6, net_pnl: 0.05, pnl: 1.6, win_loss: 'win', max_favorable_excursion: 2.4, max_adverse_excursion: 1, fees: 0.5, execution_drag: 1.55 },
+    ],
+  });
+
+  assert(proposal.reason_codes.some((reason) => reason === 'EXIT_COSTS_REQUIRE_HIGHER_PROFIT_FLOOR' || reason === 'REAL_GAIN_EROSION_REQUIRE_HIGHER_PROFIT_FLOOR'));
+  assert(proposal.proposed_policy.sellNetProfitFloorDollars > 1);
+  assert(proposal.proposed_policy.sellProfitThresholdPct > 5);
+  assert(proposal.notes.some((note) => note.toLowerCase().includes('sale costs')));
+});
+
+test('exit efficiency summary measures peak capture and fee drag', () => {
+  const summary = summarizeExitEfficiency([
+    { gross_pnl: 2, net_pnl: 1.5, max_favorable_excursion: 5, fees: 0.2, execution_drag: 0.5 },
+    { gross_pnl: 4, net_pnl: 3.5, max_favorable_excursion: 5, fees: 0.1, execution_drag: 0.5 },
+  ]);
+
+  assert.equal(summary.count, 2);
+  assert.equal(summary.average_capture_ratio, 0.5);
+  assert.equal(summary.average_giveback_dollars, 2);
+  assert(Math.abs(summary.average_fees - 0.15) < 0.000001);
+  assert.equal(summary.average_execution_drag, 0.5);
 });
 
 test('threshold proposal reduces size more when drawdown is worse', () => {

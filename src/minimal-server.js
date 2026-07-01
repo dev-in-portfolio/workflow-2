@@ -134,6 +134,10 @@ function createMinimalTradingServer(options = {}) {
       return respond(state, res, 404, { accepted: false, error: 'not_found' });
     } catch (error) {
       const pathname = (() => { try { return new URL(req.url, 'http://localhost').pathname; } catch { return '/unknown'; } })();
+      if (error?.code === 'INVALID_JSON') {
+        log({ level: 'warn', event: 'http_request_error', message: `${req.method} ${pathname} 400 ${Date.now() - start}ms - invalid_json` });
+        return respond(state, res, 400, { accepted: false, error: 'invalid_json' });
+      }
       log({ level: 'error', event: 'http_request_error', message: `${req.method} ${pathname} 500 ${Date.now() - start}ms - ${error.message}` });
       return respond(state, res, 500, { accepted: false, error: 'internal_error', message: error.message });
     }
@@ -219,7 +223,7 @@ function serializeMinimalResult(result) {
 }
 
 function readJsonBody(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
@@ -227,7 +231,10 @@ function readJsonBody(req) {
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       } catch {
-        resolve({});
+        const error = new Error('invalid_json');
+        error.code = 'INVALID_JSON';
+        error.status = 400;
+        reject(error);
       }
     });
   });

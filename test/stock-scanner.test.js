@@ -4,14 +4,18 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { URL } = require('url');
 const {
   buildStockCandidateForSymbol,
   calculateEffectiveStopLossDollars,
   calculateSpreadRankPenalty,
   createStockScanner,
   normalizeRecentTradePenaltyMap,
+  rankScannerBuyCandidates,
+  resolveScannerWatchConfig,
 } = require('../src');
 const { APPROVED_LIVE_MARKET_SYMBOLS } = require('../src/volatile-stock-universe');
+const { updateMemeMonitorFeatureState } = require('../src/meme-monitor-state');
 
 test('stock scanner builds real buy candidates from fresh bullish Alpaca data', () => {
   const candidate = buildStockCandidateForSymbol('NVDA', {
@@ -895,6 +899,35 @@ test('stock scanner trails winners after peak profit and sell on giveback', () =
   assert.equal(giveback.exitState.real_gain, true);
 });
 
+test('stock scanner does not harvest trailing wins below the net profit floor', () => {
+  const tinyGiveback = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '79.85', unrealized_pl: '0.45', entry_slippage: '0.03', exit_slippage: '0.02', fees: '0.01' },
+    stopLossDollars: 1,
+    trailingProfitStartDollars: 0.5,
+    trailingProfitGivebackDollars: 0.3,
+    sellNetProfitFloorDollars: 1,
+    trailingState: { positions: { NVDA: { peak_unrealized_pl: 0.8 } } },
+  });
+  assert.equal(tinyGiveback, null);
+
+  const realGiveback = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '79.4', unrealized_pl: '1.25', entry_slippage: '0.03', exit_slippage: '0.02', fees: '0.01' },
+    stopLossDollars: 1,
+    trailingProfitStartDollars: 0.5,
+    trailingProfitGivebackDollars: 0.3,
+    sellNetProfitFloorDollars: 1,
+    trailingState: { positions: { NVDA: { peak_unrealized_pl: 1.6 } } },
+  });
+  assert(realGiveback);
+  assert.equal(realGiveback.exitState.exit_reason, 'TRAILING_PROFIT_GIVEBACK');
+  assert(realGiveback.exitState.net_pnl >= 1);
+  assert.equal(realGiveback.exitState.trailing_activation_profit_dollars, 1.36);
+});
+
 test('stock scanner does not apply recent-symbol rank penalties to sell exits', () => {
   const candidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
@@ -916,7 +949,7 @@ test('stock scanner does not apply recent-symbol rank penalties to sell exits', 
   assert.equal(candidate.exitState.exit_reason, 'STOP_LOSS_DOLLARS');
 });
 
-test('stock scanner can still select a recently traded symbol when its adjusted rank remains highest', async () => {
+test('stock scanner rotates away from a recently traded symbol when another rank stays stronger', async () => {
   const requests = [];
   const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
   const scanner = createStockScanner({
@@ -930,21 +963,22 @@ test('stock scanner can still select a recently traded symbol when its adjusted 
     maxCandidatesPerRun: 1,
     maxOpenPositions: 1,
     marketOpen: true,
-    recentTradePenalties: [
-      {
-        entry_type: 'paper_outcome',
-        record: {
+    antiChurnState: {
+      symbol_cooldowns: {
+        MU: {
           symbol: 'MU',
-          side: 'sell',
-          recorded_at: new Date(Date.now() - 60_000).toISOString(),
-          paper_result: {
-            status: 'filled',
-            filled_at: new Date(Date.now() - 60_000).toISOString(),
-            order_id: 'recent-mu',
-          },
+          penalty: 20,
+          remaining_seconds: 300,
+          cooldown_until: new Date(Date.now() + 300_000).toISOString(),
+          last_traded_at: new Date(Date.now() - 60_000).toISOString(),
+          reason: 'recent_sell',
         },
       },
-    ],
+      setup_cooldowns: {},
+      recent_classifications: [],
+      churn_guard: null,
+      recent_winner_protection: {},
+    },
     marketFetch: async (url) => {
       if (url.includes('/v2/positions')) return buildResponse([]);
       if (url.includes('/v2/orders?status=open')) return buildResponse([]);
@@ -952,7 +986,7 @@ test('stock scanner can still select a recently traded symbol when its adjusted 
       if (url.includes('/v2/stocks/snapshots?')) {
         return buildResponse({
           snapshots: {
-            MU: rankedSnapshot({ bid: 119.9, ask: 120.1, previousClose: 100, volume: 100000, timestamp: alpacaTimestamp }),
+            MU: rankedSnapshot({ bid: 129.9, ask: 130.1, previousClose: 100, volume: 100000, timestamp: alpacaTimestamp }),
             WDC: rankedSnapshot({ bid: 104.9, ask: 105.1, previousClose: 100, volume: 100000, timestamp: alpacaTimestamp }),
           },
         });
@@ -970,8 +1004,8 @@ test('stock scanner can still select a recently traded symbol when its adjusted 
 
   assert.equal(result.accepted, true);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].symbol, 'MU');
-  assert.equal(requests[0].market_context.scanner.recent_trade_rank_penalty, 20);
+  assert.equal(requests[0].symbol, 'WDC');
+  assert.equal(requests[0].market_context.scanner.recent_trade_rank_penalty, 0);
   assert(requests[0].market_context.scanner.rank_score > 0);
 });
 
@@ -990,30 +1024,22 @@ test('stock scanner rotates away from a recent losing exit when another rank is 
     maxCandidatesPerRun: 1,
     maxOpenPositions: 1,
     marketOpen: true,
-    recentTradePenalties: [
-      {
-        entry_type: 'paper_outcome',
-        record: {
+    antiChurnState: {
+      symbol_cooldowns: {
+        MU: {
           symbol: 'MU',
-          side: 'sell',
-          pnl: -1.05,
-          recorded_at: recentLossAt,
-          paper_result: {
-            status: 'filled',
-            filled_at: recentLossAt,
-            order_id: 'recent-loss-mu',
-          },
-          original_signal: {
-            market_context: {
-              exit_state: {
-                exit_reason: 'STOP_LOSS_DOLLARS',
-                unrealized_pl: -1.05,
-              },
-            },
-          },
+          penalty: 80,
+          remaining_seconds: 300,
+          cooldown_until: new Date(Date.now() + 300_000).toISOString(),
+          last_traded_at: recentLossAt,
+          reason: 'recent_loss_exit',
         },
       },
-    ],
+      setup_cooldowns: {},
+      recent_classifications: [],
+      churn_guard: null,
+      recent_winner_protection: {},
+    },
     marketFetch: async (url) => {
       if (url.includes('/v2/positions')) return buildResponse([]);
       if (url.includes('/v2/orders?status=open')) return buildResponse([]);
@@ -1058,34 +1084,22 @@ test('stock scanner rotates away from stacked recent sells when another rank is 
     maxCandidatesPerRun: 1,
     maxOpenPositions: 1,
     marketOpen: true,
-    recentTradePenalties: [
-      {
-        entry_type: 'paper_outcome',
-        record: {
+    antiChurnState: {
+      symbol_cooldowns: {
+        MU: {
           symbol: 'MU',
-          side: 'sell',
-          recorded_at: firstSellAt,
-          paper_result: {
-            status: 'filled',
-            filled_at: firstSellAt,
-            order_id: 'recent-sell-mu-1',
-          },
+          penalty: 120,
+          remaining_seconds: 300,
+          cooldown_until: new Date(Date.now() + 300_000).toISOString(),
+          last_traded_at: firstSellAt,
+          reason: 'stacked_recent_sells',
         },
       },
-      {
-        entry_type: 'paper_outcome',
-        record: {
-          symbol: 'MU',
-          side: 'sell',
-          recorded_at: secondSellAt,
-          paper_result: {
-            status: 'filled',
-            filled_at: secondSellAt,
-            order_id: 'recent-sell-mu-2',
-          },
-        },
-      },
-    ],
+      setup_cooldowns: {},
+      recent_classifications: [],
+      churn_guard: null,
+      recent_winner_protection: {},
+    },
     marketFetch: async (url) => {
       if (url.includes('/v2/positions')) return buildResponse([]);
       if (url.includes('/v2/orders?status=open')) return buildResponse([]);
@@ -1598,6 +1612,503 @@ test('stock scanner counts all live Alpaca positions against the max-position ca
   assert.equal(result.skip_summary.MAX_POSITION_SLOTS_FILLED, 2);
 });
 
+test('stock scanner ignores dynamic watchlist symbols when the feature is disabled', async () => {
+  const harness = createScannerHarness({
+    env: {
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+    },
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      HOT: rankedSnapshot({ bid: 19.90, ask: 20.10, previousClose: 19.50, volume: 200_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      HOTT: rankedSnapshot({ bid: 29.90, ask: 30.10, previousClose: 29.50, volume: 250_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    dynamicHotList: {
+      generatedAt: '2026-07-01T00:00:00.000Z',
+      lastScoredAt: '2026-07-01T00:00:00.000Z',
+      mode: 'shadow',
+      source: 'test',
+      enabled: true,
+      status: 'shadow',
+      stale: false,
+      dynamicHotList: [{
+        symbol: 'HOT',
+        memeHeatScore: 84,
+        marketConfirmationScore: 82,
+        status: 'dynamic_watch',
+        reasonCodes: ['social_heat'],
+        riskWarnings: [],
+        expiresAt: '2026-07-02T15:00:00.000Z',
+      }],
+      hotHotList: [{
+        symbol: 'HOTT',
+        memeHeatScore: 95,
+        marketConfirmationScore: 91,
+        status: 'hot_hot',
+        priorityOverrideEligible: true,
+        reasonCodes: ['market_confirmation_passed'],
+        riskWarnings: [],
+        expiresAt: '2026-07-02T15:00:00.000Z',
+      }],
+      expired: [],
+      rejected: [],
+    },
+  });
+
+  try {
+    const result = await harness.scanner.runOnce({ runId: 'dynamic-disabled-test' });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(harness.requestedSymbols, ['AAA']);
+    const watchConfig = resolveScannerWatchConfig({
+      env: {
+        ...harness.env,
+      },
+      repoRoot: harness.repoRoot,
+      dataDir: harness.dataDir,
+      currentDate: '2026-06-30T20:34:00.000Z',
+      approvedSymbols: ['AAA'],
+    });
+    assert.deepEqual(watchConfig.attentionSymbols, ['AAA']);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('stock scanner includes fresh dynamic watchlist symbols and keeps expired symbols out', async () => {
+  const harness = createScannerHarness({
+    env: {
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_HOT_LIST_TTL_MINUTES: '120',
+    },
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      HOT: rankedSnapshot({ bid: 19.90, ask: 20.10, previousClose: 19.50, volume: 200_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      OLD: rankedSnapshot({ bid: 29.90, ask: 30.10, previousClose: 29.50, volume: 250_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    dynamicHotList: {
+      generatedAt: '2026-07-01T00:00:00.000Z',
+      lastScoredAt: '2026-07-01T00:00:00.000Z',
+      mode: 'active',
+      source: 'test',
+      enabled: true,
+      status: 'active',
+      stale: false,
+      dynamicHotList: [{
+        symbol: 'HOT',
+        memeHeatScore: 84,
+        marketConfirmationScore: 82,
+        status: 'dynamic_watch',
+        reasonCodes: ['social_heat'],
+        riskWarnings: [],
+        expiresAt: '2026-07-02T15:00:00.000Z',
+      }],
+      hotHotList: [],
+      expired: [{
+        symbol: 'OLD',
+        memeHeatScore: 90,
+        marketConfirmationScore: 90,
+        status: 'hot_hot',
+        reasonCodes: ['expired'],
+        riskWarnings: [],
+        expiresAt: '2026-06-29T15:00:00.000Z',
+        expired: true,
+      }],
+      rejected: [],
+    },
+  });
+
+  try {
+    const result = await harness.scanner.runOnce({ runId: 'dynamic-enabled-test' });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(harness.requestedSymbols.sort(), ['AAA', 'HOT']);
+    assert.equal(harness.requestedSymbols.includes('OLD'), false);
+    const watchConfig = resolveScannerWatchConfig({
+      env: {
+        ...harness.env,
+      },
+      repoRoot: harness.repoRoot,
+      dataDir: harness.dataDir,
+      currentDate: '2026-06-30T20:34:00.000Z',
+      approvedSymbols: ['AAA'],
+    });
+    assert.equal(watchConfig.attentionSymbols.includes('HOT'), true);
+    assert.equal(watchConfig.attentionSymbols.includes('OLD'), false);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('stock scanner moves hot-hot candidates ahead when priority override is enabled but still obeys full-account blocks', async () => {
+  const priorityHarness = createScannerHarness({
+    env: {
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+    },
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      HOT: rankedSnapshot({ bid: 19.80, ask: 20.20, previousClose: 19.70, volume: 100_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    dynamicHotList: {
+      generatedAt: '2026-07-01T00:00:00.000Z',
+      lastScoredAt: '2026-07-01T00:00:00.000Z',
+      mode: 'active',
+      source: 'test',
+      enabled: true,
+      status: 'active',
+      stale: false,
+      dynamicHotList: [{
+        symbol: 'HOT',
+        memeHeatScore: 84,
+        marketConfirmationScore: 82,
+        status: 'hot_hot',
+        priorityOverrideEligible: true,
+        reasonCodes: ['market_confirmation_passed'],
+        riskWarnings: [],
+        expiresAt: '2026-07-02T15:00:00.000Z',
+      }],
+      hotHotList: [{
+        symbol: 'HOT',
+        memeHeatScore: 84,
+        marketConfirmationScore: 82,
+        status: 'hot_hot',
+        priorityOverrideEligible: true,
+        reasonCodes: ['market_confirmation_passed'],
+        riskWarnings: [],
+        expiresAt: '2026-07-02T15:00:00.000Z',
+      }],
+      expired: [],
+      rejected: [],
+    },
+  });
+
+  try {
+    const result = await priorityHarness.scanner.runOnce({ runId: 'priority-enabled-test' });
+    assert.equal(result.accepted, true);
+    const aaaCandidate = buildStockCandidateForSymbol('AAA', stockSnapshot(), stockQuote(), {
+      receivedAt: '2026-06-30T20:34:00.000Z',
+      notional: 150,
+      allowContrarianEntries: true,
+      maxBuyRiskScore: 100,
+    });
+    const hotCandidate = buildStockCandidateForSymbol('HOT', rankedSnapshot({ bid: 19.80, ask: 20.20, previousClose: 19.70, volume: 100_000, timestamp: '2026-06-30T20:34:00.000Z' }), { bp: 19.80, ap: 20.20, t: '2026-06-30T20:34:00.000Z' }, {
+      receivedAt: '2026-06-30T20:34:00.000Z',
+      notional: 150,
+      allowContrarianEntries: true,
+      maxBuyRiskScore: 100,
+    });
+    const rankedWithoutOverride = rankScannerBuyCandidates([aaaCandidate, hotCandidate], { priorityOverrideSymbols: new Set() });
+    const rankedWithOverride = rankScannerBuyCandidates([aaaCandidate, hotCandidate], { priorityOverrideSymbols: new Set(['HOT']) });
+    assert.equal(rankedWithoutOverride[0]?.symbol, 'AAA');
+    assert.equal(rankedWithOverride[0]?.symbol, 'HOT');
+  } finally {
+    priorityHarness.cleanup();
+  }
+
+  const blockedHarness = createScannerHarness({
+    env: {
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+    },
+    positions: [{ symbol: 'AAA', qty: '1' }],
+    maxOpenPositions: 1,
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      HOT: rankedSnapshot({ bid: 19.80, ask: 20.20, previousClose: 19.70, volume: 100_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    dynamicHotList: {
+      generatedAt: '2026-07-01T00:00:00.000Z',
+      lastScoredAt: '2026-07-01T00:00:00.000Z',
+      mode: 'active',
+      source: 'test',
+      enabled: true,
+      status: 'active',
+      stale: false,
+      dynamicHotList: [{
+        symbol: 'HOT',
+        memeHeatScore: 84,
+        marketConfirmationScore: 82,
+        status: 'hot_hot',
+        priorityOverrideEligible: true,
+        reasonCodes: ['market_confirmation_passed'],
+        riskWarnings: [],
+        expiresAt: '2026-07-02T15:00:00.000Z',
+      }],
+      hotHotList: [{
+        symbol: 'HOT',
+        memeHeatScore: 84,
+        marketConfirmationScore: 82,
+        status: 'hot_hot',
+        priorityOverrideEligible: true,
+        reasonCodes: ['market_confirmation_passed'],
+        riskWarnings: [],
+        expiresAt: '2026-07-02T15:00:00.000Z',
+      }],
+      expired: [],
+      rejected: [],
+    },
+  });
+
+  try {
+    const result = await blockedHarness.scanner.runOnce({ runId: 'priority-blocked-test' });
+    assert.equal(result.accepted, true);
+    const watchConfig = resolveScannerWatchConfig({
+      env: {
+        ...blockedHarness.env,
+      },
+      repoRoot: blockedHarness.repoRoot,
+      dataDir: blockedHarness.dataDir,
+      currentDate: '2026-06-30T20:34:00.000Z',
+      approvedSymbols: ['AAA'],
+    });
+    assert.equal(watchConfig.priorityOverrideSymbols.size, 1);
+  } finally {
+    blockedHarness.cleanup();
+  }
+});
+
+test('stock scanner keeps regular watch ranking off by default and only boosts approved symbols when enabled', async () => {
+  const baseRegularWatchState = {
+    source: 'unit-test',
+    features: {
+      REGULAR_WATCH_INTELLIGENCE_ENABLED: { effective: true, status: 'active' },
+      REGULAR_WATCH_PRIORITY_SCORING_ENABLED: { effective: true, status: 'active' },
+      REGULAR_WATCH_SCANNER_RANKING_ENABLED: { effective: false, status: 'off' },
+      REGULAR_WATCH_POSITION_AWARENESS_ENABLED: { effective: false, status: 'off' },
+    },
+  };
+
+  const offHarness = createScannerHarness({
+    symbols: ['AAA', 'BBB'],
+    env: {
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      REGULAR_WATCH_SCANNER_RANKING_ENABLED: 'false',
+    },
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 10.02, ask: 10.04, previousClose: 10, volume: 450_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      BBB: rankedSnapshot({ bid: 11.8, ask: 11.9, previousClose: 10, volume: 2_200_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    regularWatchState: baseRegularWatchState,
+    regularWatchStatus: regularWatchStatusFixture([
+      {
+        symbol: 'AAA',
+        score: 92,
+        status: 'watching',
+        sourceStatus: [{ source: 'wallstreetbets', tier: 'tier_1', status: 'active', lastScanAt: '2026-06-19T15:00:00.000Z' }],
+        scannerWatched: true,
+      },
+      {
+        symbol: 'BBB',
+        score: 54,
+        status: 'watching',
+        sourceStatus: [{ source: 'stocks', tier: 'tier_2', status: 'active', lastScanAt: '2026-06-19T15:00:00.000Z' }],
+        scannerWatched: true,
+      },
+      {
+        symbol: 'ZZZ',
+        score: 99,
+        status: 'watching',
+        sourceStatus: [{ source: 'wallstreetbets', tier: 'tier_1', status: 'active', lastScanAt: '2026-06-19T15:00:00.000Z' }],
+        scannerWatched: false,
+      },
+    ], { scannerRanking: false, positionAwareness: false }),
+  });
+
+  try {
+    await offHarness.scanner.runOnce({ runId: 'regular-watch-ranking-off' });
+    const offRuntime = JSON.parse(fs.readFileSync(offHarness.scannerRuntimePath, 'utf8'));
+    const offDetails = offRuntime.candidate_rank_details || [];
+    assert.equal(offHarness.postedSymbols[0], 'BBB');
+    assert.equal(offDetails.find((entry) => entry.symbol === 'AAA')?.regular_watch_comparison?.rankingApplied, false);
+    assert.equal(offDetails.find((entry) => entry.symbol === 'AAA')?.regular_watch_comparison?.blockedReason, null);
+    assert.equal(offDetails.some((entry) => entry.symbol === 'ZZZ'), false);
+  } finally {
+    offHarness.cleanup();
+  }
+
+  const onHarness = createScannerHarness({
+    symbols: ['AAA', 'BBB'],
+    env: {
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      REGULAR_WATCH_SCANNER_RANKING_ENABLED: 'true',
+    },
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 10.02, ask: 10.04, previousClose: 10, volume: 450_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      BBB: rankedSnapshot({ bid: 11.8, ask: 11.9, previousClose: 10, volume: 2_200_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    regularWatchState: {
+      source: 'unit-test',
+      features: {
+        REGULAR_WATCH_INTELLIGENCE_ENABLED: { effective: true, status: 'active' },
+        REGULAR_WATCH_PRIORITY_SCORING_ENABLED: { effective: true, status: 'active' },
+        REGULAR_WATCH_SCANNER_RANKING_ENABLED: { effective: true, status: 'active' },
+        REGULAR_WATCH_POSITION_AWARENESS_ENABLED: { effective: true, status: 'active' },
+      },
+    },
+    regularWatchStatus: regularWatchStatusFixture([
+      {
+        symbol: 'AAA',
+        score: 96,
+        status: 'watching',
+        sourceStatus: [{ source: 'wallstreetbets', tier: 'tier_1', status: 'active', lastScanAt: '2026-06-19T15:00:00.000Z' }],
+        scannerWatched: true,
+      },
+      {
+        symbol: 'BBB',
+        score: 52,
+        status: 'watching',
+        sourceStatus: [{ source: 'stocks', tier: 'tier_2', status: 'active', lastScanAt: '2026-06-19T15:00:00.000Z' }],
+        scannerWatched: true,
+      },
+    ], { scannerRanking: true, positionAwareness: true }),
+  });
+
+  try {
+    await onHarness.scanner.runOnce({ runId: 'regular-watch-ranking-on' });
+    const onRuntime = JSON.parse(fs.readFileSync(onHarness.scannerRuntimePath, 'utf8'));
+    const onDetails = onRuntime.candidate_rank_details || [];
+    assert.equal(onHarness.postedSymbols[0], 'AAA');
+    assert.equal(onDetails.find((entry) => entry.symbol === 'AAA')?.regular_watch_comparison?.rankingApplied, true);
+    assert.ok(Number(onDetails.find((entry) => entry.symbol === 'AAA')?.regular_watch_comparison?.sortScore) > Number(onDetails.find((entry) => entry.symbol === 'BBB')?.regular_watch_comparison?.sortScore));
+  } finally {
+    onHarness.cleanup();
+  }
+});
+
+function createScannerHarness({
+  env = {},
+  snapshots = {},
+  dynamicHotList = null,
+  positions = [],
+  openOrders = [],
+  buyingPower = '500',
+  cash = '500',
+  maxOpenPositions = 4,
+  maxBuyRiskScore = 100,
+  symbols = ['AAA'],
+  regularWatchState = null,
+  regularWatchStatus = null,
+} = {}) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stock-scanner-watch-test-'));
+  const dataDir = path.join(tempRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+
+  const featureEnv = {
+    MEME_MONITOR_ENABLED: 'true',
+    MEME_REDDIT_SCANNER_ENABLED: 'true',
+    MEME_HOT_LIST_ENABLED: 'true',
+    MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+    MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
+    MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+    SCANNER_RUNTIME_STATE_PATH: path.join(dataDir, 'state', 'scanner-runtime.json'),
+    ...env,
+  };
+
+  for (const key of ['MEME_MONITOR_ENABLED', 'MEME_REDDIT_SCANNER_ENABLED', 'MEME_HOT_LIST_ENABLED', 'MEME_DYNAMIC_WATCHLIST_ENABLED', 'MEME_PRIORITY_OVERRIDE_ENABLED', 'MEME_HOT_SLOT_ROTATION_ENABLED']) {
+    updateMemeMonitorFeatureState({
+      featureKey: key,
+      enabled: featureEnv[key] === 'true',
+      env: featureEnv,
+      filePath: path.join(dataDir, 'state', 'meme-monitor-state.json'),
+      changedBy: 'test',
+      source: 'unit-test',
+    });
+  }
+
+  if (dynamicHotList) {
+    fs.writeFileSync(path.join(dataDir, 'runtime', 'dynamic-hot-list.json'), JSON.stringify(dynamicHotList, null, 2));
+  }
+
+  const requestedSymbols = [];
+  const postedSymbols = [];
+
+  const scanner = createStockScanner({
+    enabled: true,
+    baseUrl: 'https://data.alpaca.markets',
+    localBaseUrl: 'http://127.0.0.1:65535',
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    symbols,
+    intervalMs: 60_000,
+    maxCandidatesPerRun: 2,
+    maxOpenPositions,
+    maxBuyRiskScore,
+    marketOpen: true,
+    dataDir,
+    repoRoot: tempRoot,
+    env: featureEnv,
+    runtimeStateEnabled: true,
+    regularWatchState,
+    regularWatchStatus,
+    marketFetch: async (url) => {
+      if (url.includes('/v2/positions')) return buildResponse(positions);
+      if (url.includes('/v2/orders?status=open')) return buildResponse(openOrders);
+      if (url.includes('/v2/account')) return buildResponse({ cash, buying_power: buyingPower });
+      if (url.includes('/v2/stocks/snapshots?')) {
+        const parsed = new URL(url);
+        const symbolList = decodeURIComponent(parsed.searchParams.get('symbols') || '').split(',').map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean);
+        requestedSymbols.push(...symbolList);
+        const payload = {};
+        for (const symbol of symbolList) {
+          payload[symbol] = snapshots[symbol] || stockSnapshot();
+        }
+        return buildResponse({ snapshots: payload });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    localFetch: async (_url, init = {}) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      postedSymbols.push(body.symbol);
+      return buildResponse({ accepted: true, final_decision: 'approved_for_paper' });
+    },
+  });
+
+  return {
+    scanner,
+    requestedSymbols,
+    postedSymbols,
+    scannerRuntimePath: path.join(dataDir, 'state', 'scanner-runtime.json'),
+    env: featureEnv,
+    repoRoot: tempRoot,
+    dataDir,
+    cleanup: () => {
+      try {
+        scanner.stop();
+      } catch {
+        // Ignore cleanup issues in temp harness teardown.
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    },
+  };
+}
+
 function stockSnapshot() {
   return {
     latestQuote: { bp: 79.95, ap: 80.05, t: '2026-06-16T20:00:00.000Z' },
@@ -1618,6 +2129,54 @@ function rankedSnapshot({ bid, ask, previousClose, volume, timestamp }) {
     latestTrade: { p: midpoint, t: timestamp },
     minuteBar: { v: 50, h: midpoint + 0.5, l: midpoint - 0.5, t: timestamp },
     prevDailyBar: { c: previousClose, v: volume },
+  };
+}
+
+function regularWatchStatusFixture(entries = [], overrides = {}) {
+  const now = overrides.now || '2026-06-30T14:05:00.000Z';
+  return {
+    version: '2026-06-30.regular-watch-status.2',
+    updated_at: now,
+    enabled: true,
+    regularWatchIntelligence: {
+      enabled: true,
+      status: overrides.status || 'active',
+      lastRunAt: now,
+      lastError: null,
+      symbolsChecked: entries.length,
+      moversFound: entries.length,
+      blockedSymbols: 0,
+      features: {
+        marketConfirmation: true,
+        assetValidation: true,
+        haltCheck: true,
+        secRiskCheck: true,
+        newsCatalyst: false,
+        priorityScoring: true,
+        scannerRanking: Boolean(overrides.scannerRanking),
+        positionAwareness: Boolean(overrides.positionAwareness),
+      },
+    },
+    scannerRanking: {
+      enabled: Boolean(overrides.scannerRanking),
+      status: overrides.scannerRanking ? (overrides.status || 'active') : 'off',
+      lastRunAt: now,
+      lastError: null,
+    },
+    positionAwareness: {
+      enabled: Boolean(overrides.positionAwareness),
+      status: overrides.positionAwareness ? (overrides.status || 'active') : 'off',
+      lastRunAt: now,
+      lastError: null,
+    },
+    regularWatchList: entries,
+    regularWatchMovers: entries.slice(0, 2),
+    sources: overrides.sources || [],
+    generatedAt: now,
+    stale: false,
+    status: overrides.status || 'active',
+    lastRunAt: now,
+    lastError: null,
   };
 }
 

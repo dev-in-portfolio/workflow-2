@@ -4,12 +4,24 @@ const { buildProviderConfirmationFromContext, normalizeMarketData } = require('.
 const { parseBool } = require('./config');
 const { nowIso, safeNumber, hashObject, clamp, resolveRepoRoot } = require('./util');
 const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
+const { loadRegularWatchState, resolveRegularWatchStatePath } = require('./regular-watch/regular-watch-feature-state');
+const { loadRegularWatchStatus, resolveRegularWatchStatusPath } = require('./regular-watch/regular-watch-status');
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
 const { assertSignalCandidate } = require('./module-contracts');
-const { loadPartialFillState, summarizePartialFillState } = require('./partial-fill-state');
+const {
+  loadPartialFillState,
+  reconcilePartialFills,
+  savePartialFillState,
+  summarizePartialFillState,
+} = require('./partial-fill-state');
+const {
+  evaluateHotSlotRotationPlan,
+  resolveHotSlotRotationConfig,
+  summarizeHotSlotRotationRuntime,
+} = require('./hot-slot-rotation');
 const {
   loadExecutionQualityState,
   summarizeExecutionQualityState,
@@ -33,6 +45,8 @@ const {
   evaluateSetupFatigueCandidate,
 } = require('./setup-fatigue');
 const { evaluateSessionGuards, summarizeSessionGuards } = require('./session-guards');
+const { loadMemeMonitorState, resolveMemeMonitorStatePath } = require('./meme-monitor-state');
+const { loadDynamicHotList, resolveDynamicHotListPath } = require('./meme-monitor/hot-list-store');
 const {
   loadAntiChurnState,
   reconcileAntiChurnState,
@@ -51,6 +65,10 @@ function createStockScanner(options = {}) {
   if (!marketFetch) throw new Error('Stock scanner requires fetch support');
   if (!localFetch) throw new Error('Stock scanner requires local fetch support');
   options.logger = options.logger || createLogger();
+  const repoRoot = options.repoRoot || resolveRepoRoot();
+  const dataDir = options.dataDir || path.resolve(repoRoot, 'data');
+  const memeMonitorStatePath = resolveMemeMonitorStatePath({ dataDir, filePath: options.memeMonitorStatePath, repoRoot });
+  const dynamicHotListPath = resolveDynamicHotListPath({ dataDir, filePath: options.dynamicHotListPath, repoRoot });
 
   const apiKeyId = options.apiKeyId || env.ALPACA_API_KEY_ID || '';
   const apiSecretKey = options.apiSecretKey || env.ALPACA_API_SECRET_KEY || '';
@@ -73,6 +91,7 @@ function createStockScanner(options = {}) {
   const stopLossMaxDollars = Math.max(stopLossDollars, safeNumber(options.stopLossMaxDollars ?? env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5));
   const trailingProfitStartDollars = Math.max(0.01, Number(options.trailingProfitStartDollars ?? env.TRAILING_PROFIT_START_DOLLARS ?? 0.5) || 0.5);
   const trailingProfitGivebackDollars = Math.max(0.01, Number(options.trailingProfitGivebackDollars ?? env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? 0.3) || 0.3);
+  const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars ?? env.SELL_NET_PROFIT_FLOOR_DOLLARS, 1));
   const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? Boolean(twelveDataApiKey);
   const allowContrarianEntries = options.allowContrarianEntries ?? true;
   const blockBuys = options.blockBuys ?? parseBool(env.BLOCK_BUYS, false);
@@ -162,11 +181,15 @@ function createStockScanner(options = {}) {
   const rotationSoftBandPoints = Math.max(0, safeNumber(options.rotationSoftBandPoints ?? env.ROTATION_SOFT_BAND_POINTS, 4));
   const rotationHardBandPoints = Math.max(0, safeNumber(options.rotationHardBandPoints ?? env.ROTATION_HARD_BAND_POINTS, 12));
   const rotationMinHoldScans = Math.max(0, Math.floor(safeNumber(options.rotationMinHoldScans ?? env.ROTATION_MIN_HOLD_SCANS, 1)));
+  const hotSlotRotationConfig = resolveHotSlotRotationConfig(env);
+  const hotSlotRotationFeatureEnabled = Boolean(hotSlotRotationConfig.enabled);
+  const hotSlotRotationEnabled = hotSlotRotationFeatureEnabled;
 
   const state = {
     running: false,
     timer: null,
     lastRunAt: null,
+    hotSlotRotation: null,
   };
 
   async function runOnce(runOptions = {}) {
@@ -176,6 +199,34 @@ function createStockScanner(options = {}) {
 
       state.running = true;
     const receivedAt = nowIso();
+    const memeWatchConfig = resolveScannerWatchConfig({
+      env,
+      repoRoot,
+      dataDir,
+      memeMonitorStatePath,
+      dynamicHotListPath,
+      approvedSymbols: symbols,
+      currentDate: receivedAt,
+    });
+    const regularWatchFeatureState = options.regularWatchState || loadRegularWatchState({
+      env,
+      repoRoot,
+      filePath: resolveRegularWatchStatePath({ dataDir, repoRoot }),
+    });
+    const regularWatchStatus = options.regularWatchStatus || loadRegularWatchStatus({
+      dataDir,
+      filePath: resolveRegularWatchStatusPath({ dataDir, repoRoot }),
+    });
+    const regularWatchRankingEnabled = Boolean(
+      options.regularWatchRankingEnabled
+      ?? regularWatchFeatureState?.features?.REGULAR_WATCH_SCANNER_RANKING_ENABLED?.effective,
+    );
+    const regularWatchPositionAwarenessEnabled = Boolean(
+      options.regularWatchPositionAwarenessEnabled
+      ?? regularWatchFeatureState?.features?.REGULAR_WATCH_POSITION_AWARENESS_ENABLED?.effective,
+    );
+    const hotSlotRotationFeatureState = memeWatchConfig.state?.features?.MEME_HOT_SLOT_ROTATION_ENABLED || null;
+    const hotSlotRotationEnabled = Boolean(hotSlotRotationConfig.enabled && hotSlotRotationFeatureState?.effective);
     let previousCandidateLifecycleState = null;
     let scannerMode = 'hunt';
     let candidateLifecycleResult = null;
@@ -187,7 +238,7 @@ function createStockScanner(options = {}) {
         apiKeyId,
         apiSecretKey,
         baseUrl,
-        symbols,
+        symbols: memeWatchConfig.attentionSymbols,
       });
       const twelveDataQuotes = twelveDataApiKey
         ? await fetchTwelveDataBundle({
@@ -221,7 +272,19 @@ function createStockScanner(options = {}) {
       const account = accountState.data;
       const brokerState = buildScannerBrokerState({ accountState, positionsState, openOrdersState });
       const approvedPositions = filterApprovedPositions(positions, symbols);
-      const partialFillState = options.partialFillState || loadPartialFillState({ env, repoRoot: resolveRepoRoot() });
+      const loadedPartialFillState = options.partialFillState || loadPartialFillState({ env, repoRoot: resolveRepoRoot() });
+      const partialFillState = options.partialFillState
+        ? loadedPartialFillState
+        : await reconcilePartialFills({
+          previousState: loadedPartialFillState,
+          openOrders,
+          positions,
+          now: receivedAt,
+          options: { authoritativeOpenOrders: true },
+        });
+      if (!options.partialFillState) {
+        savePartialFillState(partialFillState, { env, repoRoot: resolveRepoRoot() });
+      }
       const partialFillSummary = summarizePartialFillState(partialFillState);
       executionQualityState = options.executionQualityState || loadExecutionQualityState({ env, repoRoot: resolveRepoRoot() });
       executionQualitySummary = summarizeExecutionQualityState(executionQualityState, {
@@ -416,7 +479,9 @@ function createStockScanner(options = {}) {
       const { candidates, candidateLifecycleResult: computedCandidateLifecycleResult } = buildCandidates(bundle, {
         receivedAt,
         maxCandidatesPerRun,
-        maxBuyCandidates: Math.min(maxCandidatesPerRun, Math.max(0, portfolio.remaining_position_slots ?? maxOpenPositions)),
+        maxBuyCandidates: hotSlotRotationEnabled && Number(safeNumber(portfolio.remaining_position_slots, 0)) <= 0
+          ? maxCandidatesPerRun
+          : Math.min(maxCandidatesPerRun, Math.max(0, portfolio.remaining_position_slots ?? maxOpenPositions)),
         notional: allocation.accepted ? allocation.notional : notional,
         minBuyNotional,
         allocation,
@@ -429,6 +494,7 @@ function createStockScanner(options = {}) {
         stopLossMaxDollars,
         trailingProfitStartDollars,
         trailingProfitGivebackDollars,
+        sellNetProfitFloorDollars,
         trailingState,
         requireMultiSourceConfirmation,
         allowContrarianEntries,
@@ -440,7 +506,14 @@ function createStockScanner(options = {}) {
         skipTracker,
         runId: runOptions.runId || `stock_${hashObject({ receivedAt, symbols, baseUrl }).slice(0, 10)}`,
         positions: approvedPositions,
+        attentionSymbols: memeWatchConfig.attentionSymbols,
         approvedSymbols: symbols,
+        dynamicWatchlistSymbols: memeWatchConfig.dynamicWatchlistSymbols,
+        priorityOverrideSymbols: memeWatchConfig.priorityOverrideSymbols,
+        priorityOverrideBonus: memeWatchConfig.priorityOverrideBonus,
+        regularWatchStatus,
+        regularWatchRankingEnabled,
+        regularWatchPositionAwarenessEnabled,
         excludedBuySymbols,
         recentTradePenalties,
         antiChurnState,
@@ -468,6 +541,7 @@ function createStockScanner(options = {}) {
         highSlippageThresholdPct,
         badFillThresholdPct,
         executionQualityDecayPerHour,
+        allowRotationBuyEvaluation: hotSlotRotationEnabled && Number(safeNumber(portfolio.remaining_position_slots, 0)) <= 0,
         stopoutClusterBlockMinutes,
         stopoutClusterBlockCount,
         maxBuyRiskScore,
@@ -513,8 +587,34 @@ function createStockScanner(options = {}) {
         saveCandidateLifecycleState(candidateLifecycleResult.state, { env, repoRoot: resolveRepoRoot() });
       }
 
+      const buyCandidates = candidates.filter((candidate) => candidate?.payload?.side === 'buy');
+      const sellCandidates = candidates.filter((candidate) => candidate?.payload?.side === 'sell');
+      const rotationPlan = hotSlotRotationEnabled
+        ? evaluateHotSlotRotationPlan({
+          featureState: hotSlotRotationFeatureState,
+          config: hotSlotRotationConfig,
+          buyCandidates,
+          hotHotEntries: memeWatchConfig.hotList?.hotHotList || [],
+          portfolio,
+          positions: approvedPositions,
+          openOrders,
+          partialFillSummary,
+          trailingState,
+          snapshots: bundle.snapshots,
+          runtimeCandidates: candidateLifecycleResult?.state?.candidates ? Object.values(candidateLifecycleResult.state.candidates).map((entry) => ({
+            symbol: entry?.symbol,
+            adjusted_rank_score: entry?.decayed_rank ?? entry?.latest_rank ?? entry?.latest_decayed_rank ?? null,
+            rank_score: entry?.latest_rank ?? entry?.decayed_rank ?? null,
+          })) : [],
+          currentDate: receivedAt,
+          brokerState,
+        })
+        : summarizeHotSlotRotationRuntime({ enabled: false, status: 'off', lastDecision: 'rotation_blocked_feature_disabled', reasonCodes: ['rotation_blocked_feature_disabled'] }, hotSlotRotationFeatureState);
+      state.hotSlotRotation = summarizeHotSlotRotationRuntime(rotationPlan, hotSlotRotationFeatureState);
+
       const results = [];
-      for (const candidate of candidates) {
+      const postCandidate = async (candidate) => {
+        if (!candidate) return null;
         assertSignalCandidate(candidate.payload);
         const response = await localFetch(`${localBaseUrl}/${candidate.endpoint || 'paper-order'}`, {
           method: 'POST',
@@ -527,20 +627,302 @@ function createStockScanner(options = {}) {
         } catch {
           responseBody = { accepted: response.ok };
         }
-        results.push({
+        const result = {
           symbol: candidate.symbol,
           move_pct: candidate.movePct,
           spread_pct: candidate.spreadPct,
           accepted: response.ok,
           status: responseBody?.final_decision || responseBody?.status || null,
           response: responseBody,
-        });
+        };
+        results.push(result);
         if (!isApprovedPostResult({ accepted: response.ok, response: responseBody })) {
           const reasons = responseBody?.reason_codes || responseBody?.riskDecision?.reason_codes || responseBody?.risk_decision?.reason_codes || [];
           for (const reason of Array.isArray(reasons) ? reasons : [reasons].filter(Boolean)) {
             skipTracker.record(reason || 'RISK_REJECTED', { symbol: candidate.symbol, stage: 'risk' });
           }
         }
+        return result;
+      };
+
+      for (const candidate of sellCandidates) {
+        await postCandidate(candidate);
+      }
+
+      let rotationResult = null;
+      const shouldAttemptRotation = hotSlotRotationEnabled
+        && rotationPlan?.rotationEligible
+        && rotationPlan?.selectedCandidate
+        && rotationPlan?.selectedEviction;
+
+      if (shouldAttemptRotation) {
+        const eviction = rotationPlan.selectedEviction;
+        const evictionSymbol = normalizeWatchSymbol(eviction.symbol);
+        const evictionSnapshot = bundle.snapshots[evictionSymbol] || {};
+        const evictionQuote = bundle.latestQuotes[evictionSymbol] || evictionSnapshot.latestQuote || evictionSnapshot.latest_quote || {};
+        const evictionCurrentPrice = safeNumber(
+          evictionSnapshot.latestQuote?.p
+            ?? evictionSnapshot.latestTrade?.p
+            ?? evictionSnapshot.minuteBar?.c
+            ?? evictionSnapshot.dailyBar?.c
+            ?? eviction.current_price
+            ?? null,
+          null,
+        );
+        const evictionPreviousClose = safeNumber(evictionSnapshot.prevDailyBar?.c ?? evictionSnapshot.dailyBar?.c ?? eviction.previous_close ?? null, null);
+        const evictionSpreadPct = Number.isFinite(evictionCurrentPrice)
+          ? safeNumber(
+            Number.isFinite(evictionSnapshot.latestQuote?.bp) && Number.isFinite(evictionSnapshot.latestQuote?.ap)
+              ? ((evictionSnapshot.latestQuote.ap - evictionSnapshot.latestQuote.bp) / evictionCurrentPrice) * 100
+              : evictionSnapshot.spread_pct,
+            0,
+          )
+          : 0;
+        const rotationExitState = {
+          symbol: evictionSymbol,
+          exit_reason: 'HOT_SLOT_ROTATION',
+          rotation_reason: rotationPlan.evictionReason || 'small_profit_weak_momentum',
+          rotation_requested: true,
+          rotation_candidate: rotationPlan.candidate || null,
+          rotation_candidate_heat_score: rotationPlan.candidateHeatScore ?? null,
+          rotation_candidate_market_score: rotationPlan.candidateMarketScore ?? null,
+          rotation_expected_exit_pnl: rotationPlan.expectedExitPnl ?? null,
+          rotation_eviction_candidate: evictionSymbol,
+          rotation_reason_codes: ['hot_slot_rotation_requested', 'rotation_eviction_candidate_selected'],
+          unrealized_pl: Number.isFinite(eviction.netPnl) ? roundCurrency(eviction.netPnl) : null,
+        };
+        const rotationExitCandidate = buildSignalCandidate({
+          symbol: evictionSymbol,
+          side: 'sell',
+          currentPrice: evictionCurrentPrice,
+          previousClose: evictionPreviousClose,
+          spreadPct: evictionSpreadPct,
+          snapshot: evictionSnapshot,
+          latestQuote: evictionQuote,
+          options: {
+            receivedAt,
+            sellMaxPriceDiffPct,
+            requireMultiSourceConfirmation,
+            marketOpen,
+            requireMarketOpen,
+            runId: runOptions.runId || `stock_${hashObject({ receivedAt, symbols, baseUrl }).slice(0, 10)}`,
+            position: eviction,
+            trailingState,
+            openOrder: openOrders,
+            partialFillSummary,
+            sessionGuards,
+          },
+          quantity: Math.abs(safeNumber(eviction.qty ?? eviction.quantity ?? eviction.qty_available, 0)),
+          notional: null,
+          exitState: rotationExitState,
+        });
+        if (rotationExitCandidate) {
+          rotationExitCandidate.payload.market_context.rotation_state = {
+            requested: true,
+            decision: 'rotation_exit_submitted',
+            reason_codes: ['hot_slot_rotation_requested', 'rotation_eviction_candidate_selected'],
+            candidate: rotationPlan.candidate,
+            eviction_candidate: evictionSymbol,
+            eviction_reason: rotationPlan.evictionReason,
+            expected_exit_pnl: rotationPlan.expectedExitPnl,
+          };
+          state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+            ...rotationPlan,
+            lastDecision: 'rotation_exit_submitted',
+            decision: 'rotation_exit_submitted',
+            reasonCodes: ['hot_slot_rotation_requested', 'rotation_eviction_candidate_selected', 'rotation_exit_submitted'],
+            candidate: rotationPlan.candidate,
+            candidateHeatScore: rotationPlan.candidateHeatScore,
+            candidateMarketScore: rotationPlan.candidateMarketScore,
+            evictionCandidate: evictionSymbol,
+            evictionReason: rotationPlan.evictionReason,
+            expectedExitPnl: rotationPlan.expectedExitPnl,
+            accountFull: true,
+            rotationEligible: true,
+            requested: true,
+            enabled: true,
+            status: 'active',
+            lastDecisionAt: receivedAt,
+          }, hotSlotRotationFeatureState);
+          options.logger({ level: 'info', event: 'hot_slot_rotation_requested', message: `Hot slot rotation requested for ${rotationPlan.candidate} by evicting ${evictionSymbol}` });
+          rotationResult = await postCandidate(rotationExitCandidate);
+          if (!rotationResult || !rotationResult.accepted) {
+            state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+              ...state.hotSlotRotation,
+              lastDecision: 'rotation_exit_rejected',
+              decision: 'rotation_exit_rejected',
+              reasonCodes: ['hot_slot_rotation_requested', 'rotation_exit_rejected'],
+              status: 'error',
+              blockReason: 'rotation_exit_rejected',
+              lastDecisionAt: receivedAt,
+            }, hotSlotRotationFeatureState);
+          } else {
+            state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+              ...state.hotSlotRotation,
+              lastDecision: 'rotation_exit_confirmed',
+              decision: 'rotation_exit_confirmed',
+              reasonCodes: ['hot_slot_rotation_requested', 'rotation_eviction_candidate_selected', 'rotation_exit_confirmed'],
+              status: 'active',
+              blockReason: null,
+              lastDecisionAt: receivedAt,
+            }, hotSlotRotationFeatureState);
+            options.logger({ level: 'info', event: 'rotation_exit_confirmed', message: `Rotation exit confirmed for ${evictionSymbol}` });
+            const rotationDeadline = Date.now() + (hotSlotRotationConfig.exitTimeoutSeconds * 1000);
+            state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+              ...state.hotSlotRotation,
+              lastDecision: 'rotation_reconcile_after_exit_started',
+              decision: 'rotation_reconcile_after_exit_started',
+              reasonCodes: ['rotation_reconcile_after_exit_started'],
+              lastDecisionAt: nowIso(),
+            }, hotSlotRotationFeatureState);
+            options.logger({ level: 'info', event: 'rotation_reconcile_after_exit_started', message: `Rechecking broker state after exiting ${evictionSymbol}` });
+
+            let reconciledState = null;
+            while (Date.now() <= rotationDeadline) {
+              const [freshPositionsState, freshOpenOrdersState, freshAccountState] = await Promise.all([
+                fetchPositions({ fetchImpl: marketFetch, apiKeyId, apiSecretKey, baseUrl: accountBaseUrl }),
+                fetchOpenOrders({ fetchImpl: marketFetch, apiKeyId, apiSecretKey, baseUrl: accountBaseUrl }),
+                fetchAccount({ fetchImpl: marketFetch, apiKeyId, apiSecretKey, baseUrl: accountBaseUrl }),
+              ]);
+              if (!freshPositionsState.available || !freshOpenOrdersState.available || !freshAccountState.available) {
+                reconciledState = {
+                  available: false,
+                  reason: 'rotation_blocked_broker_reconciliation_failed',
+                  positions: freshPositionsState,
+                  openOrders: freshOpenOrdersState,
+                  account: freshAccountState,
+                };
+                break;
+              }
+              const freshPositions = freshPositionsState.data || [];
+              const freshOpenOrders = freshOpenOrdersState.data || [];
+              const freshAccount = freshAccountState.data || {};
+              const freshPortfolio = buildPortfolioSnapshot({
+                positions: freshPositions,
+                openOrders: freshOpenOrders,
+                account: freshAccount,
+                maxOpenPositions,
+                partialFillSummary,
+              });
+              const remainingPosition = freshPositions.find((position) => normalizeWatchSymbol(position.symbol) === evictionSymbol);
+              const remainingQty = safeNumber(remainingPosition?.qty ?? remainingPosition?.quantity ?? remainingPosition?.qty_available, 0);
+              const stillHasConflict = freshOpenOrders.some((order) => normalizeWatchSymbol(order.symbol) === evictionSymbol && String(order.side || '').toLowerCase() === 'sell');
+              if ((!remainingPosition || remainingQty <= 0) && freshPortfolio.remaining_position_slots > 0 && !stillHasConflict) {
+                reconciledState = {
+                  available: true,
+                  portfolio: freshPortfolio,
+                  positions: freshPositions,
+                  openOrders: freshOpenOrders,
+                  account: freshAccount,
+                };
+                break;
+              }
+              await sleep(1000);
+            }
+
+            if (!reconciledState?.available) {
+              state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                ...state.hotSlotRotation,
+                lastDecision: 'rotation_reconcile_after_exit_failed',
+                decision: 'rotation_reconcile_after_exit_failed',
+                reasonCodes: ['rotation_reconcile_after_exit_started', 'rotation_reconcile_after_exit_failed'],
+                status: 'error',
+                blockReason: 'rotation_reconcile_after_exit_failed',
+                lastDecisionAt: nowIso(),
+              }, hotSlotRotationFeatureState);
+              options.logger({ level: 'error', event: 'rotation_reconcile_after_exit_failed', message: `Rotation reconciliation failed for ${evictionSymbol}` });
+            } else {
+              const freshPortfolio = reconciledState.portfolio;
+              const rotationCandidateFreshEnough = Number.isFinite(hotSlotRotationConfig.entryRecheckMaxAgeSeconds)
+                ? (Date.now() - new Date(receivedAt).getTime()) <= (hotSlotRotationConfig.entryRecheckMaxAgeSeconds * 1000)
+                : true;
+              state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                ...state.hotSlotRotation,
+                lastDecision: 'rotation_buy_recheck_started',
+                decision: 'rotation_buy_recheck_started',
+                reasonCodes: ['rotation_buy_recheck_started'],
+                status: 'active',
+                lastDecisionAt: nowIso(),
+              }, hotSlotRotationFeatureState);
+              options.logger({ level: 'info', event: 'rotation_buy_recheck_started', message: `Revalidating ${rotationPlan.candidate} after exiting ${evictionSymbol}` });
+              const freshCandidate = buyCandidates.find((candidate) => normalizeWatchSymbol(candidate.symbol) === normalizeWatchSymbol(rotationPlan.candidate)) || null;
+              const rotationCandidateStillValid = Boolean(
+                rotationCandidateFreshEnough
+                && freshCandidate
+                && freshPortfolio.remaining_position_slots > 0
+                && Number.isFinite(safeNumber(freshCandidate.payload?.market_context?.scanner?.current_price, null))
+                && Number.isFinite(safeNumber(freshCandidate.payload?.market_context?.scanner?.spread_pct, null)),
+              );
+              if (!rotationCandidateStillValid) {
+                state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                  ...state.hotSlotRotation,
+                  lastDecision: 'rotation_candidate_no_longer_valid',
+                  decision: 'rotation_candidate_no_longer_valid',
+                  reasonCodes: ['rotation_buy_recheck_started', 'rotation_candidate_no_longer_valid'],
+                  status: 'active',
+                  blockReason: 'rotation_candidate_no_longer_valid',
+                  lastDecisionAt: nowIso(),
+                }, hotSlotRotationFeatureState);
+                options.logger({ level: 'warn', event: 'rotation_candidate_no_longer_valid', message: `Rotation candidate ${rotationPlan.candidate} is no longer valid after exit` });
+              } else {
+                state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                  ...state.hotSlotRotation,
+                  lastDecision: 'rotation_candidate_still_valid',
+                  decision: 'rotation_candidate_still_valid',
+                  reasonCodes: ['rotation_buy_recheck_started', 'rotation_candidate_still_valid'],
+                  status: 'active',
+                  blockReason: null,
+                  lastDecisionAt: nowIso(),
+                }, hotSlotRotationFeatureState);
+                options.logger({ level: 'info', event: 'rotation_candidate_still_valid', message: `Rotation candidate ${rotationPlan.candidate} remains valid` });
+                const promotedCandidate = buyCandidates.find((candidate) => normalizeWatchSymbol(candidate.symbol) === normalizeWatchSymbol(rotationPlan.candidate)) || null;
+                if (promotedCandidate) {
+                  state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                    ...state.hotSlotRotation,
+                    lastDecision: 'rotation_candidate_promoted_to_risk_gate',
+                    decision: 'rotation_candidate_promoted_to_risk_gate',
+                    reasonCodes: ['rotation_buy_recheck_started', 'rotation_candidate_still_valid', 'rotation_candidate_promoted_to_risk_gate'],
+                    status: 'active',
+                    lastDecisionAt: nowIso(),
+                  }, hotSlotRotationFeatureState);
+                  options.logger({ level: 'info', event: 'rotation_candidate_promoted_to_risk_gate', message: `Posting rotation candidate ${rotationPlan.candidate} through the normal risk gate` });
+                  const promotedResult = await postCandidate(promotedCandidate);
+                  if (promotedResult && promotedResult.accepted) {
+                    state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                      ...state.hotSlotRotation,
+                      lastDecision: 'rotation_complete',
+                      decision: 'rotation_complete',
+                      reasonCodes: ['rotation_complete'],
+                      status: 'active',
+                      rotationEligible: true,
+                      lastDecisionAt: nowIso(),
+                    }, hotSlotRotationFeatureState);
+                    options.logger({ level: 'info', event: 'rotation_complete', message: `Hot slot rotation completed for ${rotationPlan.candidate}` });
+                  } else {
+                    state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                      ...state.hotSlotRotation,
+                      lastDecision: 'rotation_aborted',
+                      decision: 'rotation_aborted',
+                      reasonCodes: ['rotation_candidate_promoted_to_risk_gate', 'rotation_aborted'],
+                      status: 'error',
+                      blockReason: 'rotation_aborted',
+                      lastDecisionAt: nowIso(),
+                    }, hotSlotRotationFeatureState);
+                    options.logger({ level: 'warn', event: 'rotation_aborted', message: `Hot slot rotation aborted for ${rotationPlan.candidate}` });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      const buyCandidatesToPost = !hotSlotRotationEnabled || !rotationPlan?.accountFull
+        ? buyCandidates
+        : [];
+
+      for (const candidate of buyCandidatesToPost) {
+        await postCandidate(candidate);
       }
 
       state.lastRunAt = receivedAt;
@@ -572,6 +954,7 @@ function createStockScanner(options = {}) {
         brokerState,
         candidateLifecycleState: candidateLifecycleResult?.state || previousCandidateLifecycleState,
         candidateLifecycleSummary: candidateLifecycleResult?.summary || summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
+        hotSlotRotation: state.hotSlotRotation || null,
       });
       return {
         accepted: true,
@@ -585,6 +968,7 @@ function createStockScanner(options = {}) {
         execution_quality_summary: executionQualitySummary,
         anti_churn_state: antiChurnState,
         anti_churn_summary: antiChurnSummary,
+        hot_slot_rotation: state.hotSlotRotation || null,
         candidate_lifecycle_state: candidateLifecycleResult?.state || previousCandidateLifecycleState,
         candidate_lifecycle_summary: candidateLifecycleResult?.summary || summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
         skip_summary: skipTracker.summary(),
@@ -606,6 +990,7 @@ function createStockScanner(options = {}) {
         }),
         candidateLifecycleState: previousCandidateLifecycleState || null,
         candidateLifecycleSummary: summarizeCandidateLifecycleState(previousCandidateLifecycleState || {}),
+        hotSlotRotation: state.hotSlotRotation || null,
       });
       throw error;
     } finally {
@@ -655,6 +1040,7 @@ function createStockScanner(options = {}) {
       stopLossMaxDollars,
       trailingProfitStartDollars,
       trailingProfitGivebackDollars,
+      sellNetProfitFloorDollars,
       twelveDataApiKey,
       twelveDataBaseUrl,
       requireMultiSourceConfirmation,
@@ -718,12 +1104,14 @@ function createStockScanner(options = {}) {
       antiChurnGuardSymbolLoopCount,
       antiChurnGuardSetupLoopCount,
       excludedBuySymbols,
+      hotSlotRotationEnabled,
+      hotSlotRotationConfig,
     },
   };
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, hotSlotRotation = null, skipSummary = null, recentSkips = [], candidates = [], results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     writeScannerRuntimeState({
       scanner: 'stock-scanner',
@@ -747,11 +1135,28 @@ function createStockScanner(options = {}) {
       session_guards: sessionGuards || null,
       candidate_lifecycle_state: candidateLifecycleState || null,
       candidate_lifecycle_summary: candidateLifecycleSummary || summarizeCandidateLifecycleState(candidateLifecycleState || {}),
+      hot_slot_rotation: hotSlotRotation || null,
       candidate_rank_details: candidates
         .filter((candidate) => candidate.payload?.side === 'buy')
         .map((candidate) => ({
           symbol: candidate.symbol,
           setup_key: candidate.setupKey || null,
+          current_price: candidate.payload?.market_context?.scanner?.current_price ?? null,
+          previous_close: candidate.payload?.market_context?.scanner?.previous_close ?? null,
+          move_pct: candidate.payload?.market_context?.scanner?.move_pct ?? null,
+          spread_pct: candidate.payload?.market_context?.scanner?.spread_pct ?? null,
+          volume: candidate.payload?.volume ?? candidate.volume ?? null,
+          average_volume: candidate.payload?.market_context?.scanner?.average_volume ?? null,
+          volume_multiple: candidate.payload?.market_context?.scanner?.volume_multiple ?? null,
+          dynamic_watchlist_member: Boolean(candidate.payload?.market_context?.scanner?.dynamic_watchlist_member),
+          priority_override_eligible: Boolean(candidate.payload?.market_context?.scanner?.priority_override_eligible),
+          priority_override_applied: Boolean(candidate.payload?.market_context?.scanner?.priority_override_applied),
+          priority_override_bonus: roundScore(candidate.priorityOverrideBonus || 0),
+          priority_override_block_reason: candidate.payload?.market_context?.scanner?.priority_override_block_reason || null,
+          regular_watch_comparison: candidate.payload?.market_context?.scanner?.regular_watch_comparison || null,
+          position_awareness_tags: Array.isArray(candidate.payload?.market_context?.scanner?.position_awareness_tags)
+            ? candidate.payload.market_context.scanner.position_awareness_tags.slice()
+            : [],
           rank_score: roundScore(candidate.rankScore),
           base_rank_score: roundScore(candidate.baseRankScore ?? candidate.rankScore),
           recent_trade_rank_penalty: roundScore(candidate.recentTradeRankPenalty || 0),
@@ -827,6 +1232,22 @@ function createStockScanner(options = {}) {
           .map((candidate) => ({
             symbol: candidate.symbol,
             sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+            current_price: candidate.payload?.market_context?.scanner?.current_price ?? null,
+            previous_close: candidate.payload?.market_context?.scanner?.previous_close ?? null,
+            move_pct: candidate.payload?.market_context?.scanner?.move_pct ?? null,
+            spread_pct: candidate.payload?.market_context?.scanner?.spread_pct ?? null,
+            volume: candidate.payload?.volume ?? candidate.volume ?? null,
+            average_volume: candidate.payload?.market_context?.scanner?.average_volume ?? null,
+            volume_multiple: candidate.payload?.market_context?.scanner?.volume_multiple ?? null,
+            dynamic_watchlist_member: Boolean(candidate.payload?.market_context?.scanner?.dynamic_watchlist_member),
+            priority_override_eligible: Boolean(candidate.payload?.market_context?.scanner?.priority_override_eligible),
+            priority_override_applied: Boolean(candidate.payload?.market_context?.scanner?.priority_override_applied),
+            priority_override_bonus: roundScore(candidate.priorityOverrideBonus || 0),
+            priority_override_block_reason: candidate.payload?.market_context?.scanner?.priority_override_block_reason || null,
+            regular_watch_comparison: candidate.payload?.market_context?.scanner?.regular_watch_comparison || null,
+            position_awareness_tags: Array.isArray(candidate.payload?.market_context?.scanner?.position_awareness_tags)
+              ? candidate.payload.market_context.scanner.position_awareness_tags.slice()
+              : [],
             risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
             structure_stop: candidate.payload?.structure_stop || null,
             execution_quality: candidate.payload?.execution_quality || null,
@@ -845,6 +1266,7 @@ function createStockScanner(options = {}) {
         stop_loss_max_dollars: stopLossMaxDollars,
         trailing_profit_start_dollars: trailingProfitStartDollars,
         trailing_profit_giveback_dollars: trailingProfitGivebackDollars,
+        sell_net_profit_floor_dollars: sellNetProfitFloorDollars,
       },
       anti_churn_overview: antiChurnState ? {
         active_churn_guard: Boolean(antiChurnState.churn_guard?.active),
@@ -1066,8 +1488,31 @@ function buildCandidates(bundle, options = {}) {
   const openOrdersBySymbol = buildOpenOrderLookup(options.openOrders || []);
   const sellEntries = [];
   const buyEntries = [];
+  const attentionSymbols = Array.isArray(options.attentionSymbols) && options.attentionSymbols.length
+    ? options.attentionSymbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean)
+    : Array.isArray(options.approvedSymbols)
+      ? options.approvedSymbols.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean)
+      : [];
+  const attentionSet = new Set(attentionSymbols);
+  const dynamicWatchlistSymbols = options.dynamicWatchlistSymbols instanceof Set
+    ? options.dynamicWatchlistSymbols
+    : new Set(Array.isArray(options.dynamicWatchlistSymbols) ? options.dynamicWatchlistSymbols : []);
+  const priorityOverrideSymbols = options.priorityOverrideSymbols instanceof Set
+    ? options.priorityOverrideSymbols
+    : new Set(Array.isArray(options.priorityOverrideSymbols) ? options.priorityOverrideSymbols : []);
+  const priorityOverrideBonus = Math.max(0, safeNumber(options.priorityOverrideBonus, 1000));
+  const regularWatchRankingEnabled = Boolean(options.regularWatchRankingEnabled);
+  const regularWatchPositionAwarenessEnabled = Boolean(options.regularWatchPositionAwarenessEnabled);
+  const regularWatchStatus = options.regularWatchStatus || null;
+  const regularWatchEntryBySymbol = new Map();
+  const regularWatchList = Array.isArray(regularWatchStatus?.regularWatchList) ? regularWatchStatus.regularWatchList : [];
+  for (const entry of regularWatchList) {
+    const entrySymbol = String(entry?.symbol || '').trim().toUpperCase();
+    if (!entrySymbol || regularWatchEntryBySymbol.has(entrySymbol)) continue;
+    regularWatchEntryBySymbol.set(entrySymbol, entry);
+  }
   for (const symbol of symbols) {
-    if (Array.isArray(options.approvedSymbols) && !options.approvedSymbols.includes(symbol)) {
+    if (attentionSet.size && !attentionSet.has(symbol)) {
       options.skipTracker?.record?.('NOT_IN_APPROVED_ROTATION', { symbol });
       continue;
     }
@@ -1094,6 +1539,7 @@ function buildCandidates(bundle, options = {}) {
       requireMultiSourceConfirmation: options.requireMultiSourceConfirmation,
       allowContrarianEntries: options.allowContrarianEntries,
       blockBuys: options.blockBuys,
+      maxBuyRiskScore: options.maxBuyRiskScore,
       marketOpen: options.marketOpen,
       requireMarketOpen: options.requireMarketOpen,
       intradayRegime: options.intradayRegime,
@@ -1147,19 +1593,73 @@ function buildCandidates(bundle, options = {}) {
       monitorModeAllowsNewBuys: options.monitorModeAllowsNewBuys,
       manageOnlyBlocksBuys: options.manageOnlyBlocksBuys,
       scannerMode: options.scannerMode,
+      allowRotationBuyEvaluation: options.allowRotationBuyEvaluation,
       rotationSoftBandPoints: options.rotationSoftBandPoints,
       rotationHardBandPoints: options.rotationHardBandPoints,
       rotationMinHoldScans: options.rotationMinHoldScans,
       position_avg_entry_price: safeNumber(positionsBySymbol.get(symbol)?.avg_entry_price ?? positionsBySymbol.get(symbol)?.avgEntryPrice ?? null),
       position_qty_available: safeNumber(positionsBySymbol.get(symbol)?.qty ?? positionsBySymbol.get(symbol)?.quantity ?? positionsBySymbol.get(symbol)?.qty_available ?? null),
     });
+    if (candidate?.payload?.market_context?.scanner) {
+      const scannerContext = candidate.payload.market_context.scanner;
+      const isDynamicWatchSymbol = dynamicWatchlistSymbols.has(symbol);
+      const isPriorityOverrideSymbol = priorityOverrideSymbols.has(symbol);
+      const isPriorityOverrideApplied = isPriorityOverrideSymbol && candidate.payload.side === 'buy';
+      candidate.positionAwarenessTags = buildPositionAwarenessTags({
+        symbol,
+        candidate,
+        position: positionsBySymbol.get(symbol) || null,
+        openOrders: openOrdersBySymbol.get(symbol) || null,
+        partialFillSummary: options.partialFillSummary || null,
+        enabled: regularWatchPositionAwarenessEnabled,
+      });
+      const regularWatchEntry = regularWatchEntryBySymbol.get(symbol) || null;
+      const regularWatchComparison = buildRegularWatchComparison({
+        symbol,
+        candidate,
+        regularWatchEntry,
+        regularWatchRankingEnabled,
+      });
+      scannerContext.dynamic_watchlist_member = isDynamicWatchSymbol;
+      scannerContext.priority_override_eligible = isPriorityOverrideSymbol;
+      scannerContext.priority_override_applied = isPriorityOverrideApplied;
+      scannerContext.priority_override_bonus = isPriorityOverrideApplied ? priorityOverrideBonus : 0;
+      scannerContext.priority_override_block_reason = null;
+      scannerContext.regular_watch_comparison = regularWatchComparison;
+      candidate.dynamicWatchlistMember = isDynamicWatchSymbol;
+      candidate.priorityOverrideEligible = isPriorityOverrideSymbol;
+      candidate.priorityOverrideApplied = isPriorityOverrideApplied;
+      candidate.priorityOverrideBonus = isPriorityOverrideApplied ? priorityOverrideBonus : 0;
+      candidate.priorityOverrideSortScore = candidate.rankScore;
+      candidate.regularWatchComparison = regularWatchComparison;
+      candidate.regularWatchSortScore = Number.isFinite(Number(regularWatchComparison?.sortScore))
+        ? Number(regularWatchComparison.sortScore)
+        : candidate.priorityOverrideSortScore;
+      scannerContext.position_awareness_tags = candidate.positionAwarenessTags.slice();
+      if (isPriorityOverrideApplied) {
+        candidate.priorityOverrideBonus = priorityOverrideBonus;
+        candidate.priorityOverrideSortScore = candidate.rankScore + priorityOverrideBonus;
+        candidate.regularWatchSortScore = Math.max(candidate.regularWatchSortScore, candidate.priorityOverrideSortScore);
+      }
+    }
     if (candidate?.payload?.side === 'sell') {
       sellEntries.push(candidate);
     } else if (candidate?.payload?.side === 'buy') {
       buyEntries.push(candidate);
     }
   }
-  buyEntries.sort((a, b) => b.rankScore - a.rankScore);
+  buyEntries.sort((a, b) => {
+    const aScore = Number.isFinite(Number(a.regularWatchSortScore))
+      ? Number(a.regularWatchSortScore)
+      : (Number.isFinite(Number(a.priorityOverrideSortScore)) ? Number(a.priorityOverrideSortScore) : Number(a.rankScore || 0));
+    const bScore = Number.isFinite(Number(b.regularWatchSortScore))
+      ? Number(b.regularWatchSortScore)
+      : (Number.isFinite(Number(b.priorityOverrideSortScore)) ? Number(b.priorityOverrideSortScore) : Number(b.rankScore || 0));
+    if (bScore !== aScore) return bScore - aScore;
+    const rankDelta = Number(b.rankScore || 0) - Number(a.rankScore || 0);
+    if (Math.abs(rankDelta) > 1e-9) return rankDelta;
+    return String(a.symbol).localeCompare(String(b.symbol));
+  });
   let candidateLifecycleResult = null;
   let selectedBuyEntries = buyEntries;
   if (options.candidateLifecycleEnabled) {
@@ -1220,6 +1720,70 @@ function buildCandidates(bundle, options = {}) {
     ],
     candidateLifecycleResult,
   };
+}
+
+function buildRegularWatchComparison({ symbol, candidate, regularWatchEntry = null, regularWatchRankingEnabled = false } = {}) {
+  const scannerScore = safeNumber(candidate?.rankScore ?? candidate?.priorityOverrideSortScore, null);
+  const regularWatchScore = safeNumber(regularWatchEntry?.score, null);
+  const baseSortScore = safeNumber(candidate?.priorityOverrideSortScore ?? candidate?.rankScore, null);
+  const scoreDelta = Number.isFinite(scannerScore) && Number.isFinite(regularWatchScore)
+    ? Number((regularWatchScore - scannerScore).toFixed(2))
+    : null;
+  const rankingEligible = Boolean(
+    regularWatchRankingEnabled
+    && regularWatchEntry
+    && regularWatchEntry.status !== 'blocked'
+    && regularWatchEntry.scannerWatched !== false,
+  );
+  const rankingBonus = rankingEligible && Number.isFinite(regularWatchScore)
+    ? Math.max(0, Math.round(regularWatchScore - (baseSortScore || 0)))
+    : 0;
+  const sortScore = rankingEligible && Number.isFinite(regularWatchScore)
+    ? regularWatchScore
+    : baseSortScore;
+  return {
+    symbol,
+    enabled: Boolean(regularWatchRankingEnabled),
+    approved: true,
+    rankingEligible,
+    rankingApplied: rankingEligible && rankingBonus > 0,
+    rankingBonus,
+    scannerScore: Number.isFinite(scannerScore) ? scannerScore : null,
+    regularWatchScore: Number.isFinite(regularWatchScore) ? regularWatchScore : null,
+    scoreDelta,
+    blockedReason: regularWatchEntry?.blockedReason || null,
+    sources: Array.isArray(regularWatchEntry?.sourceStatus) ? regularWatchEntry.sourceStatus.slice() : [],
+    sourceContributors: Array.isArray(regularWatchEntry?.sourceContributors) ? regularWatchEntry.sourceContributors.slice() : [],
+    positionTags: Array.isArray(candidate?.positionAwarenessTags) ? candidate.positionAwarenessTags.slice() : [],
+    baseSortScore: Number.isFinite(baseSortScore) ? baseSortScore : null,
+    sortScore: Number.isFinite(sortScore) ? sortScore : null,
+  };
+}
+
+function buildPositionAwarenessTags({ symbol, candidate = null, position = null, openOrders = null, partialFillSummary = null, enabled = false } = {}) {
+  if (!enabled) return [];
+  const tags = new Set();
+  const qty = safeNumber(position?.qty ?? position?.quantity ?? position?.qty_available ?? candidate?.position_qty_available ?? 0, 0);
+  const hasPosition = Number.isFinite(qty) && Math.abs(qty) > 0;
+  if (!hasPosition) return [];
+  const avgEntry = safeNumber(position?.avg_entry_price ?? position?.avgEntryPrice ?? candidate?.position_avg_entry_price ?? null, null);
+  const currentPrice = safeNumber(candidate?.payload?.market_context?.scanner?.current_price ?? candidate?.currentPrice ?? null, null);
+  const unrealizedPl = safeNumber(position?.unrealized_pl ?? position?.unrealizedPnl ?? position?.unrealized_intraday_pl ?? null, null);
+  const pnlPct = Number.isFinite(avgEntry) && avgEntry > 0 && Number.isFinite(currentPrice)
+    ? ((currentPrice - avgEntry) / avgEntry) * 100
+    : null;
+  const recentOrders = Array.isArray(openOrders) ? openOrders : [];
+  const hasOpenSellOrder = recentOrders.some((order) => String(order?.symbol || '').trim().toUpperCase() === String(symbol || '').trim().toUpperCase() && String(order?.side || '').toLowerCase() === 'sell');
+  const hasPartialFill = Boolean(findPendingPartialForSymbol(partialFillSummary || {}, symbol, 'sell') || findPendingPartialForSymbol(partialFillSummary || {}, symbol, 'buy'));
+  const staleMarket = Boolean(candidate?.stale);
+  if (Number.isFinite(pnlPct) && pnlPct >= 12) tags.add('strong_runner');
+  if (Number.isFinite(pnlPct) && Math.abs(pnlPct) <= 1.5) tags.add('weak_flat');
+  if ((Number.isFinite(unrealizedPl) && Math.abs(unrealizedPl) <= 0.25) || (Number.isFinite(pnlPct) && Math.abs(pnlPct) <= 0.5 && staleMarket)) tags.add('break_even_stale');
+  if (hasOpenSellOrder || hasPartialFill) tags.add('do_not_evict');
+  if (candidate?.rotationEligible || candidate?.payload?.market_context?.scanner?.candidate_lifecycle_selected) tags.add('rotation_candidate');
+  if (candidate?.payload?.market_context?.scanner?.priority_override_applied) tags.add('priority_override_active');
+  if (tags.size === 0 && Number.isFinite(pnlPct) && pnlPct > 0) tags.add('profitable_hold');
+  return [...tags];
 }
 
 function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {}) {
@@ -1321,10 +1885,10 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   if (options.blockBuys) return skip('BUY_SIDE_BLOCKED');
   if (options.requireMarketOpen && options.marketOpen === false) return skip('MARKET_CLOSED_FOR_STOCKS');
   if (options.regimeBuysAllowed === false) return skip(options.intradayRegime?.reason_code || 'INTRADAY_REGIME_BUY_BLOCK', { regime: options.intradayRegime?.regime || null });
-  if (options.allocation && options.allocation.accepted === false) {
+  if (options.allocation && options.allocation.accepted === false && !(options.allowRotationBuyEvaluation && options.allocation.reason === 'MAX_POSITION_SLOTS_FILLED')) {
     return skip(options.allocation.reason || 'ALLOCATION_BLOCKED');
   }
-  if (options.portfolio?.remaining_position_slots !== null && options.portfolio?.remaining_position_slots <= 0) {
+  if (!options.allowRotationBuyEvaluation && options.portfolio?.remaining_position_slots !== null && options.portfolio?.remaining_position_slots <= 0) {
     return skip('MAX_POSITION_SLOTS_FILLED');
   }
   if (Array.isArray(options.excludedBuySymbols) && options.excludedBuySymbols.includes(symbol)) {
@@ -1556,6 +2120,10 @@ function extractFilledTrade(record = {}) {
   };
 }
 
+function normalizeWatchSymbol(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 function getRecentTradePenalty(penalties, symbol) {
   if (!penalties) return null;
   const normalized = String(symbol || '').trim().toUpperCase();
@@ -1691,6 +2259,86 @@ function determineScannerMode({
   return 'hunt';
 }
 
+function resolveScannerWatchConfig({
+  env = process.env,
+  repoRoot = resolveRepoRoot(),
+  dataDir = path.resolve(repoRoot, 'data'),
+  memeMonitorStatePath = null,
+  dynamicHotListPath = null,
+  approvedSymbols = [],
+  currentDate = nowIso(),
+} = {}) {
+  const state = loadMemeMonitorState({
+    env,
+    repoRoot,
+    filePath: memeMonitorStatePath || resolveMemeMonitorStatePath({ dataDir, repoRoot }),
+  });
+  const hotList = loadDynamicHotList({
+    dataDir,
+    filePath: dynamicHotListPath || resolveDynamicHotListPath({ dataDir, repoRoot }),
+    env,
+    now: currentDate,
+  });
+  const approved = approvedSymbols
+    .map((symbol) => normalizeWatchSymbol(symbol))
+    .filter(Boolean);
+  const attention = new Set(approved);
+  const dynamicWatchlistSymbols = new Set();
+  const priorityOverrideSymbols = new Set();
+  const dynamicFeature = state?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED;
+  const priorityFeature = state?.features?.MEME_PRIORITY_OVERRIDE_ENABLED;
+  const dynamicEnabled = Boolean(dynamicFeature?.effective);
+  const priorityEnabled = Boolean(priorityFeature?.effective);
+  const hotListEnabled = Boolean(state?.features?.MEME_HOT_LIST_ENABLED?.effective);
+  const hotListActive = Boolean(hotList?.enabled) && !hotList?.stale;
+
+  if (dynamicEnabled && hotListEnabled && hotListActive) {
+    const dynamicEntries = Array.isArray(hotList?.dynamicHotList) ? hotList.dynamicHotList : [];
+    const hotHotEntries = Array.isArray(hotList?.hotHotList) ? hotList.hotHotList : [];
+    for (const entry of [...dynamicEntries, ...hotHotEntries]) {
+      const symbol = normalizeWatchSymbol(entry?.symbol);
+      if (!symbol) continue;
+      if (entry?.status === 'ignore' || entry?.expired) continue;
+      dynamicWatchlistSymbols.add(symbol);
+      attention.add(symbol);
+      if (priorityEnabled && entry?.status === 'hot_hot') {
+        priorityOverrideSymbols.add(symbol);
+      }
+    }
+  }
+
+  return {
+    attentionSymbols: [...attention],
+    dynamicWatchlistSymbols,
+    priorityOverrideSymbols,
+    priorityOverrideBonus: 1000,
+    state,
+    hotList,
+    dynamicEnabled,
+    priorityEnabled,
+    hotListActive,
+  };
+}
+
+function rankScannerBuyCandidates(candidates = [], options = {}) {
+  const priorityOverrideSymbols = options.priorityOverrideSymbols instanceof Set
+    ? options.priorityOverrideSymbols
+    : new Set(Array.isArray(options.priorityOverrideSymbols) ? options.priorityOverrideSymbols : []);
+  const priorityOverrideBonus = Math.max(0, safeNumber(options.priorityOverrideBonus, 1000));
+  return [...candidates].sort((a, b) => {
+    const aSymbol = normalizeWatchSymbol(a?.symbol);
+    const bSymbol = normalizeWatchSymbol(b?.symbol);
+    const aScore = Number(a?.priorityOverrideSortScore)
+      || (priorityOverrideSymbols.has(aSymbol) ? Number(a?.rankScore || 0) + priorityOverrideBonus : Number(a?.rankScore || 0));
+    const bScore = Number(b?.priorityOverrideSortScore)
+      || (priorityOverrideSymbols.has(bSymbol) ? Number(b?.rankScore || 0) + priorityOverrideBonus : Number(b?.rankScore || 0));
+    if (bScore !== aScore) return bScore - aScore;
+    const rankDelta = Number(b?.rankScore || 0) - Number(a?.rankScore || 0);
+    if (Math.abs(rankDelta) > 1e-9) return rankDelta;
+    return String(aSymbol).localeCompare(String(bSymbol));
+  });
+}
+
 function calculateEffectiveStopLossDollars({
   baseStopLossDollars = 1,
   stopLossNotionalPct = 0,
@@ -1715,17 +2363,19 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const stopLossMaxDollars = Math.max(Math.abs(stopLossDollars), safeNumber(options.stopLossMaxDollars, Math.abs(stopLossDollars)));
   const trailingStart = options.trailingProfitStartDollars ?? 0.5;
   const trailingGiveback = options.trailingProfitGivebackDollars ?? 0.3;
+  const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars, 0));
   const peak = safeNumber(trailingRecord.peak_unrealized_pl, null);
-  const trailingActive = Number.isFinite(peak) && peak >= trailingStart;
-  const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
   const entryPrice = safeNumber(options.position?.avg_entry_price ?? options.position?.avgEntryPrice ?? options.position_avg_entry_price, null);
   const entrySlippage = Math.max(0, safeNumber(options.position?.entry_slippage ?? options.position?.entrySlippage, 0));
   const exitSlippage = Math.max(0, safeNumber(options.exitSlippage ?? options.position?.exit_slippage ?? options.position?.exitSlippage, 0));
   const fees = Math.max(0, safeNumber(options.fees ?? options.position?.fees ?? options.position?.estimated_fees, 0));
+  const executionDrag = entrySlippage + exitSlippage + fees;
+  const effectiveTrailingStart = Math.max(trailingStart, sellNetProfitFloorDollars + trailingGiveback + executionDrag);
+  const trailingActive = Number.isFinite(peak) && peak >= effectiveTrailingStart;
+  const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
   const grossPnl = Number.isFinite(entryPrice)
     ? (currentPrice - entryPrice) * Math.abs(positionQty)
     : unrealized;
-  const executionDrag = entrySlippage + exitSlippage + fees;
   const netPnl = Number.isFinite(grossPnl) ? grossPnl - executionDrag : null;
   const positionMarketValue = safeNumber(
     options.position?.market_value ?? options.position?.marketValue,
@@ -1754,7 +2404,9 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     distance_to_stop_dollars: Number.isFinite(unrealized) ? roundCurrency(unrealized + effectiveStopLossDollars) : null,
     trailing_active: trailingActive,
     trailing_peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
+    trailing_activation_profit_dollars: roundCurrency(effectiveTrailingStart),
     trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? roundCurrency(trailingSellAt) : null,
+    sell_net_profit_floor_dollars: roundCurrency(sellNetProfitFloorDollars),
     sell_price: Number.isFinite(currentPrice) ? roundCurrency(currentPrice) : null,
     entry_price: Number.isFinite(entryPrice) ? roundCurrency(entryPrice) : null,
     quantity: Number(Math.abs(positionQty).toFixed(6)),
@@ -1768,7 +2420,13 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     exit_reason: exitReason,
   };
   if (!exitReason) {
-    options.skipTracker?.record?.('EXIT_TARGET_NOT_MET', { symbol, unrealized_pl: exitState.unrealized_pl });
+    options.skipTracker?.record?.('EXIT_TARGET_NOT_MET', {
+      symbol,
+      unrealized_pl: exitState.unrealized_pl,
+      net_pnl: exitState.net_pnl,
+      sell_net_profit_floor_dollars: exitState.sell_net_profit_floor_dollars,
+      trailing_activation_profit_dollars: exitState.trailing_activation_profit_dollars,
+    });
     return null;
   }
   return buildSignalCandidate({
@@ -2132,7 +2790,16 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       session_guards: side === 'buy' ? summarizeSessionGuards(sessionGuards) : null,
     },
     volume,
-    alpaca_quote: normalizedPrimary,
+    average_volume: dailyVolume > 0 ? dailyVolume : null,
+      volume_multiple: Number.isFinite(dailyVolume) && dailyVolume > 0
+        ? Number((volume / dailyVolume).toFixed(4))
+        : null,
+      dynamic_watchlist_member: Boolean(options.dynamicWatchlistMember),
+      priority_override_eligible: Boolean(options.priorityOverrideEligible),
+      priority_override_applied: Boolean(options.priorityOverrideApplied),
+      priority_override_bonus: Number.isFinite(Number(options.priorityOverrideBonus)) ? roundScore(options.priorityOverrideBonus) : 0,
+      priority_override_block_reason: options.priorityOverrideBlockReason || null,
+      alpaca_quote: normalizedPrimary,
     secondary_quote: secondaryQuote,
     twelve_data_quote: options.twelveDataQuote || null,
     alpaca_snapshot: snapshot,
@@ -2229,6 +2896,10 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     endpoint: 'paper-order',
     payload,
     exitState,
+    dynamicWatchlistMember: Boolean(options.dynamicWatchlistMember),
+    priorityOverrideEligible: Boolean(options.priorityOverrideEligible),
+    priorityOverrideApplied: Boolean(options.priorityOverrideApplied),
+    priorityOverrideBonus: Number.isFinite(Number(options.priorityOverrideBonus)) ? roundScore(options.priorityOverrideBonus) : 0,
   };
 }
 
@@ -2272,6 +2943,10 @@ function chunkSymbols(symbols, size) {
   return chunks;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
 function roundCurrency(value) {
   return Math.round(Number(value) * 10000) / 10000;
 }
@@ -2294,4 +2969,6 @@ module.exports = {
   calculateEffectiveStopLossDollars,
   createStockScanner,
   normalizeRecentTradePenaltyMap,
+  rankScannerBuyCandidates,
+  resolveScannerWatchConfig,
 };

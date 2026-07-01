@@ -7,6 +7,7 @@ const { nowIso } = require('./util');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { createOvernightScanner } = require('./overnight-scanner');
 const { parseSymbolList, APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
+const { loadMemeMonitorState } = require('./meme-monitor-state');
 
 function resolvePerformanceHistoryPath(env = process.env) {
   const configuredPath = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
@@ -84,6 +85,7 @@ function listenWithFallback(server, preferredPort, options = {}) {
 function startTradingControlServer(env = process.env, options = {}) {
   const runtimeEnv = env === process.env ? loadRuntimeEnv(env) : env;
   const config = options.config || loadConfig(runtimeEnv);
+  const memeFeatureState = loadMemeMonitorState({ env: runtimeEnv, repoRoot: options.repoRoot || path.resolve(__dirname, '..') });
   const executionAdapter = buildExecutionAdapter(runtimeEnv, config, options);
   const startupPolicyPatch = options.startupPolicyPatch || {
     source: 'startup-config',
@@ -168,6 +170,9 @@ function startTradingControlServer(env = process.env, options = {}) {
       port: resolvedPort,
       mode: config.TRADING_MODE,
       alpaca_execution_enabled: config.ALPACA_EXECUTION_ENABLED,
+      meme_monitor: memeFeatureState.summary?.master_enabled ? 'enabled' : 'disabled',
+      meme_feature_state_source: memeFeatureState.source || 'env + runtime state',
+      meme_blocked_features: memeFeatureState.blocked_features || [],
       performance_history_path: options.performanceHistoryPath || resolvePerformanceHistoryPath(runtimeEnv),
       policy_path: options.policyPath || resolvePolicyPath(runtimeEnv),
       policy_history_path: options.policyHistoryPath || resolvePolicyHistoryPath(runtimeEnv),

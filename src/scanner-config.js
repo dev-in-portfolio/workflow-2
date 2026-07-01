@@ -8,6 +8,7 @@ const SCANNER_CONFIG_KEYS = [
   'intervalMs', 'maxCandidatesPerRun', 'notional', 'minBuyNotional', 'maxOpenPositions',
   'stopLossDollars', 'stopLossNotionalPct', 'stopLossMaxDollars',
   'trailingProfitStartDollars', 'trailingProfitGivebackDollars',
+  'sellNetProfitFloorDollars',
   'requireMultiSourceConfirmation', 'allowContrarianEntries', 'blockBuys', 'sellMaxPriceDiffPct',
   'recentTradePenaltyMinutes', 'recentTradeRankPenalty',
   'recentLossPenaltyMinutes', 'recentLossRankPenalty',
@@ -45,6 +46,10 @@ const SCANNER_CONFIG_KEYS = [
   'huntToMonitorLatchEnabled', 'monitorModeAllowsNewBuys', 'manageOnlyBlocksBuys',
   'microRotationGuardEnabled', 'rotationSoftBandPoints', 'rotationHardBandPoints',
   'rotationMinHoldScans',
+  'hotSlotRotationEnabled', 'hotSlotRotationMinHeatScore', 'hotSlotRotationMinMarketScore',
+  'rotationRequireBreakevenOrBetter', 'rotationAllowTinyLoss', 'rotationMaxAllowedLossDollars',
+  'rotationProtectStrongRunners', 'rotationRecheckAfterExit', 'rotationExitTimeoutSeconds',
+  'rotationEntryRecheckMaxAgeSeconds',
 ];
 
 function buildScannerConfig(env = process.env) {
@@ -68,6 +73,7 @@ function buildScannerConfig(env = process.env) {
     stopLossMaxDollars: Math.max(1, safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5)),
     trailingProfitStartDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_START_DOLLARS ?? 0.5) || 0.5),
     trailingProfitGivebackDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? 0.3) || 0.3),
+    sellNetProfitFloorDollars: Math.max(0, safeNumber(env.SELL_NET_PROFIT_FLOOR_DOLLARS, 1)),
     requireMultiSourceConfirmation: Boolean(env.TWELVE_DATA_API_KEY || env.TWELVEDATA_API_KEY),
     allowContrarianEntries: true,
     blockBuys: parseBool(env.BLOCK_BUYS, false),
@@ -157,6 +163,16 @@ function buildScannerConfig(env = process.env) {
     rotationSoftBandPoints: Math.max(0, safeNumber(env.ROTATION_SOFT_BAND_POINTS, 4)),
     rotationHardBandPoints: Math.max(0, safeNumber(env.ROTATION_HARD_BAND_POINTS, 12)),
     rotationMinHoldScans: Math.max(0, Math.floor(safeNumber(env.ROTATION_MIN_HOLD_SCANS, 1))),
+    hotSlotRotationEnabled: parseBool(env.MEME_HOT_SLOT_ROTATION_ENABLED, false),
+    hotSlotRotationMinHeatScore: Math.max(0, safeNumber(env.MEME_HOT_SLOT_ROTATION_MIN_HEAT_SCORE, 90)),
+    hotSlotRotationMinMarketScore: Math.max(0, safeNumber(env.MEME_HOT_SLOT_ROTATION_MIN_MARKET_SCORE, 75)),
+    rotationRequireBreakevenOrBetter: parseBool(env.MEME_ROTATION_REQUIRE_BREAKEVEN_OR_BETTER, true),
+    rotationAllowTinyLoss: parseBool(env.MEME_ROTATION_ALLOW_TINY_LOSS, false),
+    rotationMaxAllowedLossDollars: Math.max(0, safeNumber(env.MEME_ROTATION_MAX_ALLOWED_LOSS_DOLLARS, 0)),
+    rotationProtectStrongRunners: parseBool(env.MEME_ROTATION_PROTECT_STRONG_RUNNERS, true),
+    rotationRecheckAfterExit: parseBool(env.MEME_ROTATION_RECHECK_AFTER_EXIT, true),
+    rotationExitTimeoutSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_EXIT_TIMEOUT_SECONDS, 30))),
+    rotationEntryRecheckMaxAgeSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_ENTRY_RECHECK_MAX_AGE_SECONDS, 30))),
   };
 }
 

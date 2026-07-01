@@ -5,7 +5,7 @@ This repository is a simplified Live Market trading control plane with a direct-
 ## What It Does
 
 - Runs one visible workflow: Live Market stock trading.
-- Scans only the approved rotation: `NVDA`, `TSLA`, `IREN`, `MRVL`, `INTC`, `MARA`.
+- Approved symbols are sourced from the live policy snapshot in `data/live-policy.json`; `STOCK_SCANNER_SYMBOLS` seeds that snapshot at startup: `SPCX`, `SMCI`, `FDX`, `MU`, `APGE`, `NVDA`, `IBM`, `INTC`, `MRVL`, `MARA`, `IREN`, `GOOGL`, `FCEL`, `CBRS`, `VIX`, `AMO`, `SNDK`, `VTAK`.
 - Uses live Alpaca positions, open orders, account buying power, and Daily Change as the source of truth.
 - Holds at most two open positions.
 - Buys up to `$150` per position and refuses dust buys below `$25`.
@@ -56,7 +56,7 @@ The repo ships with these defaults:
 - `LIVE_TRADING_ENABLED=false`
 - `REQUIRE_HUMAN_APPROVAL=true`
 - `AUDIT_LOG_ENABLED=true`
-- `PAPER_ADAPTER_ENABLED=true`
+- `PAPER_ADAPTER_ENABLED=true` as the execution-adapter safety gate required for live mode.
 - `MIN_CONFIDENCE_FOR_PAPER=72`
 - `MIN_LIQUIDITY_SCORE=40`
 - `MIN_PROVIDER_CONFIRMATION_SCORE=70`
@@ -65,7 +65,7 @@ The repo ships with these defaults:
 - `MAX_OPEN_POSITIONS=2`
 - `BUY_NOTIONAL_TARGET=150`
 - `MIN_BUY_NOTIONAL=25`
-- `STOCK_SCANNER_SYMBOLS=SPCX,SMCI,FDX,MU,APGE,NVDA,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,VIX,AMO,SNDK,VTAK`
+- `STOCK_SCANNER_SYMBOLS=SPCX,SMCI,FDX,MU,APGE,NVDA,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,VIX,AMO,SNDK,VTAK` seeds the approved list that gets written into `data/live-policy.json` at startup.
 - `STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS=` can temporarily block new buys for symbols while still allowing sell/exit management if they are already held.
 - `STOCK_SCANNER_MIN_ADJUSTED_RANK_SCORE=0`
 - `STOCK_SCANNER_RECENT_STOP_EXIT_PENALTY_MINUTES=30`

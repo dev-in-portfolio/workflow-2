@@ -214,3 +214,27 @@ test('live preflight CLI formatter redacts secrets', () => {
   assert(!output.includes('super-secret-value'));
   assert(!output.includes('my-token-value'));
 });
+
+test('live preflight formatter shows the active approved symbol list', () => {
+  const output = formatPreflightResult({
+    status: 'GO',
+    checked_at: '2026-06-24T13:00:00.000Z',
+    broker: { account_available: true, positions_available: true, open_orders_available: true, account_summary: {}, position_count: 0, open_order_count: 0 },
+    config: { loaded: true, env_local_exists: true, env_local_changed_after_start: false },
+    policy: {
+      available: true,
+      stale: false,
+      source: 'startup-config',
+      scope: 'live-market',
+      approved_symbols: ['SPCX', 'SMCI', 'NVDA'],
+      deprecated_fields: [],
+      suspicious_fields: [],
+    },
+    processes: { trader: { count: 1 }, scanner: { count: 1 }, dashboard: { count: 1 }, duplicate_warnings: [] },
+    critical_failures: [],
+    warnings: [],
+    recommended_actions: [],
+  });
+
+  assert(output.includes('Approved symbols (3): SPCX, SMCI, NVDA'));
+});

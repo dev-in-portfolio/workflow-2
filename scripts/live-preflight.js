@@ -23,6 +23,7 @@ function formatPreflightResult(result = {}) {
   lines.push(`  Stale: ${yesNo(result.policy?.stale)}`);
   lines.push(`  Source: ${result.policy?.source || '-'}`);
   lines.push(`  Scope: ${result.policy?.scope || '-'}`);
+  lines.push(`  Approved symbols (${(result.policy?.approved_symbols || []).length}): ${(result.policy?.approved_symbols || []).join(', ') || 'none'}`);
   lines.push(`  Deprecated fields: ${(result.policy?.deprecated_fields || []).join(', ') || 'none'}`);
   lines.push(`  Suspicious fields: ${(result.policy?.suspicious_fields || []).map((item) => item.field || item).join(', ') || 'none'}`);
   lines.push('');

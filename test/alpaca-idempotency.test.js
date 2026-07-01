@@ -100,3 +100,31 @@ test('required Alpaca idempotency lookup failure fails safely', async () => {
     /lookup offline/,
   );
 });
+
+test('Alpaca adapter times out account, position, order, and submit requests', async () => {
+  const adapter = new AlpacaTradeAdapter({
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    requestTimeoutMs: 20,
+    fetch: (url, init = {}) => new Promise((resolve, reject) => {
+      const signal = init.signal;
+      if (signal) {
+        if (signal.aborted) {
+          reject(new Error('aborted'));
+          return;
+        }
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }
+    }),
+  });
+
+  await assert.rejects(() => adapter.getAccount(), /timed out/);
+  await assert.rejects(() => adapter.getPositions(), /timed out/);
+  await assert.rejects(() => adapter.getOpenOrders(), /timed out/);
+  await assert.rejects(() => adapter.getOrder('order-1'), /timed out/);
+  await assert.rejects(() => adapter.getOrderByClientOrderId('client-1'), /timed out/);
+  await assert.rejects(
+    () => adapter.submitOrder(orderRequest({ request_id: null, signal_id: null, client_order_id: null })),
+    /timed out/,
+  );
+});

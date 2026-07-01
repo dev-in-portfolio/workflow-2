@@ -28,6 +28,7 @@ async function detectOpenOrderConflict(executionAdapter, paperOrderRequest) {
   const symbol = String(paperOrderRequest.symbol || '').trim().toUpperCase();
   const desiredSide = String(paperOrderRequest.side || '').trim().toLowerCase();
   const oppositeSide = desiredSide === 'buy' ? 'sell' : desiredSide === 'sell' ? 'buy' : null;
+  const allowScaleIn = Boolean(paperOrderRequest.allow_scale_in || paperOrderRequest.allowScaleIn);
   const openOrderStatuses = new Set([
     'new',
     'accepted',
@@ -44,13 +45,21 @@ async function detectOpenOrderConflict(executionAdapter, paperOrderRequest) {
     const orderSymbol = String(order.symbol || '').trim().toUpperCase();
     const orderSide = String(order.side || '').trim().toLowerCase();
     const orderStatus = String(order.status || '').trim().toLowerCase();
-    return orderSymbol === symbol && oppositeSide && orderSide === oppositeSide && openOrderStatuses.has(orderStatus);
+    return orderSymbol === symbol
+      && ((oppositeSide && orderSide === oppositeSide) || (!allowScaleIn && orderSide === desiredSide))
+      && openOrderStatuses.has(orderStatus);
   });
 
   if (conflictingOpenOrders.length > 0) {
+    const hasSameSideConflict = conflictingOpenOrders.some((order) => String(order.side || '').trim().toLowerCase() === desiredSide);
+    const hasOppositeSideConflict = conflictingOpenOrders.some((order) => String(order.side || '').trim().toLowerCase() === oppositeSide);
     return {
       pass: false,
-      reason_codes: ['OPEN_ORDER_CONFLICT', 'WASH_TRADE_RISK'],
+      reason_codes: [
+        'OPEN_ORDER_CONFLICT',
+        ...(hasSameSideConflict ? ['SAME_SIDE_OPEN_ORDER_BLOCKED'] : []),
+        ...(hasOppositeSideConflict ? ['WASH_TRADE_RISK'] : []),
+      ],
       open_orders: conflictingOpenOrders,
     };
   }

@@ -81,6 +81,19 @@ test('buy sizing uses fractional shares for stock orders when explicitly enabled
   assert.equal(order.time_in_force, 'day');
 });
 
+test('buy order requests retain the scale-in flag for broker-side conflict checks', () => {
+  const order = buildPaperOrderRequestFromSignal({
+    signal_id: 'sig-scale-in',
+    action_candidate: 'paper_buy',
+    symbol: 'NVDA',
+    asset_type: 'stock',
+    price: 129.16,
+    allow_scale_in: true,
+  });
+
+  assert.equal(order.allow_scale_in, true);
+});
+
 test('buy sizing blocks stock orders that cannot fit a single share inside the budget', () => {
   const sizing = resolveBuyOrderSizing({
     signal_id: 'sig-too-expensive',

@@ -7,6 +7,7 @@ const { URL } = require('url');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { isRegularUsMarketHours, resolveMarketRegime } = require('./market-hours');
 const { nowIso, safeNumber, resolveRepoRoot, resolveDataPath } = require('./util');
+const { APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
 const { createLocalProcessController } = require('./local-process-controller');
 const { classifyExitProtection } = require('./exit-protection');
 const { readOperatorTimelineTail } = require('./operator-timeline');
@@ -19,6 +20,21 @@ const { loadAntiChurnState, summarizeAntiChurnState } = require('./anti-churn-en
 const { loadSetupFatigueState, summarizeSetupFatigueState } = require('./setup-fatigue');
 const { summarizeSessionGuards } = require('./session-guards');
 const { loadExecutionQualityState, summarizeExecutionQualityState } = require('./execution-quality-state');
+const { loadMemeMonitorState, updateMemeMonitorFeatureState, resolveMemeMonitorStatePath } = require('./meme-monitor-state');
+const { createMemeMonitorLoop } = require('./meme-monitor/meme-monitor-loop');
+const { loadMemeMonitorStatus, resolveMemeMonitorStatusPath } = require('./meme-monitor/meme-monitor-status');
+const { loadDynamicHotList, resolveDynamicHotListPath } = require('./meme-monitor/hot-list-store');
+const { summarizeHotSlotRotationRuntime } = require('./hot-slot-rotation');
+const { loadRegularWatchState, updateRegularWatchFeatureState, resolveRegularWatchStatePath } = require('./regular-watch/regular-watch-feature-state');
+const {
+  buildRegularWatchStatusSnapshot,
+  clearRegularWatchErrors,
+  loadRegularWatchStatus,
+  resolveRegularWatchStatusPath,
+  resetRegularWatchRuntimeState,
+  saveRegularWatchStatus,
+} = require('./regular-watch/regular-watch-status');
+const { runRegularWatchSources } = require('./regular-watch/regular-watch-source-runner');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
 const DEFAULT_TRADER_CONTROL_PORT = 3001;
@@ -74,6 +90,13 @@ function createDashboardServer(options = {}) {
     fetchImpl: options.fetchImpl || globalThis.fetch,
     traderPort: Number(options.traderPort || DEFAULT_TRADER_CONTROL_PORT),
   });
+  const memeMonitor = options.memeMonitor || createMemeMonitorLoop({
+    repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+    dataDir,
+    env: options.env || process.env,
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    refreshIntervalMs: options.memeRefreshIntervalMs || 5 * 60_000,
+  });
   const assetIndex = {
     '/': path.join(dashboardDir, 'index.html'),
     '/index.html': path.join(dashboardDir, 'index.html'),
@@ -85,6 +108,8 @@ function createDashboardServer(options = {}) {
     '/exit-rules.html': path.join(dashboardDir, 'exit-rules.html'),
     '/alerts': path.join(dashboardDir, 'alerts.html'),
     '/alerts.html': path.join(dashboardDir, 'alerts.html'),
+    '/watch': path.join(dashboardDir, 'watch.html'),
+    '/watch.html': path.join(dashboardDir, 'watch.html'),
     '/control': path.join(dashboardDir, 'control.html'),
     '/control.html': path.join(dashboardDir, 'control.html'),
     '/app.js': path.join(dashboardDir, 'app.js'),
@@ -92,6 +117,7 @@ function createDashboardServer(options = {}) {
     '/policy.js': path.join(dashboardDir, 'policy.js'),
     '/exit-rules.js': path.join(dashboardDir, 'exit-rules.js'),
     '/alerts.js': path.join(dashboardDir, 'alerts.js'),
+    '/watch.js': path.join(dashboardDir, 'watch.js'),
     '/control.js': path.join(dashboardDir, 'control.js'),
     '/styles.css': path.join(dashboardDir, 'styles.css'),
     '/mobile.js': path.join(dashboardDir, 'mobile.js'),
@@ -117,7 +143,7 @@ function createDashboardServer(options = {}) {
 
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       try {
-        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager });
+        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
         return sendJson(res, 200, snapshot);
       } catch (error) {
         return sendJson(res, 500, {
@@ -171,6 +197,237 @@ function createDashboardServer(options = {}) {
         return sendJson(res, 500, {
           status: 'error',
           error: 'control_action_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/meme/status') {
+      try {
+        return sendJson(res, 200, getMemeMonitorRuntimeSnapshot({
+          dataDir,
+          memeMonitor,
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+        }));
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'meme_status_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/meme/features') {
+      try {
+        const features = loadMemeMonitorState({
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          status: 'ok',
+          timestamp: nowIso(),
+          source: features.source || 'env + runtime state',
+          updated_at: features.updated_at || null,
+          summary: features.summary,
+          blocked_features: features.blocked_features || [],
+          warnings: features.warnings || [],
+          features: features.features,
+        });
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'meme_feature_state_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/meme/features') {
+      try {
+        const body = await readJsonBody(req);
+        const result = updateMemeMonitorFeatureState({
+          featureKey: body.featureKey || body.key || body.feature || null,
+          enabled: body.enabled,
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+          filePath: resolveMemeMonitorStatePath({ dataDir }),
+          changedBy: body.changedBy || body.changed_by || body.user || 'dashboard',
+          source: body.source || 'dashboard-control',
+          reason: body.reason || body.message || null,
+        });
+        return sendJson(res, result.ok ? 200 : 400, {
+          ok: Boolean(result.ok),
+          status: result.ok ? 'ok' : 'blocked',
+          timestamp: nowIso(),
+          ...result,
+          features: result.state?.features || null,
+          summary: result.state?.summary || null,
+          blocked_features: result.state?.blocked_features || [],
+          warnings: result.state?.warnings || [],
+        });
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'meme_feature_update_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/meme/action') {
+      try {
+        const body = await readJsonBody(req);
+        const result = await handleMemeAction(memeMonitor, body, {
+          dataDir,
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+        });
+        return sendJson(res, result.ok ? 200 : 400, {
+          ok: Boolean(result.ok),
+          status: result.status || (result.ok ? 'ok' : 'error'),
+          timestamp: nowIso(),
+          ...result,
+          memeMonitor: getMemeMonitorRuntimeSnapshot({
+            dataDir,
+            memeMonitor,
+            env: options.env || process.env,
+            repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+          }).memeMonitor,
+        });
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'meme_action_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/regular-watch/features') {
+      try {
+        const features = loadRegularWatchState({
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+          filePath: resolveRegularWatchStatePath({ dataDir }),
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          status: 'ok',
+          timestamp: nowIso(),
+          source: features.source || 'env + runtime state',
+          updated_at: features.updated_at || null,
+          summary: features.summary,
+          blocked_features: features.blocked_features || [],
+          warnings: features.warnings || [],
+          features: features.features,
+        });
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'regular_watch_feature_state_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/regular-watch/features') {
+      try {
+        const body = await readJsonBody(req);
+        const result = updateRegularWatchFeatureState({
+          featureKey: body.featureKey || body.key || body.feature || null,
+          enabled: body.enabled,
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+          filePath: resolveRegularWatchStatePath({ dataDir }),
+          changedBy: body.changedBy || body.changed_by || body.user || 'dashboard',
+          source: body.source || 'dashboard-control',
+          reason: body.reason || body.message || null,
+        });
+        return sendJson(res, result.ok ? 200 : 400, {
+          ok: Boolean(result.ok),
+          status: result.ok ? 'ok' : 'blocked',
+          timestamp: nowIso(),
+          ...result,
+          features: result.state?.features || null,
+          summary: result.state?.summary || null,
+          blocked_features: result.state?.blocked_features || [],
+          warnings: result.state?.warnings || [],
+        });
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'regular_watch_feature_update_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/regular-watch/status') {
+      try {
+        const featureState = loadRegularWatchState({
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+          filePath: resolveRegularWatchStatePath({ dataDir }),
+        });
+        const statusSnapshot = buildRegularWatchStatusSnapshot({
+          featureState,
+          status: loadRegularWatchStatus({ dataDir, filePath: resolveRegularWatchStatusPath({ dataDir }) }),
+        });
+        return sendJson(res, 200, statusSnapshot);
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'regular_watch_status_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/regular-watch/action') {
+      try {
+        const body = await readJsonBody(req);
+        const result = await handleRegularWatchAction(body, {
+          dataDir,
+          env: options.env || process.env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+        });
+        return sendJson(res, result.ok ? 200 : 400, {
+          ok: Boolean(result.ok),
+          status: result.status || (result.ok ? 'ok' : 'error'),
+          timestamp: nowIso(),
+          ...result,
+          regularWatchIntelligence: buildRegularWatchIntelligenceSnapshot({
+            regularWatchState: loadRegularWatchState({
+              env: options.env || process.env,
+              repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+              filePath: resolveRegularWatchStatePath({ dataDir }),
+            }),
+            regularWatchStatus: loadRegularWatchStatus({ dataDir, filePath: resolveRegularWatchStatusPath({ dataDir }) }),
+          }),
+        });
+      } catch (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          status: 'error',
+          error: 'regular_watch_action_failed',
           message: error.message,
           timestamp: nowIso(),
         });
@@ -258,6 +515,16 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const partialFillState = readJsonFileIfPresent(partialFillStatePath);
   const executionQualityStatePath = path.join(dataDir, 'runtime', 'execution-quality-state.json');
   const executionQualityState = readJsonFileIfPresent(executionQualityStatePath) || loadExecutionQualityState(executionQualityStatePath);
+  const memeMonitorStatePath = resolveMemeMonitorStatePath({ dataDir });
+  const memeMonitorState = loadMemeMonitorState({ env: runtimeEnv, filePath: memeMonitorStatePath });
+  const memeMonitorStatusPath = resolveMemeMonitorStatusPath({ dataDir });
+  const memeMonitorStatus = loadMemeMonitorStatus({ dataDir, filePath: memeMonitorStatusPath });
+  const regularWatchStatePath = resolveRegularWatchStatePath({ dataDir });
+  const regularWatchState = loadRegularWatchState({ env: runtimeEnv, filePath: regularWatchStatePath });
+  const regularWatchStatusPath = resolveRegularWatchStatusPath({ dataDir });
+  const regularWatchStatus = loadRegularWatchStatus({ dataDir, filePath: regularWatchStatusPath });
+  const dynamicHotListPath = resolveDynamicHotListPath({ dataDir });
+  const dynamicHotList = loadDynamicHotList({ dataDir, filePath: dynamicHotListPath });
   const candidateLifecycleStatePath = path.join(dataDir, 'runtime', 'candidate-lifecycle-state.json');
   const candidateLifecycleState = readJsonFileIfPresent(candidateLifecycleStatePath);
   const setupFatigueStatePath = path.join(dataDir, 'runtime', 'setup-fatigue-state.json');
@@ -269,6 +536,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const executionQualitySummary = summarizeExecutionQualityState(executionQualityState || {});
   const candidateLifecycleSummary = summarizeCandidateLifecycleState(candidateLifecycleState || {});
   const setupFatigueSummary = summarizeSetupFatigueState(setupFatigueState || {});
+  const hotSlotRotationState = summarizeHotSlotRotationRuntime(scannerRuntimeFile?.hot_slot_rotation || null, memeMonitorState?.features?.MEME_HOT_SLOT_ROTATION_ENABLED);
   const sessionGuards = summarizeSessionGuards(scannerRuntimeFile?.session_guards || null) || null;
   const livePolicyFile = readJsonFileIfPresent(path.join(dataDir, 'live-policy.json'));
   const performanceHistory = readJsonlTail(path.join(dataDir, 'performance-history.jsonl'), 512);
@@ -278,7 +546,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
 
   const regime = resolveMarketRegime(currentDate);
   const activePolicySnapshot = unwrapPolicySnapshot(riskPolicy.data) || unwrapPolicySnapshot(overnightStatus.data?.policy_snapshot) || livePolicyFile || null;
-  const liveMarketRules = resolveLiveMarketRules(runtimeEnv);
+  const liveMarketRules = resolveLiveMarketRules(runtimeEnv, activePolicySnapshot);
   const liveMarketSchedule = resolveLiveMarketAutomationSchedule(currentDate);
   const configDrift = buildConfigDrift(activePolicySnapshot, runtimeEnv);
   const envLocalMetaForPolicy = getFileStat(path.resolve(options.repoRoot || path.resolve(__dirname, '..'), '.env.local'));
@@ -295,7 +563,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const timeline = buildOperatorTimeline(operatorTimeline, recentEntries, scannerRuntimeFile);
   const recentPolicyChanges = summarizePolicyHistory(policyHistory.entries);
   const livePositionSummary = normalizeLivePositions(livePositions);
-  const controlState = context.controlManager?.getState?.() || null;
+  const controlState = context.controlManager?.refresh
+    ? await context.controlManager.refresh()
+    : context.controlManager?.getState?.() || null;
   const exitProtection = classifyExitProtection({
     positions: livePositionSummary.positions,
     openOrders: liveOpenOrders.orders,
@@ -350,6 +620,42 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     candidateLifecycleSummary,
     setupFatigueSummary,
     sessionGuards,
+    memeMonitorState,
+    memeMonitorStatus,
+    regularWatchState,
+    regularWatchStatus,
+  });
+  const dashboardSummary = buildSummary({
+    status,
+    report,
+    activePolicySnapshot,
+    regime,
+    liveMarketRules,
+    recentEntries,
+    livePositions: livePositionSummary,
+    liveAccount,
+    control: controlState,
+    preflight: preflightLatest,
+    brokerLocalReconciliation,
+    partialFillSummary,
+    executionQualitySummary,
+    candidateLifecycleSummary,
+    antiChurnSummary,
+    setupFatigueSummary,
+    sessionGuards,
+    memeMonitorState,
+    memeMonitorStatus,
+    regularWatchState,
+    regularWatchStatus,
+    scannerRuntime: scannerRuntimeFile,
+  });
+  const regularWatchIntelligence = buildRegularWatchIntelligenceSnapshot({
+    regularWatchState,
+    regularWatchStatus,
+    scannerRuntime: scannerRuntimeFile,
+    livePositions: livePositionSummary,
+    liveOpenOrders,
+    partialFillSummary,
   });
 
   return {
@@ -366,6 +672,79 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       process_discovery: processDiscovery,
       refresh_max_age_ms: options.cacheMaxAgeMs || DEFAULT_REFRESH_MAX_AGE_MS,
     },
+    memeMonitor: {
+      enabled: Boolean(memeMonitorState?.summary?.master_enabled),
+      source: memeMonitorState?.summary?.source || memeMonitorState?.source || 'env + runtime state',
+      redditScanner: {
+        enabled: Boolean(memeMonitorStatus?.enabled),
+        status: memeMonitorStatus?.redditScanner?.status || 'off',
+        lastRunAt: memeMonitorStatus?.redditScanner?.lastRunAt || null,
+        lastError: memeMonitorStatus?.redditScanner?.lastError || null,
+        sources: memeMonitorStatus?.redditScanner?.sources || [],
+        symbolsDetected: Number(memeMonitorStatus?.redditScanner?.symbolsDetected || 0),
+        rejectedTokens: Number(memeMonitorStatus?.redditScanner?.rejectedTokens || 0),
+        mode: memeMonitorStatus?.redditScanner?.mode || 'shadow',
+      },
+      phaseA: memeMonitorStatus?.phaseA || {
+        enabled: false,
+        status: 'off',
+        lastRunAt: null,
+        lastError: null,
+        sources: [],
+        symbols: [],
+      },
+      phaseB: memeMonitorStatus?.phaseB || {
+        enabled: false,
+        status: 'off',
+        lastRunAt: null,
+        lastError: null,
+        sources: [],
+        symbols: [],
+      },
+      hotList: memeMonitorStatus?.hotList || dynamicHotList?.summary || null,
+      hotHotScoring: memeMonitorStatus?.hotHotScoring || null,
+      dynamicWatchlist: summarizeMemeRuntimeFeature({
+        feature: memeMonitorState?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED,
+        status: memeMonitorStatus?.hotList,
+        count: dynamicHotList?.summary?.dynamicCount || dynamicHotList?.dynamicHotList?.length || 0,
+        active: Boolean(memeMonitorState?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED?.effective),
+        label: 'Dynamic Watchlist',
+      }),
+      priorityOverride: summarizeMemeRuntimeFeature({
+        feature: memeMonitorState?.features?.MEME_PRIORITY_OVERRIDE_ENABLED,
+        status: memeMonitorStatus?.hotHotScoring,
+        count: dynamicHotList?.summary?.hotHotCount || dynamicHotList?.hotHotList?.length || 0,
+        active: Boolean(memeMonitorState?.features?.MEME_PRIORITY_OVERRIDE_ENABLED?.effective),
+        label: 'Priority Override',
+      }),
+      hotSlotRotation: hotSlotRotationState,
+      hotListPayload: dynamicHotList || null,
+    },
+    regularWatchIntelligence,
+    phaseB: memeMonitorStatus?.phaseB || null,
+    watch: buildWatchSnapshot({
+      regime: liveMarketRules,
+      live: {
+        scannerRuntime: scannerRuntimeFile,
+        memeMonitorState,
+        memeMonitorStatus,
+        regularWatchState,
+        regularWatchStatus,
+      },
+      summary: dashboardSummary,
+      memeMonitorState,
+      memeMonitorStatus,
+      regularWatchState,
+      regularWatchStatus,
+      scannerRuntime: scannerRuntimeFile,
+      dynamicHotList,
+      hotSlotRotationState,
+      livePositions: livePositionSummary,
+      liveOpenOrders: liveOpenOrders,
+      partialFillSummary,
+      approvedSymbols: liveMarketRules.approved_symbols,
+      currentDate,
+    }),
     control: controlState,
     regime: {
       active: regime,
@@ -380,6 +759,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       stop_loss_max_dollars: liveMarketRules.stop_loss_max_dollars,
       trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
       trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
+      sell_profit_threshold_pct: liveMarketRules.sell_profit_threshold_pct,
+      sell_net_profit_floor_dollars: liveMarketRules.sell_net_profit_floor_dollars,
       risk_budget_sizing: liveMarketRules.risk_budget_sizing,
     },
     live: {
@@ -403,6 +784,45 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       partial_fill_summary: partialFillSummary,
       execution_quality_state: executionQualityState || null,
       execution_quality_summary: executionQualitySummary,
+      meme_monitor_state: memeMonitorState || null,
+      regular_watch_state: regularWatchState || null,
+      meme_monitor_runtime: {
+        ...memeMonitorStatus,
+        phaseA: memeMonitorStatus?.phaseA || {
+          enabled: false,
+          status: 'off',
+          lastRunAt: null,
+          lastError: null,
+          sources: [],
+          symbols: [],
+        },
+        phaseB: memeMonitorStatus?.phaseB || {
+          enabled: false,
+          status: 'off',
+          lastRunAt: null,
+          lastError: null,
+          sources: [],
+          symbols: [],
+        },
+        dynamicWatchlist: summarizeMemeRuntimeFeature({
+          feature: memeMonitorState?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED,
+          status: memeMonitorStatus?.hotList,
+          count: dynamicHotList?.summary?.dynamicCount || dynamicHotList?.dynamicHotList?.length || 0,
+          active: Boolean(memeMonitorState?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED?.effective),
+          label: 'Dynamic Watchlist',
+        }),
+        priorityOverride: summarizeMemeRuntimeFeature({
+          feature: memeMonitorState?.features?.MEME_PRIORITY_OVERRIDE_ENABLED,
+          status: memeMonitorStatus?.hotHotScoring,
+          count: dynamicHotList?.summary?.hotHotCount || dynamicHotList?.hotHotList?.length || 0,
+          active: Boolean(memeMonitorState?.features?.MEME_PRIORITY_OVERRIDE_ENABLED?.effective),
+          label: 'Priority Override',
+        }),
+        hotSlotRotation: hotSlotRotationState,
+      },
+      regular_watch_intelligence: regularWatchIntelligence,
+      regular_watch_runtime: regularWatchStatus,
+      meme_monitor_hot_list: dynamicHotList || null,
       candidate_lifecycle_state: candidateLifecycleState || null,
       candidate_lifecycle_summary: candidateLifecycleSummary,
       anti_churn_state: antiChurnState || null,
@@ -460,32 +880,18 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       broker_local_reconciliation: fileMeta(brokerLocalReconciliationPath, brokerLocalReconciliation),
       partial_fill_state: fileMeta(partialFillStatePath, partialFillState),
       execution_quality_state: fileMeta(executionQualityStatePath, executionQualityState),
+      meme_monitor_state: fileMeta(memeMonitorStatePath, memeMonitorState),
+      meme_monitor_runtime: fileMeta(memeMonitorStatusPath, memeMonitorStatus),
+      regular_watch_state: fileMeta(regularWatchStatePath, regularWatchState),
+      regular_watch_runtime: fileMeta(regularWatchStatusPath, regularWatchStatus),
+      dynamic_hot_list: fileMeta(dynamicHotListPath, dynamicHotList),
       candidate_lifecycle_state: fileMeta(candidateLifecycleStatePath, candidateLifecycleState),
       anti_churn_state: fileMeta(antiChurnStatePath, antiChurnState),
       setup_fatigue_state: fileMeta(setupFatigueStatePath, setupFatigueState),
     },
     source_health: sourceHealth,
     alerts,
-    summary: buildSummary({
-      status,
-      report,
-      activePolicySnapshot,
-      regime,
-      liveMarketRules,
-      recentEntries,
-      livePositions: livePositionSummary,
-      liveAccount,
-      control: controlState,
-      preflight: preflightLatest,
-      brokerLocalReconciliation,
-      partialFillSummary,
-      executionQualitySummary,
-      candidateLifecycleSummary,
-      antiChurnSummary,
-      setupFatigueSummary,
-      sessionGuards,
-      scannerRuntime: scannerRuntimeFile,
-    }),
+    summary: dashboardSummary,
     timestamp: now,
   };
 }
@@ -1277,7 +1683,7 @@ function buildSourceHealth(endpointResults, fileResults) {
   return sources;
 }
 
-function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null, candidateLifecycleSummary = null, setupFatigueSummary = null, sessionGuards = null }) {
+function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDiscovery, overnightStatusFile, scannerRuntimeFile, control, runtimeEnv, livePositions, recentEntries, configDrift, processDiscovery, exitManagement, exitProtection = [], envLocalWarning = null, preflight = null, policyHealth = null, brokerLocalReconciliation = null, partialFillSummary = null, candidateLifecycleSummary = null, setupFatigueSummary = null, sessionGuards = null, memeMonitorState = null, memeMonitorStatus = null }) {
   const alerts = [];
   const workflow = control?.workflow || {};
   const scanner = control?.scanner || {};
@@ -1410,6 +1816,40 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
       message: `${setupFatigueSummary.active_setup_count} setup(s) are paused for fatigue.`,
     });
   }
+  if (memeMonitorState?.summary) {
+    const memeSummary = memeMonitorState.summary;
+    if (memeSummary.master_enabled) {
+      alerts.push({
+        severity: 'info',
+        code: 'MEME_FEATURES_ENABLED',
+        title: 'Meme Monitor is staged',
+        message: `Meme feature state source: ${memeSummary.source || 'env + runtime state'}. Blocked features: ${(memeSummary.blocked_features || []).join(', ') || 'none'}.`,
+      });
+    } else if ((memeSummary.blocked_features || []).length) {
+      alerts.push({
+        severity: 'warning',
+        code: 'MEME_FEATURES_BLOCKED',
+        title: 'Meme features are blocked',
+        message: `Blocked features: ${(memeSummary.blocked_features || []).join(', ')}.`,
+      });
+    }
+  }
+  if (memeMonitorStatus?.redditScanner?.status === 'missing_credentials') {
+    alerts.push({
+      severity: 'warning',
+      code: 'MEME_REDDIT_MISSING_CREDENTIALS',
+      title: 'Reddit scanner is missing credentials',
+      message: 'The Meme Monitor can stay loaded, but Reddit collection remains disabled until credentials are provided.',
+    });
+  }
+  if (memeMonitorStatus?.hotList?.stale && String(memeMonitorStatus?.hotList?.status || '').toLowerCase() !== 'off') {
+    alerts.push({
+      severity: 'warning',
+      code: 'MEME_HOT_LIST_STALE',
+      title: 'Meme hot list is stale',
+      message: 'Hot list entries have expired or scoring has not refreshed recently.',
+    });
+  }
   const unprotectedPositions = (Array.isArray(exitProtection) ? exitProtection : []).filter((item) => item.classification === 'none');
   if (unprotectedPositions.length) {
     alerts.push({
@@ -1487,7 +1927,7 @@ function buildAlerts({ sourceHealth, recentLogLines, report, status, traderDisco
   return alerts.slice(0, 8);
 }
 
-function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, executionQualitySummary = null, candidateLifecycleSummary = null, antiChurnSummary = null, setupFatigueSummary = null, sessionGuards = null, scannerRuntime = null }) {
+function buildSummary({ status, report, activePolicySnapshot, regime, liveMarketRules, recentEntries, livePositions, liveAccount, control, preflight = null, brokerLocalReconciliation = null, partialFillSummary = null, executionQualitySummary = null, candidateLifecycleSummary = null, antiChurnSummary = null, setupFatigueSummary = null, sessionGuards = null, memeMonitorState = null, memeMonitorStatus = null, scannerRuntime = null }) {
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
@@ -1548,6 +1988,17 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     session_guard_buy_blocked: Boolean(sessionGuards?.buy_blocked),
     session_guard_manage_only: Boolean(sessionGuards?.manage_only),
     session_guard_reason_codes: sessionGuards?.reason_codes || [],
+    meme_monitor_enabled: Boolean(memeMonitorState?.summary?.master_enabled),
+    meme_monitor_source: memeMonitorState?.summary?.source || memeMonitorState?.source || 'env + runtime state',
+    meme_monitor_blocked_features: memeMonitorState?.summary?.blocked_features || [],
+    meme_monitor_warning_count: Array.isArray(memeMonitorState?.warnings) ? memeMonitorState.warnings.length : 0,
+    meme_monitor_reddit_status: memeMonitorStatus?.redditScanner?.status || 'off',
+    meme_monitor_reddit_last_run_at: memeMonitorStatus?.redditScanner?.lastRunAt || null,
+    meme_monitor_reddit_symbols_detected: safeNumber(memeMonitorStatus?.redditScanner?.symbolsDetected, 0),
+    meme_monitor_hot_list_status: memeMonitorStatus?.hotList?.status || 'off',
+    meme_monitor_hot_list_dynamic_count: safeNumber(memeMonitorStatus?.hotList?.dynamicCount, 0),
+    meme_monitor_hot_list_hot_hot_count: safeNumber(memeMonitorStatus?.hotList?.hotHotCount, 0),
+    meme_monitor_hot_list_stale: Boolean(memeMonitorStatus?.hotList?.stale),
     risk_budget_sizing_enabled: Boolean(liveMarketRules.risk_budget_sizing?.enabled),
     risk_budget_latest_candidate_count: Array.isArray(scannerRuntime?.risk_budget_sizing?.latest_candidates) ? scannerRuntime.risk_budget_sizing.latest_candidates.length : 0,
     workflow_state: control?.workflow?.status || 'unknown',
@@ -1568,6 +2019,8 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     stop_loss_max_dollars: liveMarketRules.stop_loss_max_dollars,
     trailing_profit_start_dollars: liveMarketRules.trailing_profit_start_dollars,
     trailing_profit_giveback_dollars: liveMarketRules.trailing_profit_giveback_dollars,
+    sell_profit_threshold_pct: liveMarketRules.sell_profit_threshold_pct,
+    sell_net_profit_floor_dollars: liveMarketRules.sell_net_profit_floor_dollars,
     risk_budget_sizing: liveMarketRules.risk_budget_sizing,
     approved_symbols: liveMarketRules.approved_symbols,
     position_size_multiplier: safeNumber(activePolicySnapshot?.policy?.positionSizeMultiplier, null),
@@ -1590,13 +2043,677 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
   };
 }
 
+function buildWatchSnapshot({
+  regime = {},
+  live = {},
+  summary = {},
+  memeMonitorState = null,
+  memeMonitorStatus = null,
+  regularWatchState = null,
+  regularWatchStatus = null,
+  scannerRuntime = null,
+  dynamicHotList = null,
+  hotSlotRotationState = null,
+  livePositions = null,
+  liveOpenOrders = null,
+  partialFillSummary = null,
+  approvedSymbols = [],
+  currentDate = new Date(),
+} = {}) {
+  const approved = (Array.isArray(approvedSymbols) ? approvedSymbols : [])
+    .map((symbol) => normalizeWatchSymbol(symbol))
+    .filter(Boolean);
+  const approvedSet = new Set(approved);
+  const runtime = scannerRuntime || live?.scannerRuntime || null;
+  const candidateDetails = Array.isArray(runtime?.candidate_rank_details) ? runtime.candidate_rank_details : [];
+  const recentSkips = Array.isArray(runtime?.recent_skips) ? runtime.recent_skips : [];
+  const candidateBySymbol = new Map();
+  for (const entry of candidateDetails) {
+    const symbol = normalizeWatchSymbol(entry?.symbol);
+    if (!symbol || candidateBySymbol.has(symbol)) continue;
+    candidateBySymbol.set(symbol, entry);
+  }
+  const regularWatchStatusEntries = Array.isArray(regularWatchStatus?.regularWatchList)
+    ? regularWatchStatus.regularWatchList
+    : [];
+  const regularWatchEntryBySymbol = new Map();
+  for (const entry of regularWatchStatusEntries) {
+    const symbol = normalizeWatchSymbol(entry?.symbol);
+    if (!symbol || regularWatchEntryBySymbol.has(symbol)) continue;
+    regularWatchEntryBySymbol.set(symbol, entry);
+  }
+  const recentSkipBySymbol = new Map();
+  for (const entry of recentSkips) {
+    const symbol = normalizeWatchSymbol(entry?.symbol);
+    if (!symbol || recentSkipBySymbol.has(symbol)) continue;
+    recentSkipBySymbol.set(symbol, entry);
+  }
+  const livePositionMap = buildLivePositionMap(livePositions);
+  const liveOrderMap = buildLiveOpenOrderMap(liveOpenOrders);
+
+  const regularWatchList = approved.map((symbol) => buildRegularWatchEntry(symbol, {
+    candidate: candidateBySymbol.get(symbol) || null,
+    recentSkip: recentSkipBySymbol.get(symbol) || null,
+    regularWatchEntry: regularWatchEntryBySymbol.get(symbol) || null,
+    livePosition: livePositionMap.get(symbol) || null,
+    liveOpenOrders: liveOrderMap.get(symbol) || [],
+    partialFillSummary,
+    currentDate,
+  }));
+
+  const regularWatchMovers = regularWatchList
+    .filter((entry) => Number.isFinite(Number(entry.dailyMovePct)) || Number.isFinite(Number(entry.lastPrice)) || Number.isFinite(Number(entry.scannerScore)))
+    .slice()
+    .sort((a, b) => {
+      const scoreDelta = Number(b.regularWatchScore || b.scannerScore || 0) - Number(a.regularWatchScore || a.scannerScore || 0);
+      if (Math.abs(scoreDelta) > 1e-9) return scoreDelta;
+      const moveDelta = Math.abs(Number(b.dailyMovePct || 0)) - Math.abs(Number(a.dailyMovePct || 0));
+      if (Math.abs(moveDelta) > 1e-9) return moveDelta;
+      return String(a.symbol).localeCompare(String(b.symbol));
+    });
+
+  const dynamicPayload = dynamicHotList || live?.memeMonitorStatus?.hotListPayload || live?.memeMonitorRuntime?.hotListPayload || null;
+  const dynamicEnabled = Boolean(memeMonitorStatus?.hotList?.enabled);
+  const hotHotEnabled = Boolean(memeMonitorStatus?.hotHotScoring?.enabled);
+  const watchedSymbols = new Set(approvedSet);
+  for (const entry of [...(dynamicPayload?.dynamicHotList || []), ...(dynamicPayload?.hotHotList || [])]) {
+    const symbol = normalizeWatchSymbol(entry?.symbol);
+    if (symbol) watchedSymbols.add(symbol);
+  }
+  const dynamicSymbols = buildMemeWatchSymbols({
+    entries: dynamicPayload?.dynamicHotList || dynamicPayload?.symbols || [],
+    approvedSet,
+    currentDate,
+    watchedSymbols,
+  });
+  const hotHotSymbols = buildMemeWatchSymbols({
+    entries: dynamicPayload?.hotHotList || [],
+    approvedSet,
+    currentDate,
+    watchedSymbols,
+    hotHot: true,
+    rotationState: hotSlotRotationState || summarizeHotSlotRotationRuntime(runtime?.hot_slot_rotation || null, memeMonitorState?.features?.MEME_HOT_SLOT_ROTATION_ENABLED),
+  });
+  const hotSlotRotation = hotSlotRotationState || summarizeHotSlotRotationRuntime(runtime?.hot_slot_rotation || null, memeMonitorState?.features?.MEME_HOT_SLOT_ROTATION_ENABLED);
+
+  return {
+    regularWatchList,
+    regularWatchMovers,
+    dynamicHotList: {
+      enabled: dynamicEnabled,
+      status: dynamicEnabled ? (memeMonitorStatus?.hotList?.status || 'shadow') : 'disabled',
+      stale: Boolean(memeMonitorStatus?.hotList?.stale),
+      lastScoredAt: memeMonitorStatus?.hotList?.lastScoredAt || dynamicPayload?.lastScoredAt || dynamicPayload?.generatedAt || null,
+      lastError: memeMonitorStatus?.hotList?.lastError || null,
+      symbols: dynamicSymbols,
+    },
+    hotHotList: {
+      enabled: hotHotEnabled,
+      status: hotHotEnabled ? (memeMonitorStatus?.hotHotScoring?.status || 'shadow') : 'disabled',
+      stale: Boolean(memeMonitorStatus?.hotHotScoring?.stale ?? memeMonitorStatus?.hotList?.stale),
+      lastScoredAt: memeMonitorStatus?.hotHotScoring?.lastScoredAt || memeMonitorStatus?.hotList?.lastScoredAt || dynamicPayload?.lastScoredAt || null,
+      lastError: memeMonitorStatus?.hotHotScoring?.lastError || memeMonitorStatus?.hotList?.lastError || null,
+      symbols: hotHotSymbols,
+    },
+    regularWatchIntelligence: buildRegularWatchIntelligenceSnapshot({
+      regularWatchState,
+      regularWatchStatus,
+      scannerRuntime,
+      livePositions,
+      liveOpenOrders,
+      partialFillSummary,
+    }),
+    memeMonitor: {
+      dynamicWatchlist: summarizeMemeRuntimeFeature({
+        feature: memeMonitorState?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED,
+        status: memeMonitorStatus?.hotList,
+        count: dynamicSymbols.length,
+        active: dynamicEnabled,
+        label: 'Dynamic Watchlist',
+      }),
+      priorityOverride: summarizeMemeRuntimeFeature({
+        feature: memeMonitorState?.features?.MEME_PRIORITY_OVERRIDE_ENABLED,
+        status: memeMonitorStatus?.hotHotScoring,
+        count: hotHotSymbols.length,
+        active: hotHotEnabled,
+        label: 'Priority Override',
+      }),
+      hotSlotRotation,
+      phaseA: memeMonitorStatus?.phaseA || null,
+      phaseB: memeMonitorStatus?.phaseB || null,
+    },
+    phaseB: memeMonitorStatus?.phaseB || null,
+    hotSlotRotation,
+    featureState: summarizeMemeFeatureState(memeMonitorState),
+    actionsState: [
+      ...summarizeMemeActionsState(memeMonitorState),
+      ...summarizeRegularWatchActionsState(regularWatchState),
+    ],
+  };
+}
+
+function buildRegularWatchIntelligenceSnapshot({
+  regularWatchState = null,
+  regularWatchStatus = null,
+  scannerRuntime = null,
+  livePositions = null,
+  liveOpenOrders = null,
+  partialFillSummary = null,
+} = {}) {
+  const featureState = summarizeRegularWatchFeatureState(regularWatchState);
+  const status = regularWatchStatus || loadRegularWatchStatus();
+  const runtime = buildRegularWatchStatusSnapshot({
+    featureState: regularWatchState,
+    status,
+  });
+  return {
+    enabled: Boolean(featureState.master_enabled),
+    status: runtime.regularWatchIntelligence.status || 'off',
+    lastRunAt: runtime.regularWatchIntelligence.lastRunAt || null,
+    lastError: runtime.regularWatchIntelligence.lastError || null,
+    symbolsChecked: Number(runtime.regularWatchIntelligence.symbolsChecked || 0),
+    moversFound: Number(runtime.regularWatchIntelligence.moversFound || 0),
+    blockedSymbols: Number(runtime.regularWatchIntelligence.blockedSymbols || 0),
+    features: runtime.regularWatchIntelligence.features,
+    scannerRanking: {
+      enabled: Boolean(runtime.regularWatchIntelligence.features.scannerRanking),
+      status: runtime.regularWatchIntelligence.features.scannerRanking
+        ? runtime.regularWatchIntelligence.status
+        : 'off',
+      lastRunAt: runtime.regularWatchIntelligence.lastRunAt || null,
+      lastError: runtime.regularWatchIntelligence.lastError || null,
+    },
+    positionAwareness: {
+      enabled: Boolean(runtime.regularWatchIntelligence.features.positionAwareness),
+      status: runtime.regularWatchIntelligence.features.positionAwareness
+        ? runtime.regularWatchIntelligence.status
+        : 'off',
+      lastRunAt: runtime.regularWatchIntelligence.lastRunAt || null,
+      lastError: runtime.regularWatchIntelligence.lastError || null,
+    },
+    candidateComparison: buildRegularWatchCandidateComparisons({
+      regularWatchList: Array.isArray(runtime.regularWatchList) ? runtime.regularWatchList : [],
+      scannerRuntime,
+      livePositions,
+      liveOpenOrders,
+      partialFillSummary,
+    }),
+    featureState,
+    regularWatchList: Array.isArray(runtime.regularWatchList) ? runtime.regularWatchList.slice() : [],
+    regularWatchMovers: Array.isArray(runtime.regularWatchMovers) ? runtime.regularWatchMovers.slice() : [],
+    sources: Array.isArray(runtime.sources) ? runtime.sources.slice() : [],
+    generatedAt: runtime.generatedAt || null,
+    stale: Boolean(runtime.stale),
+    runtime,
+  };
+}
+
+function buildRegularWatchCandidateComparisons({ regularWatchList = [], scannerRuntime = null, livePositions = null, liveOpenOrders = null, partialFillSummary = null } = {}) {
+  const scanBySymbol = new Map();
+  for (const entry of Array.isArray(scannerRuntime?.candidate_rank_details) ? scannerRuntime.candidate_rank_details : []) {
+    const symbol = normalizeWatchSymbol(entry?.symbol);
+    if (!symbol || scanBySymbol.has(symbol)) continue;
+    scanBySymbol.set(symbol, entry);
+  }
+  const livePositionMap = buildLivePositionMap(livePositions);
+  const liveOrderMap = buildLiveOpenOrderMap(liveOpenOrders);
+  return (Array.isArray(regularWatchList) ? regularWatchList : []).map((entry) => {
+    const symbol = normalizeWatchSymbol(entry?.symbol);
+    if (!symbol) return null;
+    const scannerEntry = scanBySymbol.get(symbol) || null;
+    const livePosition = livePositionMap.get(symbol) || null;
+    return buildRegularWatchCandidateComparison({
+      scannerEntry,
+      regularWatchEntry: entry,
+      livePosition,
+      liveOpenOrders: liveOrderMap.get(symbol) || [],
+      partialFillSummary,
+    });
+  }).filter(Boolean);
+}
+
+function buildRegularWatchEntry(symbol, { candidate = null, recentSkip = null, regularWatchEntry = null, livePosition = null, liveOpenOrders = [], partialFillSummary = null, currentDate = null } = {}) {
+  const hasCandidate = Boolean(candidate && typeof candidate === 'object');
+  const skipReason = normalizeWatchReason(recentSkip?.reason || recentSkip?.skip_reason || null);
+  const status = hasCandidate
+    ? 'watching'
+    : skipReason === 'excluded'
+      ? 'excluded'
+      : skipReason === 'blocked'
+        ? 'blocked'
+        : 'stale';
+  const reasonCodes = [];
+  if (hasCandidate) {
+    reasonCodes.push(...normalizeReasonList(candidate.reason_codes));
+    reasonCodes.push(...normalizeReasonList(candidate.candidate_lifecycle_reason_codes));
+    if (candidate.setup_fatigue_active) reasonCodes.push('setup_fatigue_active');
+    if (candidate.anti_churn_recent_winner_protected) reasonCodes.push('anti_churn_recent_winner_protected');
+    if (candidate.session_guard_blocked) reasonCodes.push('session_guard_blocked');
+  } else if (recentSkip?.reason) {
+    reasonCodes.push(String(recentSkip.reason));
+    if (recentSkip.stage) reasonCodes.push(String(recentSkip.stage));
+  } else {
+    reasonCodes.push('market_data_unavailable');
+  }
+
+  const volumeMultiple = Number.isFinite(Number(candidate?.volume_multiple))
+    ? Number(candidate.volume_multiple)
+    : computeVolumeMultiple(candidate?.volume, candidate?.average_volume);
+  const freshness = hasCandidate ? 'fresh' : (candidate?.candidate_lifecycle_reason_codes?.length ? 'stale' : 'unknown');
+  const regularWatchComparison = regularWatchEntry ? buildRegularWatchCandidateComparison({
+    scannerEntry: candidate,
+    regularWatchEntry,
+    livePosition,
+    liveOpenOrders,
+    partialFillSummary,
+  }) : null;
+  const positionAwarenessTags = Array.isArray(candidate?.position_awareness_tags)
+    ? candidate.position_awareness_tags.slice()
+    : buildWatchPositionAwarenessTags({
+      symbol,
+      livePosition,
+      liveOpenOrders,
+      partialFillSummary,
+      candidate,
+    });
+
+  return {
+    symbol,
+    lastPrice: safeNumber(candidate?.current_price, null),
+    currentPrice: safeNumber(candidate?.current_price, null),
+    previousClose: safeNumber(candidate?.previous_close, null),
+    dailyMovePct: safeNumber(candidate?.move_pct, null),
+    movePct: safeNumber(candidate?.move_pct, null),
+    volume: safeNumber(candidate?.volume, null),
+    spread: safeNumber(candidate?.spread_pct, null),
+    spreadPct: safeNumber(candidate?.spread_pct, null),
+    volumeMultiple,
+    scannerScore: safeNumber(candidate?.adjusted_rank_score ?? candidate?.rank_score, null),
+    regularWatchScore: safeNumber(regularWatchEntry?.score, null),
+    status,
+    reason: hasCandidate ? null : recentSkip?.reason || 'market_data_unavailable',
+    reasonCodes: [...new Set(reasonCodes.filter(Boolean))],
+    riskWarnings: [...new Set(normalizeReasonList(candidate?.risk_warnings))],
+    freshness,
+    marketDataState: hasCandidate ? 'available' : 'missing',
+    scannerWatched: approvedSymbolMatch(symbol, candidate),
+    tradableStatus: candidate?.tradable_status || 'unknown',
+    haltStatus: candidate?.halt_status || 'unknown',
+    sourceStatus: Array.isArray(regularWatchEntry?.sourceStatus)
+      ? regularWatchEntry.sourceStatus.slice()
+      : (Array.isArray(candidate?.source_status) ? candidate.source_status.slice() : []),
+    sourceDetails: Array.isArray(regularWatchEntry?.sourceStatus)
+      ? regularWatchEntry.sourceStatus.slice()
+      : (Array.isArray(candidate?.source_status) ? candidate.source_status.slice() : []),
+    positionStatus: resolvePositionStatus(livePosition, liveOpenOrders, partialFillSummary, candidate),
+    positionTags: positionAwarenessTags,
+    candidateComparison: regularWatchComparison,
+    blockedReason: candidate?.blocked_reason || regularWatchEntry?.blockedReason || null,
+    currentDate: currentDate ? String(currentDate) : null,
+  };
+}
+
+function buildRegularWatchCandidateComparison({
+  scannerEntry = null,
+  regularWatchEntry = null,
+  livePosition = null,
+  liveOpenOrders = [],
+  partialFillSummary = null,
+} = {}) {
+  if (!regularWatchEntry) return null;
+  const scannerScore = safeNumber(scannerEntry?.adjusted_rank_score ?? scannerEntry?.rank_score, null);
+  const regularWatchScore = safeNumber(regularWatchEntry?.score, null);
+  const scoreDelta = Number.isFinite(scannerScore) && Number.isFinite(regularWatchScore)
+    ? Number((regularWatchScore - scannerScore).toFixed(2))
+    : null;
+  return {
+    symbol: regularWatchEntry.symbol || scannerEntry?.symbol || null,
+    scannerScore,
+    regularWatchScore,
+    scoreDelta,
+    regularWatchStatus: regularWatchEntry.status || null,
+    sourceStatus: Array.isArray(regularWatchEntry.sourceStatus) ? regularWatchEntry.sourceStatus.slice() : [],
+    sourceContributors: Array.isArray(scannerEntry?.sourceStatus) ? scannerEntry.sourceStatus.slice() : [],
+    blockedReason: regularWatchEntry.blockedReason || null,
+    positionTags: Array.isArray(scannerEntry?.position_awareness_tags) ? scannerEntry.position_awareness_tags.slice() : buildWatchPositionAwarenessTags({
+      symbol: regularWatchEntry.symbol || scannerEntry?.symbol,
+      livePosition,
+      liveOpenOrders,
+      partialFillSummary,
+      candidate: scannerEntry,
+    }),
+  };
+}
+
+function buildWatchPositionAwarenessTags({ symbol, livePosition = null, liveOpenOrders = [], partialFillSummary = null, candidate = null } = {}) {
+  const tags = new Set(Array.isArray(candidate?.position_awareness_tags) ? candidate.position_awareness_tags : []);
+  const qty = safeNumber(livePosition?.qty ?? livePosition?.quantity ?? livePosition?.net_quantity ?? candidate?.position_qty_available ?? 0, 0);
+  if (!Number.isFinite(qty) || Math.abs(qty) <= 0) return [...tags];
+  const avgEntry = safeNumber(livePosition?.avg_entry_price ?? livePosition?.avgEntryPrice ?? candidate?.position_avg_entry_price ?? null, null);
+  const currentPrice = safeNumber(candidate?.current_price ?? candidate?.currentPrice ?? null, null);
+  const unrealizedPl = safeNumber(livePosition?.unrealized_pl ?? livePosition?.unrealizedPnl ?? livePosition?.unrealized_intraday_pl ?? null, null);
+  const pctMove = Number.isFinite(avgEntry) && avgEntry > 0 && Number.isFinite(currentPrice)
+    ? ((currentPrice - avgEntry) / avgEntry) * 100
+    : null;
+  const orders = Array.isArray(liveOpenOrders) ? liveOpenOrders : [];
+  const hasOpenSellOrder = orders.some((order) => String(order?.symbol || '').trim().toUpperCase() === String(symbol || '').trim().toUpperCase() && String(order?.side || '').toLowerCase() === 'sell');
+  const hasPartialFill = Boolean(findPendingPartialForSymbol(partialFillSummary || {}, symbol, 'sell') || findPendingPartialForSymbol(partialFillSummary || {}, symbol, 'buy'));
+  if (Number.isFinite(pctMove) && pctMove >= 12) tags.add('strong_runner');
+  if (Number.isFinite(pctMove) && Math.abs(pctMove) <= 1.5) tags.add('weak_flat');
+  if (Number.isFinite(unrealizedPl) && Math.abs(unrealizedPl) <= 0.25) tags.add('break_even_stale');
+  if (hasOpenSellOrder || hasPartialFill) tags.add('do_not_evict');
+  if (candidate?.rotationEligible || candidate?.candidate_lifecycle_selected) tags.add('rotation_candidate');
+  return [...tags];
+}
+
+function findPendingPartialForSymbol(summary = {}, symbol, side) {
+  const list = side === 'sell' ? summary?.partial_sells : summary?.partial_buys;
+  return (Array.isArray(list) ? list : []).find((order) => (
+    String(order?.symbol || '').trim().toUpperCase() === String(symbol || '').trim().toUpperCase()
+    && String(order?.side || '').toLowerCase() === String(side || '').toLowerCase()
+  )) || null;
+}
+
+function resolvePositionStatus(livePosition = null, liveOpenOrders = [], partialFillSummary = null, candidate = null) {
+  const qty = safeNumber(livePosition?.qty ?? livePosition?.quantity ?? livePosition?.net_quantity ?? candidate?.position_qty_available ?? 0, 0);
+  if (!Number.isFinite(qty) || Math.abs(qty) <= 0) return 'flat';
+  const tags = buildWatchPositionAwarenessTags({
+    symbol: livePosition?.symbol || candidate?.symbol,
+    livePosition,
+    liveOpenOrders,
+    partialFillSummary,
+    candidate,
+  });
+  if (tags.includes('do_not_evict')) return 'do_not_evict';
+  if (tags.includes('rotation_candidate')) return 'rotation_candidate';
+  if (tags.includes('strong_runner')) return 'strong_runner';
+  if (tags.includes('break_even_stale')) return 'break_even_stale';
+  if (tags.includes('weak_flat')) return 'weak_flat';
+  return 'positioned';
+}
+
+function buildLivePositionMap(livePositions = null) {
+  const map = new Map();
+  const positions = Array.isArray(livePositions?.positions) ? livePositions.positions : [];
+  for (const position of positions) {
+    const symbol = normalizeWatchSymbol(position?.symbol);
+    if (!symbol || map.has(symbol)) continue;
+    map.set(symbol, position);
+  }
+  return map;
+}
+
+function buildLiveOpenOrderMap(liveOpenOrders = null) {
+  const map = new Map();
+  const orders = Array.isArray(liveOpenOrders?.orders) ? liveOpenOrders.orders : [];
+  for (const order of orders) {
+    const symbol = normalizeWatchSymbol(order?.symbol);
+    if (!symbol) continue;
+    if (!map.has(symbol)) {
+      map.set(symbol, []);
+    }
+    map.get(symbol).push(order);
+  }
+  return map;
+}
+
+function buildMemeWatchSymbols({ entries = [], approvedSet = new Set(), watchedSymbols = new Set(), currentDate = new Date(), hotHot = false, rotationState = null } = {}) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry) => {
+      const symbol = normalizeWatchSymbol(entry?.symbol);
+      if (!symbol) return null;
+      const marketDetails = entry?.marketConfirmationDetails || null;
+      const currentPrice = safeNumber(marketDetails?.currentPrice ?? marketDetails?.current_price, null);
+      const previousClose = safeNumber(marketDetails?.previousClose ?? marketDetails?.previous_close, null);
+      const movePct = Number.isFinite(currentPrice) && Number.isFinite(previousClose) && previousClose > 0
+        ? Number((((currentPrice - previousClose) / previousClose) * 100).toFixed(2))
+        : null;
+      const volume = safeNumber(marketDetails?.volume ?? null, null);
+      const averageVolume = safeNumber(marketDetails?.averageVolume ?? marketDetails?.average_volume ?? null, null);
+      const volumeMultiple = Number.isFinite(Number(entry?.volume_multiple))
+        ? Number(entry.volume_multiple)
+        : computeVolumeMultiple(volume, averageVolume);
+      const spread = safeNumber(marketDetails?.spreadPct ?? marketDetails?.spread_pct, null);
+      const tradableStatus = resolveTradableStatus(marketDetails);
+      return {
+        symbol,
+        memeHeatScore: safeNumber(entry?.memeHeatScore, null),
+        marketConfirmationScore: safeNumber(entry?.marketConfirmationScore, null),
+        movePct,
+        volumeMultiple,
+        spread,
+        tradableStatus,
+        priorityOverrideEligible: Boolean(entry?.priorityOverrideEligible),
+        priorityOverrideApplied: Boolean(entry?.priorityOverrideApplied),
+        priorityOverrideBonus: safeNumber(entry?.priorityOverrideBonus, 0),
+        priorityOverrideBlockReason: entry?.priorityOverrideBlockReason || (entry?.priorityOverrideEligible && !entry?.priorityOverrideApplied ? 'risk_gate_blocked' : null),
+        rotationEligible: Boolean(rotationState?.candidate && rotationState.candidate === symbol && rotationState.rotationEligible),
+        evictionCandidate: rotationState?.evictionCandidate || null,
+        evictionReason: rotationState?.evictionReason || null,
+        rotationBlockReason: rotationState?.blockReason || null,
+        lastRotationDecision: rotationState?.lastDecision || null,
+        lastRotationTime: rotationState?.lastDecisionAt || null,
+        finalMemeScore: safeNumber(entry?.finalMemeScore, null),
+        borderlineUpgrade: Boolean(entry?.borderlineUpgrade),
+        crossSourceConfirmation: Boolean(entry?.crossSourceConfirmation),
+        riskWarnings: normalizeReasonList(entry?.riskWarnings),
+        reasonCodes: normalizeReasonList(entry?.reasonCodes),
+        sourceConfirmations: entry?.sourceConfirmations || null,
+        watchlistReason: entry?.watchlistReason || entry?.status || (hotHot ? 'hot_hot' : 'dynamic_watch'),
+        rejectedBlockReason: entry?.rejectedBlockReason || (tradableStatus !== 'tradable' ? tradableStatus : null) || (normalizeReasonList(entry?.riskWarnings).length ? normalizeReasonList(entry?.riskWarnings).join(', ') : null),
+        expiresAt: entry?.expiresAt || entry?.expires_at || null,
+        lastDecision: entry?.lastDecision || entry?.status || (hotHot ? 'hot_hot' : 'dynamic_watch'),
+        scannerWatched: watchedSymbols.has(symbol) || approvedSet.has(symbol),
+        dynamicWatchlistMember: Boolean(entry?.dynamicWatchlistMember || watchedSymbols.has(symbol)),
+        freshness: entry?.expired ? 'stale' : (entry?.status === 'hot_hot' ? 'fresh' : 'shadow'),
+        sources: formatSourceContributors(entry?.sourceProfile || entry?.topSources || entry?.sources),
+        sourceDetails: Array.isArray(entry?.sourceProfile?.sources) ? entry.sourceProfile.sources.slice() : [],
+        phaseA: entry?.phaseA || null,
+        phaseB: entry?.phaseB || null,
+        socialConfirmation: entry?.socialConfirmation || null,
+        marketConfirmation: entry?.marketConfirmation || null,
+        riskConfirmation: entry?.riskConfirmation || null,
+        mentions15m: safeNumber(entry?.mentions15m, null),
+        mentions30m: safeNumber(entry?.mentions30m, null),
+        mentions60m: safeNumber(entry?.mentions60m, null),
+        uniqueUsers: safeNumber(entry?.uniqueUsers, null),
+        marketConfirmationAvailable: Boolean(entry?.marketConfirmationAvailable),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aScore = Number(a.memeHeatScore || 0);
+      const bScore = Number(b.memeHeatScore || 0);
+      if (bScore !== aScore) return bScore - aScore;
+      return String(a.symbol).localeCompare(String(b.symbol));
+    });
+}
+
+function formatSourceContributors(value = null) {
+  if (!value) return [];
+  const sources = Array.isArray(value?.sources)
+    ? value.sources
+    : Array.isArray(value)
+      ? value
+      : value && typeof value === 'object'
+        ? Object.values(value)
+        : [];
+  return sources.map((entry) => {
+    if (!entry) return 'unknown';
+    if (typeof entry === 'string') return entry;
+    const tier = entry.tier ? ` (${entry.tier})` : '';
+    const status = entry.status ? `:${String(entry.status).toUpperCase()}` : '';
+    return `${formatDisplaySourceName(entry.source)}${tier}${status}`;
+  });
+}
+
+function formatDisplaySourceName(value) {
+  const source = String(value || 'unknown').trim();
+  return source.startsWith('reddit:') ? source.slice(7) : source;
+}
+
+function summarizeMemeFeatureState(memeMonitorState = null) {
+  const summary = memeMonitorState?.summary || {};
+  const features = memeMonitorState?.features || {};
+  return {
+    source: summary.source || memeMonitorState?.source || 'env + runtime state',
+    master_enabled: Boolean(summary.master_enabled),
+    blocked_features: Array.isArray(summary.blocked_features) ? summary.blocked_features.slice() : [],
+    dependency_chain: Array.isArray(summary.dependency_chain)
+      ? summary.dependency_chain.map((item) => ({
+        key: item.key,
+        label: item.label,
+        status: item.status,
+        blocked_reason: item.blocked_reason || null,
+      }))
+      : [],
+    features: Object.fromEntries(Object.entries(features).map(([key, value]) => [key, {
+      key,
+      label: value?.label || key,
+      status: value?.status || 'off',
+      effective: Boolean(value?.effective),
+      configured: Boolean(value?.configured),
+      runtime: Boolean(value?.runtime),
+      blocked_reason: value?.blocked_reason || null,
+    }])),
+  };
+}
+
+function summarizeRegularWatchFeatureState(regularWatchState = null) {
+  const summary = regularWatchState?.summary || {};
+  const features = regularWatchState?.features || {};
+  return {
+    source: summary.source || regularWatchState?.source || 'env + runtime state',
+    master_enabled: Boolean(summary.master_enabled),
+    blocked_features: Array.isArray(summary.blocked_features) ? summary.blocked_features.slice() : [],
+    dependency_chain: Array.isArray(summary.dependency_chain)
+      ? summary.dependency_chain.map((item) => ({
+        key: item.key,
+        label: item.label,
+        status: item.status,
+        blocked_reason: item.blocked_reason || null,
+      }))
+      : [],
+    features: Object.fromEntries(Object.entries(features).map(([key, value]) => [key, {
+      key,
+      label: value?.label || key,
+      status: value?.status || 'off',
+      effective: Boolean(value?.effective),
+      configured: Boolean(value?.configured),
+      runtime: Boolean(value?.runtime),
+      blocked_reason: value?.blocked_reason || null,
+      locked: Boolean(value?.locked),
+    }])),
+  };
+}
+
+function summarizeMemeActionsState(memeMonitorState = null) {
+  const features = memeMonitorState?.features || {};
+  const getStatus = (key) => features[key]?.status || 'off';
+  return [
+    ['Meme Monitor', getStatus('MEME_MONITOR_ENABLED')],
+    ['Reddit Scanner', getStatus('MEME_REDDIT_SCANNER_ENABLED')],
+    ['Hot List', getStatus('MEME_HOT_LIST_ENABLED')],
+    ['Dynamic Watchlist', getStatus('MEME_DYNAMIC_WATCHLIST_ENABLED')],
+    ['Priority Override', getStatus('MEME_PRIORITY_OVERRIDE_ENABLED')],
+    ['Hot Slot Rotation', getStatus('MEME_HOT_SLOT_ROTATION_ENABLED')],
+    ['Reddit API', getStatus('MEME_SOURCE_REDDIT_ENABLED')],
+    ['Alpaca Market', getStatus('MEME_SOURCE_ALPACA_MARKET_ENABLED')],
+    ['Alpaca Tradability', getStatus('MEME_SOURCE_ALPACA_ASSETS_ENABLED')],
+    ['Nasdaq Halts', getStatus('MEME_SOURCE_NASDAQ_HALTS_ENABLED')],
+    ['SEC EDGAR', getStatus('MEME_SOURCE_SEC_EDGAR_ENABLED')],
+    ['Stocktwits', getStatus('MEME_SOURCE_STOCKTWITS_ENABLED')],
+    ['Polygon', getStatus('MEME_SOURCE_POLYGON_ENABLED')],
+    ['Alpha Vantage', getStatus('MEME_SOURCE_ALPHA_VANTAGE_ENABLED')],
+  ];
+}
+
+function summarizeRegularWatchActionsState(regularWatchState = null) {
+  const features = regularWatchState?.features || {};
+  const getStatus = (key) => features[key]?.status || 'off';
+  return [
+    ['Regular Watch Intelligence', getStatus('REGULAR_WATCH_INTELLIGENCE_ENABLED')],
+    ['Market Confirmation', getStatus('REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED')],
+    ['Asset Validation', getStatus('REGULAR_WATCH_ASSET_VALIDATION_ENABLED')],
+    ['Halt Check', getStatus('REGULAR_WATCH_HALT_CHECK_ENABLED')],
+    ['SEC Risk Check', getStatus('REGULAR_WATCH_SEC_RISK_CHECK_ENABLED')],
+    ['News/Catalyst Check', getStatus('REGULAR_WATCH_NEWS_CATALYST_ENABLED')],
+    ['Priority Scoring', getStatus('REGULAR_WATCH_PRIORITY_SCORING_ENABLED')],
+    ['Scanner Ranking', getStatus('REGULAR_WATCH_SCANNER_RANKING_ENABLED')],
+    ['Position Awareness', getStatus('REGULAR_WATCH_POSITION_AWARENESS_ENABLED')],
+  ];
+}
+
+function summarizeMemeRuntimeFeature({ feature = null, status = null, count = 0, active = false, label = '' } = {}) {
+  const effective = Boolean(feature?.effective ?? active);
+  const configured = Boolean(feature?.configured);
+  const runtime = Boolean(feature?.runtime);
+  const blockedReason = feature?.blocked_reason || null;
+  const runtimeStatus = blockedReason
+    ? 'blocked'
+    : effective
+      ? String(status?.status || status?.mode || 'active').toLowerCase()
+      : (configured || runtime ? 'shadow' : 'off');
+  return {
+    label: label || feature?.label || 'Feature',
+    configured,
+    runtime,
+    effective,
+    status: runtimeStatus,
+    blocked_reason: blockedReason,
+    lastRunAt: status?.lastRunAt || status?.lastScoredAt || null,
+    lastScoredAt: status?.lastScoredAt || status?.lastRunAt || null,
+    lastError: status?.lastError || null,
+    stale: Boolean(status?.stale),
+    count: Number(count || 0),
+  };
+}
+
+function normalizeWatchSymbol(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function normalizeReasonList(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [String(value)].filter(Boolean);
+}
+
+function normalizeWatchReason(reason) {
+  const value = String(reason || '').toUpperCase();
+  if (!value) return 'stale';
+  if (value.includes('EXCLUDED')) return 'excluded';
+  if (value.includes('BLOCK')) return 'blocked';
+  return 'blocked';
+}
+
+function computeVolumeMultiple(volume, averageVolume) {
+  const vol = Number(volume);
+  const avg = Number(averageVolume);
+  if (!Number.isFinite(vol) || !Number.isFinite(avg) || avg <= 0) return null;
+  return Number((vol / avg).toFixed(2));
+}
+
+function resolveTradableStatus(details = null) {
+  if (!details) return 'unavailable';
+  if (details.excluded) return 'excluded';
+  if (details.halted) return 'halted';
+  if (details.tradable === false) return 'blocked';
+  if (details.tradable === true) return 'tradable';
+  return 'unknown';
+}
+
+function approvedSymbolMatch(symbol, candidate) {
+  if (!symbol || !candidate) return false;
+  return normalizeWatchSymbol(candidate.symbol) === symbol;
+}
+
 function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
   const policy = activePolicySnapshot?.policy || {};
   const expected = {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
     minBuyNotional: safeNumber(runtimeEnv.MIN_BUY_NOTIONAL, null),
-    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,APGE,NVDA,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,VIX,AMO,SNDK,VTAK'),
+    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || APPROVED_LIVE_MARKET_SYMBOLS.join(',')),
     positionStopLossDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_DOLLARS, null),
     positionStopLossNotionalPct: safeNumber(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT, null),
     positionStopLossMaxDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS, null),
@@ -1664,6 +2781,8 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
       stop_loss_max_dollars: rules.stop_loss_max_dollars,
       trailing_profit_start_dollars: rules.trailing_profit_start_dollars,
       trailing_profit_giveback_dollars: rules.trailing_profit_giveback_dollars,
+      sell_profit_threshold_pct: rules.sell_profit_threshold_pct,
+      sell_net_profit_floor_dollars: rules.sell_net_profit_floor_dollars,
     },
     positions: positions.map((position) => {
       const marketValue = safeNumber(position.market_value ?? position.marketValue, null);
@@ -1678,7 +2797,9 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
       const distanceToStop = Number.isFinite(unrealized) ? unrealized + effectiveStopLoss : null;
       const trailingPeak = safeNumber(runtimeState.trailing_peak_unrealized_pl ?? scannerRuntime?.trailing_state?.positions?.[position.symbol]?.peak_unrealized_pl, null);
       const trailingActive = Boolean(runtimeState.trailing_active ?? (Number.isFinite(trailingPeak) && trailingPeak >= rules.trailing_profit_start_dollars));
-      const trailingSellAt = safeNumber(runtimeState.trailing_sell_if_unrealized_pl_at_or_below, Number.isFinite(trailingPeak) ? trailingPeak - rules.trailing_profit_giveback_dollars : null);
+      const trailingSellAt = trailingActive
+        ? safeNumber(runtimeState.trailing_sell_if_unrealized_pl_at_or_below, Number.isFinite(trailingPeak) ? trailingPeak - rules.trailing_profit_giveback_dollars : null)
+        : null;
       return {
         symbol: position.symbol || null,
         market_value: marketValue,
@@ -1777,19 +2898,24 @@ function unwrapPolicyEffectiveness(payload) {
   return payload;
 }
 
-function resolveLiveMarketRules(env = {}) {
+function resolveLiveMarketRules(env = {}, policySnapshot = null) {
+  const policy = policySnapshot?.policy || {};
   return {
     workflow: 'Live Market',
-    approved_symbols: parseCsvForDrift(env.STOCK_SCANNER_SYMBOLS || 'SPCX,SMCI,FDX,MU,APGE,NVDA,IBM,INTC,MRVL,MARA,IREN,GOOGL,FCEL,CBRS,VIX,AMO,SNDK,VTAK'),
+    approved_symbols: Array.isArray(policy.approvedSymbols) && policy.approvedSymbols.length
+      ? policy.approvedSymbols
+      : APPROVED_LIVE_MARKET_SYMBOLS.slice(),
     excluded_buy_symbols: parseCsvForDrift(env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS || ''),
-    max_open_positions: safeNumber(env.MAX_OPEN_POSITIONS, 1),
-    buy_notional_target: safeNumber(env.BUY_NOTIONAL_TARGET, 150),
-    min_buy_notional: safeNumber(env.MIN_BUY_NOTIONAL, 25),
-    stop_loss_dollars: safeNumber(env.POSITION_STOP_LOSS_DOLLARS, 1),
-    stop_loss_notional_pct: safeNumber(env.POSITION_STOP_LOSS_NOTIONAL_PCT, 0.75),
-    stop_loss_max_dollars: safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5),
-    trailing_profit_start_dollars: safeNumber(env.TRAILING_PROFIT_START_DOLLARS, 0.5),
-    trailing_profit_giveback_dollars: safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 0.3),
+    max_open_positions: safeNumber(policy.maxOpenPositions, safeNumber(env.MAX_OPEN_POSITIONS, 2)),
+    buy_notional_target: safeNumber(policy.buyNotionalTarget, safeNumber(env.BUY_NOTIONAL_TARGET, 150)),
+    min_buy_notional: safeNumber(policy.minBuyNotional, safeNumber(env.MIN_BUY_NOTIONAL, 25)),
+    stop_loss_dollars: safeNumber(policy.positionStopLossDollars, safeNumber(env.POSITION_STOP_LOSS_DOLLARS, 1)),
+    stop_loss_notional_pct: safeNumber(policy.positionStopLossNotionalPct, safeNumber(env.POSITION_STOP_LOSS_NOTIONAL_PCT, 0.75)),
+    stop_loss_max_dollars: safeNumber(policy.positionStopLossMaxDollars, safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5)),
+    trailing_profit_start_dollars: safeNumber(policy.trailingProfitStartDollars, safeNumber(env.TRAILING_PROFIT_START_DOLLARS, 0.5)),
+    trailing_profit_giveback_dollars: safeNumber(policy.trailingProfitGivebackDollars, safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 0.3)),
+    sell_profit_threshold_pct: safeNumber(policy.sellProfitThresholdPct, resolveProfitExitThresholdPct(env, 'stocks')),
+    sell_net_profit_floor_dollars: resolveProfitExitFloorDollars(policySnapshot, env),
     risk_budget_sizing: {
       enabled: parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED),
       max_risk_per_trade_dollars: safeNumber(env.MAX_RISK_PER_TRADE_DOLLARS, 0),
@@ -1958,6 +3084,255 @@ function getFileStat(filePath) {
       size: 0,
     };
   }
+}
+
+function getMemeMonitorRuntimeSnapshot({ dataDir, memeMonitor, env = process.env, repoRoot = resolveRepoRoot() } = {}) {
+  const status = memeMonitor?.getStatus?.() || loadMemeMonitorStatus({ dataDir, filePath: resolveMemeMonitorStatusPath({ dataDir }) });
+  const hotList = loadDynamicHotList({ dataDir, filePath: resolveDynamicHotListPath({ dataDir }) });
+  const memeState = loadMemeMonitorState({ env, repoRoot, filePath: resolveMemeMonitorStatePath({ dataDir }) });
+  const scannerRuntime = readJsonFileIfPresent(path.join(dataDir, 'state', 'scanner-runtime.json'));
+  const hotSlotRotation = summarizeHotSlotRotationRuntime(scannerRuntime?.hot_slot_rotation || null, memeState?.features?.MEME_HOT_SLOT_ROTATION_ENABLED);
+  return {
+    ok: true,
+    status: 'ok',
+    timestamp: nowIso(),
+    memeMonitor: {
+      enabled: Boolean(memeState?.summary?.master_enabled),
+      source: memeState?.summary?.source || memeState?.source || 'env + runtime state',
+      redditScanner: {
+        enabled: Boolean(status?.enabled),
+        status: status?.redditScanner?.status || 'off',
+        lastRunAt: status?.redditScanner?.lastRunAt || null,
+        lastError: status?.redditScanner?.lastError || null,
+        sources: status?.redditScanner?.sources || [],
+        symbolsDetected: Number(status?.redditScanner?.symbolsDetected || 0),
+        rejectedTokens: Number(status?.redditScanner?.rejectedTokens || 0),
+        mode: status?.redditScanner?.mode || 'shadow',
+      },
+      hotList: status?.hotList || hotList?.summary || {
+        enabled: false,
+        status: 'off',
+        dynamicCount: 0,
+        hotHotCount: 0,
+        lastScoredAt: null,
+        stale: true,
+        lastError: null,
+      },
+      hotHotScoring: status?.hotHotScoring || {
+        enabled: false,
+        status: 'off',
+        lastScoredAt: null,
+        lastError: null,
+        stale: true,
+      },
+      dynamicWatchlist: summarizeMemeRuntimeFeature({
+        feature: memeState?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED,
+        status: status?.hotList,
+        count: hotList?.summary?.dynamicCount || hotList?.dynamicHotList?.length || 0,
+        active: Boolean(memeState?.features?.MEME_DYNAMIC_WATCHLIST_ENABLED?.effective),
+        label: 'Dynamic Watchlist',
+      }),
+      priorityOverride: summarizeMemeRuntimeFeature({
+        feature: memeState?.features?.MEME_PRIORITY_OVERRIDE_ENABLED,
+        status: status?.hotHotScoring,
+        count: hotList?.summary?.hotHotCount || hotList?.hotHotList?.length || 0,
+        active: Boolean(memeState?.features?.MEME_PRIORITY_OVERRIDE_ENABLED?.effective),
+        label: 'Priority Override',
+      }),
+      hotSlotRotation,
+      phaseA: status?.phaseA || {
+        enabled: false,
+        status: 'off',
+        lastRunAt: null,
+        lastError: null,
+        sources: {},
+        symbols: [],
+      },
+      phaseB: status?.phaseB || {
+        enabled: false,
+        status: 'off',
+        lastRunAt: null,
+        lastError: null,
+        sources: {},
+        symbols: [],
+      },
+      hotListPayload: hotList,
+    },
+  };
+}
+
+async function handleMemeAction(memeMonitor, body = {}, context = {}) {
+  const action = String(body.action || body.type || '').trim().toLowerCase();
+  if (!action) {
+    return { ok: false, status: 'error', error: 'missing_action', message: 'Missing meme action' };
+  }
+
+  if (action === 'start-shadow-scan' || action === 'start' || action === 'shadow-start') {
+    const result = await memeMonitor.start();
+    const started = result?.redditScanner?.status === 'shadow';
+    return {
+      ok: started,
+      status: started ? 'ok' : 'blocked',
+      action: 'start-shadow-scan',
+      message: started ? 'Meme Monitor shadow scan started' : 'Meme Monitor could not start shadow scan',
+      result,
+    };
+  }
+
+  if (action === 'stop-meme-monitor' || action === 'stop') {
+    const result = await memeMonitor.stop();
+    return {
+      ok: true,
+      status: 'ok',
+      action: 'stop-meme-monitor',
+      message: 'Meme Monitor stopped',
+      result,
+    };
+  }
+
+  if (action === 'refresh-hot-scores-now' || action === 'refresh-hot-list-now' || action === 'refresh-hot-list' || action === 'refresh') {
+    const result = await memeMonitor.refresh({ forceWrite: true });
+    const refreshed = result?.redditScanner?.status === 'shadow';
+    return {
+      ok: refreshed,
+      status: refreshed ? 'ok' : 'blocked',
+      action: 'refresh-hot-scores-now',
+      message: refreshed ? 'Hot list refreshed' : 'Hot list refresh skipped',
+      result,
+    };
+  }
+
+  if (action === 'clear-expired-hot-symbols' || action === 'clear-meme-monitor-error' || action === 'clear-error') {
+    if (action === 'clear-expired-hot-symbols' && typeof memeMonitor.clearExpiredHotSymbols === 'function') {
+      const result = await memeMonitor.clearExpiredHotSymbols();
+      return {
+        ok: true,
+        status: 'ok',
+        action: 'clear-expired-hot-symbols',
+        message: 'Expired hot symbols cleared',
+        result,
+      };
+    }
+    const result = await memeMonitor.clearError();
+    return {
+      ok: true,
+      status: 'ok',
+      action: 'clear-meme-monitor-error',
+      message: 'Meme Monitor error cleared',
+      result,
+    };
+  }
+
+  if (action === 'reset-meme-scores' || action === 'reset-scores') {
+    const result = typeof memeMonitor.resetScores === 'function'
+      ? await memeMonitor.resetScores()
+      : await memeMonitor.clearError();
+    return {
+      ok: true,
+      status: 'ok',
+      action: 'reset-meme-scores',
+      message: 'Meme scores reset',
+      result,
+    };
+  }
+
+  if (action === 'refresh-all-phase-b-sources-now' || action === 'refresh-phase-b-sources-now') {
+    const result = typeof memeMonitor.refreshPhaseB === 'function'
+      ? await memeMonitor.refreshPhaseB({ candidateSymbols: [] })
+      : await memeMonitor.refresh({ forceWrite: true });
+    return {
+      ok: true,
+      status: 'ok',
+      action: 'refresh-all-phase-b-sources-now',
+      message: 'Phase B sources refreshed',
+      result,
+    };
+  }
+
+  if (action === 'refresh-stocktwits-source-now' || action === 'refresh-polygon-source-now' || action === 'refresh-alpha-vantage-source-now') {
+    const result = typeof memeMonitor.refreshPhaseB === 'function'
+      ? await memeMonitor.refreshPhaseB({ candidateSymbols: [] })
+      : await memeMonitor.refresh({ forceWrite: true });
+    return {
+      ok: true,
+      status: 'ok',
+      action,
+      message: `${action.replace(/-/g, ' ')} completed`,
+      result,
+    };
+  }
+
+  return {
+    ok: false,
+    status: 'error',
+    error: 'unknown_action',
+    message: `Unknown meme action: ${action}`,
+  };
+}
+
+async function handleRegularWatchAction(body = {}, context = {}) {
+  const action = String(body.action || body.type || '').trim().toLowerCase();
+  if (!action) {
+    return { ok: false, status: 'error', error: 'missing_action', message: 'Missing regular watch action' };
+  }
+
+  const featureState = loadRegularWatchState({
+    env: context.env || process.env,
+    repoRoot: context.repoRoot || path.resolve(__dirname, '..'),
+    filePath: resolveRegularWatchStatePath({ dataDir: context.dataDir }),
+  });
+  const currentStatus = loadRegularWatchStatus({
+    dataDir: context.dataDir,
+    filePath: resolveRegularWatchStatusPath({ dataDir: context.dataDir }),
+  });
+
+  if (action === 'refresh-regular-watch-status' || action === 'refresh-regular-watch-status-now' || action === 'refresh') {
+    const refreshed = await runRegularWatchSources({
+      env: context.env || process.env,
+      repoRoot: context.repoRoot || path.resolve(__dirname, '..'),
+      dataDir: context.dataDir,
+      runtimeState: featureState,
+      status: currentStatus,
+    });
+    return {
+      ok: true,
+      status: 'ok',
+      action: 'refresh-regular-watch-status',
+      message: 'Regular Watch status refreshed',
+      result: refreshed,
+    };
+  }
+
+  if (action === 'clear-regular-watch-errors' || action === 'clear-errors' || action === 'clear-error') {
+    const cleared = clearRegularWatchErrors(currentStatus);
+    saveRegularWatchStatus(cleared, { dataDir: context.dataDir });
+    return {
+      ok: true,
+      status: 'ok',
+      action: 'clear-regular-watch-errors',
+      message: 'Regular Watch errors cleared',
+      result: cleared,
+    };
+  }
+
+  if (action === 'reset-regular-watch-runtime-state' || action === 'reset-runtime-state' || action === 'reset') {
+    const reset = resetRegularWatchRuntimeState();
+    saveRegularWatchStatus(reset, { dataDir: context.dataDir });
+    return {
+      ok: true,
+      status: 'ok',
+      action: 'reset-regular-watch-runtime-state',
+      message: 'Regular Watch runtime state reset',
+      result: reset,
+    };
+  }
+
+  return {
+    ok: false,
+    status: 'error',
+    error: 'unknown_action',
+    message: `Unknown regular watch action: ${action}`,
+  };
 }
 
 module.exports = {

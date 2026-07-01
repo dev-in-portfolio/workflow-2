@@ -1,6 +1,8 @@
 const { summarizeFillQuality } = require('./metrics');
 const { safeNumber } = require('./util');
 
+const DEFAULT_MAX_OPEN_POSITIONS = 2;
+
 function summarizeOutcomeBuckets(paperOutcomes = []) {
   const buckets = new Map();
   for (const outcome of paperOutcomes) {
@@ -86,6 +88,7 @@ function buildThresholdProposal({
   const bucketStats = summarizeOutcomeBuckets(paperOutcomes);
   const signalStats = summarizeSignalQuality(signals);
   const outcomeStats = summarizeOutcomePerformance(paperOutcomes);
+  const exitEfficiency = summarizeExitEfficiency(paperOutcomes);
   const fillQuality = summarizeFillQuality(paperOutcomes);
   const reasonStats = summarizeRiskReasons(riskDecisions);
   const profitableBuckets = bucketStats.filter((bucket) => bucket.count >= 3 && bucket.average_pnl > 0 && bucket.win_rate >= 0.55);
@@ -108,8 +111,15 @@ function buildThresholdProposal({
       maxContradictionScore: currentPolicy.maxContradictionScore ?? 50,
       maxRiskScore: currentPolicy.maxRiskScore ?? 70,
       minLiquidityScore: currentPolicy.minLiquidityScore ?? 40,
-      maxOpenPositions: currentPolicy.maxOpenPositions ?? 12,
+      maxOpenPositions: currentPolicy.maxOpenPositions ?? DEFAULT_MAX_OPEN_POSITIONS,
       positionSizeMultiplier: currentPolicy.positionSizeMultiplier ?? 1,
+      sellProfitThresholdPct: currentPolicy.sellProfitThresholdPct ?? 5,
+      sellNetProfitFloorDollars: currentPolicy.sellNetProfitFloorDollars ?? 1,
+      positionStopLossDollars: currentPolicy.positionStopLossDollars ?? 1,
+      positionStopLossNotionalPct: currentPolicy.positionStopLossNotionalPct ?? 0.75,
+      positionStopLossMaxDollars: currentPolicy.positionStopLossMaxDollars ?? 2.5,
+      trailingProfitStartDollars: currentPolicy.trailingProfitStartDollars ?? 0.5,
+      trailingProfitGivebackDollars: currentPolicy.trailingProfitGivebackDollars ?? 0.3,
     },
     reason_codes: [],
     notes: [],
@@ -261,9 +271,189 @@ function buildThresholdProposal({
     proposal.reason_codes.push('SIZE_UP_FOR_CONFIRMED_EDGE');
   }
 
+  const exitTuning = tuneExitRules({
+    currentPolicy,
+    outcomeStats,
+    paperOutcomes,
+    winRate,
+    fillQuality,
+    exitEfficiency,
+  });
+  Object.assign(proposal.proposed_policy, exitTuning.policy);
+  proposal.reason_codes.push(...exitTuning.reason_codes);
+
   proposal.expected_focus = buildExpectedFocus(proposal.proposed_policy, bucketStats);
   proposal.notes = buildNotes(proposal, winRate, blockedRate);
+  proposal.notes.push(...exitTuning.notes);
   return proposal;
+}
+
+function tuneExitRules({ currentPolicy = {}, outcomeStats = {}, paperOutcomes = [], winRate = 0, fillQuality = {}, exitEfficiency = null } = {}) {
+  const current = {
+    sellProfitThresholdPct: positiveNumber(currentPolicy.sellProfitThresholdPct, 5),
+    sellNetProfitFloorDollars: positiveNumber(currentPolicy.sellNetProfitFloorDollars, 1),
+    positionStopLossDollars: positiveNumber(currentPolicy.positionStopLossDollars, 1),
+    positionStopLossNotionalPct: Math.max(0, safeNumber(currentPolicy.positionStopLossNotionalPct, 0.75)),
+    positionStopLossMaxDollars: positiveNumber(currentPolicy.positionStopLossMaxDollars, 2.5),
+    trailingProfitStartDollars: positiveNumber(currentPolicy.trailingProfitStartDollars, 0.5),
+    trailingProfitGivebackDollars: positiveNumber(currentPolicy.trailingProfitGivebackDollars, 0.3),
+  };
+  const policy = { ...current };
+  const reasonCodes = [];
+  const notes = [];
+  const closedOutcomes = paperOutcomes.filter((outcome) => Number.isFinite(Number(outcome.pnl)));
+  if (closedOutcomes.length < 3) {
+    notes.push('Exit rules held steady until at least three closed outcomes are available.');
+    return { policy, reason_codes: reasonCodes, notes };
+  }
+
+  const averageMfe = averagePositive(closedOutcomes.map((outcome) => safeNumber(outcome.max_favorable_excursion, 0)));
+  const averageMae = averagePositive(closedOutcomes.map((outcome) => Math.abs(safeNumber(outcome.max_adverse_excursion, 0))));
+  const efficiency = exitEfficiency || summarizeExitEfficiency(closedOutcomes);
+  const drawdown = safeNumber(outcomeStats.drawdown, 0);
+  const paperPnl = safeNumber(outcomeStats.paperPnl, 0);
+  const falsePositives = safeNumber(outcomeStats.falsePositives, 0);
+  const poorPeakCapture = efficiency.count >= 3
+    && efficiency.average_peak_profit > 0
+    && efficiency.average_capture_ratio < 0.5
+    && efficiency.average_giveback_dollars > Math.max(0.25, current.trailingProfitGivebackDollars * 0.75);
+  const costDragHigh = efficiency.count >= 3
+    && (
+      efficiency.average_execution_drag_ratio >= 0.08
+      || efficiency.average_execution_drag >= Math.max(0.25, Math.abs(efficiency.average_net_profit) * 0.25)
+    );
+  const realGainErosion = efficiency.count >= 3
+    && efficiency.gross_win_rate > efficiency.real_gain_rate
+    && efficiency.real_gain_rate < 0.6;
+  const weakExits = winRate < 0.5 || paperPnl < 0 || falsePositives > 0 || drawdown > Math.max(5, Math.abs(paperPnl) * 0.5);
+  const healthyExits = winRate >= 0.6
+    && paperPnl > 0
+    && falsePositives === 0
+    && drawdown <= Math.max(5, Math.abs(paperPnl) * 0.35)
+    && safeNumber(fillQuality.partial_fill_rate, 0) <= 0.05
+    && safeNumber(fillQuality.rejection_rate, 0) <= 0.05;
+
+  if (weakExits) {
+    policy.positionStopLossDollars = roundPolicyNumber(Math.max(0.25, current.positionStopLossDollars * 0.85));
+    policy.positionStopLossNotionalPct = roundPolicyNumber(Math.max(0.1, current.positionStopLossNotionalPct * 0.9));
+    policy.positionStopLossMaxDollars = roundPolicyNumber(Math.max(policy.positionStopLossDollars, current.positionStopLossMaxDollars * 0.85));
+    policy.trailingProfitStartDollars = roundPolicyNumber(Math.max(0.25, current.trailingProfitStartDollars * 0.9));
+    policy.trailingProfitGivebackDollars = roundPolicyNumber(Math.max(0.1, Math.min(policy.trailingProfitStartDollars, current.trailingProfitGivebackDollars * 0.85)));
+    policy.sellProfitThresholdPct = roundPolicyNumber(Math.max(0.5, current.sellProfitThresholdPct * 0.9));
+    policy.sellNetProfitFloorDollars = roundPolicyNumber(Math.max(0.25, current.sellNetProfitFloorDollars * 0.9));
+    reasonCodes.push('EXIT_RULES_TIGHTENED_FOR_DRAWDOWN');
+    notes.push('Exit rules tightened because recent closed outcomes show weak win rate, drawdown, or false positives.');
+  } else if (healthyExits) {
+    if (averageMfe > current.trailingProfitStartDollars) {
+      policy.trailingProfitStartDollars = roundPolicyNumber(Math.min(current.trailingProfitStartDollars * 1.2, Math.max(current.trailingProfitStartDollars, averageMfe * 0.7)));
+      policy.trailingProfitGivebackDollars = roundPolicyNumber(Math.max(0.1, Math.min(policy.trailingProfitStartDollars * 0.75, Math.max(current.trailingProfitGivebackDollars, averageMfe * 0.25))));
+      policy.sellProfitThresholdPct = roundPolicyNumber(Math.max(current.sellProfitThresholdPct, current.sellProfitThresholdPct * 1.05));
+      reasonCodes.push('EXIT_RULES_LET_WINNERS_RUN');
+      notes.push('Exit rules nudged to let stronger winners breathe based on favorable excursion history.');
+    }
+    if (averageMae > 0 && averageMae < current.positionStopLossDollars * 0.5) {
+      policy.positionStopLossDollars = roundPolicyNumber(Math.max(current.positionStopLossDollars * 0.9, averageMae * 1.5, 0.25));
+      policy.positionStopLossMaxDollars = roundPolicyNumber(Math.max(policy.positionStopLossDollars, current.positionStopLossMaxDollars * 0.95));
+      reasonCodes.push('EXIT_RULES_REDUCE_UNUSED_LOSS_ROOM');
+      notes.push('Stop room reduced because recent winners did not need the full adverse-excursion allowance.');
+    }
+  } else {
+    notes.push('Exit rules held steady because outcome quality is mixed.');
+  }
+
+  if (poorPeakCapture) {
+    policy.trailingProfitStartDollars = roundPolicyNumber(Math.max(0.25, Math.min(current.trailingProfitStartDollars * 0.9, efficiency.average_peak_profit * 0.45)));
+    policy.trailingProfitGivebackDollars = roundPolicyNumber(Math.max(0.1, Math.min(current.trailingProfitGivebackDollars * 0.85, Math.max(0.1, efficiency.average_giveback_dollars * 0.5))));
+    policy.sellProfitThresholdPct = roundPolicyNumber(Math.max(0.5, Math.min(policy.sellProfitThresholdPct, current.sellProfitThresholdPct * 0.95)));
+    reasonCodes.push('LOW_PEAK_CAPTURE_TIGHTEN_TRAILING');
+    notes.push(`Peak capture is low (${Math.round(efficiency.average_capture_ratio * 100)}%); trailing start/giveback tightened to keep more of the sale peak.`);
+  }
+
+  if (costDragHigh || realGainErosion) {
+    const dragBuffer = Math.max(current.sellNetProfitFloorDollars, efficiency.average_execution_drag * 2, 0.25);
+    policy.sellNetProfitFloorDollars = roundPolicyNumber(Math.max(policy.sellNetProfitFloorDollars, dragBuffer));
+    policy.sellProfitThresholdPct = roundPolicyNumber(Math.max(policy.sellProfitThresholdPct, current.sellProfitThresholdPct * 1.05));
+    reasonCodes.push(costDragHigh ? 'EXIT_COSTS_REQUIRE_HIGHER_PROFIT_FLOOR' : 'REAL_GAIN_EROSION_REQUIRE_HIGHER_PROFIT_FLOOR');
+    notes.push(`Sale costs are eroding exits: average drag ${roundPolicyNumber(efficiency.average_execution_drag)}, fees ${roundPolicyNumber(efficiency.average_fees)}, real-gain rate ${Math.round(efficiency.real_gain_rate * 100)}%.`);
+  }
+
+  return { policy, reason_codes: reasonCodes, notes };
+}
+
+function summarizeExitEfficiency(paperOutcomes = []) {
+  const stats = {
+    count: 0,
+    gross_win_count: 0,
+    real_gain_count: 0,
+    total_peak_profit: 0,
+    total_sale_profit: 0,
+    total_net_profit: 0,
+    total_fees: 0,
+    total_execution_drag: 0,
+    total_execution_drag_ratio: 0,
+    total_capture_ratio: 0,
+    total_giveback_dollars: 0,
+  };
+
+  for (const outcome of paperOutcomes) {
+    const peakProfit = safeNumber(outcome.max_favorable_excursion ?? outcome.trailing_peak_unrealized_pl, null);
+    const saleProfit = safeNumber(outcome.gross_pnl ?? outcome.pnl, null);
+    const netProfit = safeNumber(outcome.net_pnl ?? outcome.adjusted_pnl ?? outcome.pnl, null);
+    if (!Number.isFinite(saleProfit) && !Number.isFinite(netProfit)) continue;
+    const executionDrag = Math.max(0, safeNumber(outcome.execution_drag, 0));
+    const fees = Math.max(0, safeNumber(outcome.fees ?? outcome.estimated_fees ?? outcome.paper_result?.estimated_fees, 0));
+    const effectivePeak = Number.isFinite(peakProfit) && peakProfit > 0
+      ? peakProfit
+      : Math.max(0, Number.isFinite(saleProfit) ? saleProfit : netProfit);
+    const effectiveSale = Number.isFinite(saleProfit) ? saleProfit : netProfit;
+    const effectiveNet = Number.isFinite(netProfit) ? netProfit : effectiveSale - executionDrag;
+    const captureRatio = effectivePeak > 0 ? clampNumber(effectiveNet / effectivePeak, -1, 1.5) : null;
+    const giveback = effectivePeak > 0 && Number.isFinite(effectiveSale) ? Math.max(0, effectivePeak - effectiveSale) : 0;
+    const fallbackDragRatio = executionDrag > 0 ? executionDrag / Math.max(1, Math.abs(effectiveNet) + executionDrag) : 0;
+    const dragRatio = safeNumber(outcome.execution_drag_ratio, fallbackDragRatio);
+
+    stats.count += 1;
+    if (Number.isFinite(effectiveSale) && effectiveSale > 0) stats.gross_win_count += 1;
+    if (Number.isFinite(effectiveNet) && effectiveNet > 0) stats.real_gain_count += 1;
+    stats.total_peak_profit += effectivePeak;
+    stats.total_sale_profit += Number.isFinite(effectiveSale) ? effectiveSale : 0;
+    stats.total_net_profit += Number.isFinite(effectiveNet) ? effectiveNet : 0;
+    stats.total_fees += fees;
+    stats.total_execution_drag += executionDrag;
+    stats.total_execution_drag_ratio += Number.isFinite(dragRatio) ? dragRatio : 0;
+    stats.total_capture_ratio += Number.isFinite(captureRatio) ? captureRatio : 0;
+    stats.total_giveback_dollars += giveback;
+  }
+
+  if (!stats.count) {
+    return {
+      count: 0,
+      gross_win_rate: 0,
+      real_gain_rate: 0,
+      average_peak_profit: 0,
+      average_sale_profit: 0,
+      average_net_profit: 0,
+      average_fees: 0,
+      average_execution_drag: 0,
+      average_execution_drag_ratio: 0,
+      average_capture_ratio: 0,
+      average_giveback_dollars: 0,
+    };
+  }
+
+  return {
+    count: stats.count,
+    gross_win_rate: stats.gross_win_count / stats.count,
+    real_gain_rate: stats.real_gain_count / stats.count,
+    average_peak_profit: stats.total_peak_profit / stats.count,
+    average_sale_profit: stats.total_sale_profit / stats.count,
+    average_net_profit: stats.total_net_profit / stats.count,
+    average_fees: stats.total_fees / stats.count,
+    average_execution_drag: stats.total_execution_drag / stats.count,
+    average_execution_drag_ratio: stats.total_execution_drag_ratio / stats.count,
+    average_capture_ratio: stats.total_capture_ratio / stats.count,
+    average_giveback_dollars: stats.total_giveback_dollars / stats.count,
+  };
 }
 
 function buildExpectedFocus(policy, buckets) {
@@ -317,6 +507,25 @@ function buildNotes(proposal, winRate, blockedRate) {
 
 function clampInt(value, min, max) {
   return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function positiveNumber(value, fallback) {
+  const numeric = safeNumber(value, fallback);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+}
+
+function averagePositive(values = []) {
+  const positives = values.map(Number).filter((value) => Number.isFinite(value) && value > 0);
+  if (!positives.length) return 0;
+  return positives.reduce((sum, value) => sum + value, 0) / positives.length;
+}
+
+function roundPolicyNumber(value) {
+  return Number(Number(value).toFixed(4));
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, Number(value)));
 }
 
 function clampMultiplier({ current = 1, winRate = 0, blockedRate = 0, weakestBuckets = [], profitableBuckets = [], falsePositiveBuckets = [], signalStats = {}, outcomeStats = {} } = {}) {
@@ -390,6 +599,7 @@ function mergeUniqueBuckets(buckets) {
 module.exports = {
   buildThresholdProposal,
   clampMultiplier,
+  summarizeExitEfficiency,
   summarizeOutcomeBuckets,
   summarizeOutcomePerformance,
   summarizeRiskReasons,

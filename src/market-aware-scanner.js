@@ -59,7 +59,6 @@ function createMarketAwareScanner(options = {}) {
       notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
       sellProfitThresholdPct: stockSellProfitThresholdPct,
       allowContrarianEntries: true,
-      requireMultiSourceConfirmation: false,
       logger: options.logger,
     });
   }

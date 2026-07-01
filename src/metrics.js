@@ -1,5 +1,7 @@
 const { clamp, nowIso, safeNumber } = require('./util');
 
+const DEFAULT_MAX_OPEN_POSITIONS = 2;
+
 function generateDailySummary({ date, signals = [], riskDecisions = [], orders = [], events = [], policySnapshot = null }) {
   return generateDailyLiveResultsReport({ date, signals, riskDecisions, paperOutcomes: orders, events, policySnapshot });
 }
@@ -48,7 +50,7 @@ function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = []
   const rejectionRate = riskDecisions.length ? blockedCount / riskDecisions.length : 0;
   const rejectionPressureScore = clamp((rejectionRate * 100) + Math.min(25, blockReasons.length * 3), 0, 100);
   const recommendedMaxOpenPositions = recommendOpenPositionCapFromReport({
-    currentMaxOpenPositions: safeNumber(policySnapshot?.policy?.maxOpenPositions, 12),
+    currentMaxOpenPositions: safeNumber(policySnapshot?.policy?.maxOpenPositions, DEFAULT_MAX_OPEN_POSITIONS),
     paperPnl,
     winRate: paperOutcomes.length ? paperOutcomes.filter((outcome) => outcome.win_loss === 'win').length / paperOutcomes.length : 0,
     blockedRate: rejectionRate,

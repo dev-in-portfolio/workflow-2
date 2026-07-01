@@ -19,6 +19,41 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
     report_date: '2026-06-19',
     timestamp: '2026-06-19T15:00:00.000Z',
   }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), JSON.stringify({
+    scanner: 'stock-scanner',
+    mode: 'live-market',
+    last_scan_time: '2026-06-19T15:01:00.000Z',
+    last_scan_duration_ms: 42,
+    candidate_rank_details: [{
+      symbol: 'SPCX',
+      rank_score: 68,
+      adjusted_rank_score: 68,
+      current_price: 10.2,
+      previous_close: 9.9,
+      move_pct: 3.03,
+      spread_pct: 0.22,
+      volume: 1_200_000,
+      average_volume: 800_000,
+      volume_multiple: 1.5,
+      tradable_status: 'tradable',
+      halt_status: 'not_halted',
+      source_status: [{
+        source: 'wallstreetbets',
+        tier: 'tier_1',
+        status: 'active',
+        lastScanAt: '2026-06-19T15:01:00.000Z',
+        lastError: null,
+        symbolsDetected: 4,
+        blockedReason: null,
+      }],
+    }],
+    recent_skips: [],
+    hot_slot_rotation: {
+      enabled: false,
+      status: 'off',
+      lastDecision: 'rotation_off',
+    },
+  }, null, 2));
   fs.writeFileSync(path.join(dataDir, 'live-policy.json'), JSON.stringify({
     source: 'startup-config',
     policy: {
@@ -460,6 +495,13 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
       MAX_STOP_DISTANCE_DOLLARS: '2',
       ALLOW_RISK_BUDGET_FRACTIONAL_SHARES: 'true',
       RISK_BUDGET_REQUIRE_BROKER_EQUITY: 'true',
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
     },
     fetchImpl: global.fetch,
   }, {
@@ -488,6 +530,8 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.anti_churn_summary.symbols_under_cooldown.length, 0);
   assert.equal(snapshot.live.anti_churn_summary.recent_winner_protection.length, 1);
   assert.equal(snapshot.live.setup_fatigue_summary.active_setup_count, 1);
+  assert.equal(snapshot.live.meme_monitor_state.summary.master_enabled, false);
+  assert(snapshot.live.meme_monitor_state.summary.blocked_features.includes('Reddit Scanner'));
   assert.equal(snapshot.live.session_guards.buy_blocked, true);
   assert.equal(snapshot.live.session_guards.manage_only, true);
   assert.equal(snapshot.live.risk_budget_sizing.config.enabled, true);
@@ -506,14 +550,21 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.anti_churn_reason_codes[0], 'CHURN_RATE_GUARD_ACTIVE');
   assert.equal(snapshot.summary.setup_fatigue_active_count, 1);
   assert.equal(snapshot.summary.session_guard_buy_blocked, true);
+  assert.equal(snapshot.summary.meme_monitor_enabled, false);
+  assert(snapshot.summary.meme_monitor_blocked_features.includes('Hot Slot Rotation'));
   assert.equal(snapshot.summary.risk_budget_sizing_enabled, true);
   assert.equal(snapshot.summary.risk_budget_latest_candidate_count, 1);
+  assert.equal(snapshot.watch.dynamicHotList.status, 'disabled');
+  assert.equal(snapshot.watch.hotHotList.status, 'disabled');
+  assert.equal(snapshot.memeMonitor.dynamicWatchlist.status, 'blocked');
+  assert.equal(snapshot.memeMonitor.priorityOverride.status, 'blocked');
   assert.equal(snapshot.file_snapshots.live_preflight.exists, true);
   assert.equal(snapshot.file_snapshots.broker_local_reconciliation.exists, true);
   assert.equal(snapshot.file_snapshots.partial_fill_state.exists, true);
   assert.equal(snapshot.file_snapshots.candidate_lifecycle_state.exists, true);
   assert.equal(snapshot.file_snapshots.anti_churn_state.exists, true);
   assert.equal(snapshot.file_snapshots.setup_fatigue_state.exists, true);
+  assert.equal(snapshot.file_snapshots.meme_monitor_state.exists, false);
   assert.equal(typeof snapshot.live.config_drift.has_drift, 'boolean');
   assert.equal(snapshot.summary.trader_status, 'ok');
   assert.equal(snapshot.summary.paper_pnl, 2.5);
@@ -540,6 +591,623 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.last_trade_at, '2026-06-19T15:04:01.000Z');
   assert.equal(snapshot.recent_activity.riskDecisions.length, 1);
   assert(snapshot.source_health.length >= 5);
+});
+
+test('dashboard snapshot includes watch data when watch fixtures exist', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-watch-test-'));
+  const dataDir = path.join(tempDir, 'data');
+  fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), JSON.stringify({
+    scanner: 'stock-scanner',
+    mode: 'live-market',
+    last_scan_time: '2026-06-19T15:01:00.000Z',
+    candidate_rank_details: [{
+      symbol: 'AMO',
+      current_price: 121.24,
+      previous_close: 118.50,
+      move_pct: 2.31,
+      spread_pct: 0.18,
+      volume: 5200000,
+      average_volume: 2100000,
+      volume_multiple: 2.48,
+      rank_score: 88.4,
+      adjusted_rank_score: 88.4,
+      reason_codes: ['volume_confirmed'],
+      candidate_lifecycle_reason_codes: ['CANDIDATE_QUEUE_CONFIRMED'],
+    }],
+    recent_skips: [{ symbol: 'IBM', reason: 'EXCLUDED_BUY_SYMBOL' }],
+    risk_budget_sizing: { enabled: true, latest_candidates: [] },
+    hot_slot_rotation: {
+      requested: true,
+      enabled: true,
+      status: 'active',
+      lastDecision: 'rotation_complete',
+      lastDecisionAt: '2026-06-19T15:03:00.000Z',
+      candidate: 'SOUN',
+      candidateHeatScore: 94,
+      candidateMarketScore: 82,
+      accountFull: true,
+      evictionCandidate: 'MARA',
+      evictionReason: 'small_profit_weak_momentum',
+      expectedExitPnl: 0.72,
+      decision: 'rotation_complete',
+      reasonCodes: ['hot_slot_rotation_requested', 'rotation_eviction_candidate_selected', 'rotation_complete'],
+      rotationEligible: true,
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'state', 'meme-monitor-state.json'), JSON.stringify({
+    version: '2026-06-30.meme-monitor-state.1',
+    updated_at: '2026-06-19T15:00:00.000Z',
+    source: 'unit-test',
+    features: {
+      MEME_MONITOR_ENABLED: { key: 'MEME_MONITOR_ENABLED', runtime: true, changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      MEME_REDDIT_SCANNER_ENABLED: { key: 'MEME_REDDIT_SCANNER_ENABLED', runtime: true, changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      MEME_HOT_LIST_ENABLED: { key: 'MEME_HOT_LIST_ENABLED', runtime: true, changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      MEME_DYNAMIC_WATCHLIST_ENABLED: { key: 'MEME_DYNAMIC_WATCHLIST_ENABLED', runtime: true, changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      MEME_PRIORITY_OVERRIDE_ENABLED: { key: 'MEME_PRIORITY_OVERRIDE_ENABLED', runtime: false, changed_at: null, changed_by: null, source: null },
+      MEME_HOT_SLOT_ROTATION_ENABLED: { key: 'MEME_HOT_SLOT_ROTATION_ENABLED', runtime: false, changed_at: null, changed_by: null, source: null },
+      MEME_AUTO_ACTION_ENABLED: { key: 'MEME_AUTO_ACTION_ENABLED', runtime: false, changed_at: null, changed_by: null, source: null },
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'meme-monitor-status.json'), JSON.stringify({
+    version: '2026-06-30.meme-monitor-status.1',
+    updated_at: '2026-06-19T15:02:00.000Z',
+    enabled: true,
+    redditScanner: {
+      enabled: true,
+      status: 'shadow',
+      lastRunAt: '2026-06-19T15:02:00.000Z',
+      lastError: null,
+      sources: ['wallstreetbets'],
+      symbolsDetected: 2,
+      rejectedTokens: 0,
+      mode: 'shadow',
+    },
+    hotList: {
+      enabled: true,
+      status: 'shadow',
+      dynamicCount: 1,
+      hotHotCount: 1,
+      lastScoredAt: '2026-06-19T15:02:00.000Z',
+      stale: false,
+      lastError: null,
+    },
+    hotHotScoring: {
+      enabled: true,
+      status: 'active',
+      lastScoredAt: '2026-06-19T15:02:00.000Z',
+      lastError: null,
+      stale: false,
+    },
+    phaseA: {
+      enabled: true,
+      status: 'active',
+      lastRunAt: '2026-06-30T14:05:00.000Z',
+      lastError: null,
+      sources: {
+        reddit: { source: 'reddit', tier: 'tier_1', status: 'active', lastScanAt: '2026-06-30T14:05:00.000Z', symbolsDetected: 4, blockedReason: null },
+        alpacaMarket: { source: 'alpacaMarket', tier: 'tier_1', status: 'active', lastScanAt: '2026-06-30T14:05:00.000Z', symbolsConfirmed: 1, blockedReason: null },
+        alpacaAssets: { source: 'alpacaAssets', tier: 'tier_1', status: 'inactive', lastScanAt: null, lastError: 'blocked', blockedReason: 'source_not_found_or_inaccessible' },
+        nasdaqHalts: { source: 'nasdaqHalts', tier: 'tier_1', status: 'active', lastScanAt: '2026-06-30T14:05:00.000Z', blockedSymbols: 0, blockedReason: null },
+        secEdgar: { source: 'secEdgar', tier: 'tier_1', status: 'active', lastScanAt: '2026-06-30T14:05:00.000Z', catalystsDetected: 1, blockedReason: null },
+      },
+      symbols: [
+        {
+          symbol: 'SOUN',
+          socialHeatScore: 12,
+          marketConfirmationScore: 84,
+          catalystScore: 25,
+          riskBlockScore: 0,
+          haltStatus: 'not_halted',
+          tradableStatus: 'tradable',
+          status: 'active',
+          sourceConfirmations: { reddit: true, alpacaMarket: true, alpacaAssets: false, nasdaqHalts: true, secEdgar: true },
+          reasonCodes: ['reddit_tier_1_signal', 'sec_recent_8k_detected'],
+          riskWarnings: [],
+          rawSummary: {},
+          sources: ['reddit/tier_1:ACTIVE', 'alpacaMarket/tier_1:ACTIVE'],
+        },
+      ],
+    },
+    phaseB: {
+      enabled: true,
+      status: 'active',
+      lastRunAt: '2026-06-30T14:06:00.000Z',
+      lastError: null,
+      sources: {
+        stocktwits: { source: 'stocktwits', status: 'active', lastScanAt: '2026-06-30T14:06:00.000Z', symbolsDetected: 1, blockedReason: null },
+        polygon: { source: 'polygon', status: 'active', lastScanAt: '2026-06-30T14:06:00.000Z', symbolsConfirmed: 1, blockedReason: null },
+        alphaVantage: { source: 'alphaVantage', status: 'active', lastScanAt: '2026-06-30T14:06:00.000Z', newsItemsMatched: 2, blockedReason: null },
+      },
+      symbols: [
+        {
+          symbol: 'SOUN',
+          socialConfirmation: { reddit: 88, stocktwits: 74, score: 84, reasonCodes: ['reddit_mention_velocity_spike', 'stocktwits_cashtag_velocity_confirmed'] },
+          marketConfirmation: { alpaca: 81, polygon: 85, alphaVantage: 70, score: 82, reasonCodes: ['alpaca_volume_confirmed', 'polygon_snapshot_confirmed', 'alpha_vantage_intraday_confirmed'] },
+          riskConfirmation: { nasdaqHalts: 'not_halted', alpacaAssets: 'tradable', secEdgar: 'no_blocking_filing', score: 92 },
+          finalMemeScore: 89,
+          status: 'hot_candidate',
+          reasonCodes: ['cross_source_social_confirmation', 'cross_source_market_confirmation'],
+          riskWarnings: [],
+          crossSourceConfirmation: true,
+          phaseBConfirmation: true,
+          borderlineUpgrade: true,
+        },
+      ],
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'state', 'regular-watch-state.json'), JSON.stringify({
+    version: '2026-06-30.regular-watch-state.1',
+    updated_at: '2026-06-19T15:00:00.000Z',
+    source: 'unit-test',
+    features: {
+      REGULAR_WATCH_INTELLIGENCE_ENABLED: { key: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', runtime: true, effective: true, status: 'active', changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: { key: 'REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED', runtime: true, effective: true, status: 'active', changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      REGULAR_WATCH_PRIORITY_SCORING_ENABLED: { key: 'REGULAR_WATCH_PRIORITY_SCORING_ENABLED', runtime: true, effective: true, status: 'active', changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      REGULAR_WATCH_SCANNER_RANKING_ENABLED: { key: 'REGULAR_WATCH_SCANNER_RANKING_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_ASSET_VALIDATION_ENABLED: { key: 'REGULAR_WATCH_ASSET_VALIDATION_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_HALT_CHECK_ENABLED: { key: 'REGULAR_WATCH_HALT_CHECK_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_SEC_RISK_CHECK_ENABLED: { key: 'REGULAR_WATCH_SEC_RISK_CHECK_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_NEWS_CATALYST_ENABLED: { key: 'REGULAR_WATCH_NEWS_CATALYST_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_POSITION_AWARENESS_ENABLED: { key: 'REGULAR_WATCH_POSITION_AWARENESS_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED: { key: 'REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED: { key: 'REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED: { key: 'REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED: { key: 'REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+    },
+    summary: {
+      master_enabled: true,
+      source: 'unit-test',
+      blocked_features: [],
+      warnings: [],
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'regular-watch-status.json'), JSON.stringify({
+    version: '2026-06-30.regular-watch-status.1',
+    updated_at: '2026-06-19T15:01:00.000Z',
+    enabled: true,
+    regularWatchIntelligence: {
+      enabled: true,
+      status: 'active',
+      lastRunAt: '2026-06-19T15:01:00.000Z',
+      lastError: null,
+      symbolsChecked: 12,
+      moversFound: 3,
+      blockedSymbols: 1,
+      features: {
+        marketConfirmation: true,
+        assetValidation: false,
+        haltCheck: false,
+        secRiskCheck: false,
+        newsCatalyst: false,
+        priorityScoring: true,
+        scannerRanking: false,
+        positionAwareness: false,
+      },
+    },
+    regularWatchList: [{
+      symbol: 'SPCX',
+      score: 78,
+      status: 'watching',
+      sourceStatus: [{
+        source: 'wallstreetbets',
+        tier: 'tier_1',
+        status: 'active',
+        lastScanAt: '2026-06-19T15:01:00.000Z',
+        lastError: null,
+        symbolsDetected: 4,
+        blockedReason: null,
+      }],
+    }],
+    regularWatchMovers: [{
+      symbol: 'SPCX',
+      score: 78,
+      status: 'watching',
+      sourceStatus: [{
+        source: 'wallstreetbets',
+        tier: 'tier_1',
+        status: 'active',
+        lastScanAt: '2026-06-19T15:01:00.000Z',
+        lastError: null,
+        symbolsDetected: 4,
+        blockedReason: null,
+      }],
+    }],
+    summary: {
+      master_enabled: true,
+      source: 'unit-test',
+      blocked_features: [],
+      warnings: [],
+    },
+    generatedAt: '2026-06-19T15:01:00.000Z',
+    stale: false,
+    status: 'active',
+    lastRunAt: '2026-06-19T15:01:00.000Z',
+    lastError: null,
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'dynamic-hot-list.json'), JSON.stringify({
+    generatedAt: '2026-06-19T15:02:00.000Z',
+    lastScoredAt: '2026-06-19T15:02:00.000Z',
+    mode: 'shadow',
+    source: 'meme-monitor',
+    status: 'shadow',
+    enabled: true,
+    stale: false,
+    dynamicHotList: [{
+      symbol: 'AMO',
+      memeHeatScore: 84,
+      marketConfirmationScore: null,
+      marketConfirmationDetails: null,
+      status: 'dynamic_watch',
+      lastDecision: 'dynamic_watch',
+      reasonCodes: ['multi_source_confirmation', 'market_confirmation_unavailable'],
+      riskWarnings: ['social_signal_only'],
+      expiresAt: '2026-07-01T15:32:00.000Z',
+      mentions15m: 12,
+      mentions30m: 18,
+      mentions60m: 24,
+      uniqueUsers: 9,
+      topSources: ['reddit:wallstreetbets'],
+      sourceProfile: {
+        sourceCount: 2,
+        dominantTier: 'tier_1',
+        tierCounts: { tier_1: 2, tier_2: 1 },
+        sources: [
+          { source: 'wallstreetbets', tier: 'tier_1', count: 2, weight: 1.35 },
+          { source: 'stocks', tier: 'tier_2', count: 1, weight: 1.0 },
+        ],
+      },
+      sourceConfirmations: { reddit: true, alpacaMarket: false, alpacaAssets: false, nasdaqHalts: false, secEdgar: false },
+      phaseB: {
+        socialConfirmation: { reddit: 84, stocktwits: 67, score: 79, reasonCodes: ['cross_source_social_confirmation'] },
+        marketConfirmation: { alpaca: 81, polygon: 85, alphaVantage: 70, score: 82, reasonCodes: ['cross_source_market_confirmation'] },
+        riskConfirmation: { nasdaqHalts: 'not_halted', alpacaAssets: 'tradable', secEdgar: 'no_blocking_filing', score: 92 },
+        finalMemeScore: 89,
+        status: 'hot_candidate',
+        reasonCodes: ['cross_source_social_confirmation', 'cross_source_market_confirmation'],
+        riskWarnings: [],
+        crossSourceConfirmation: true,
+        phaseBConfirmation: true,
+        borderlineUpgrade: true,
+      },
+      scannerWatched: true,
+    }],
+    hotHotList: [{
+      symbol: 'SOUN',
+      memeHeatScore: 92,
+      marketConfirmationScore: 88,
+      marketConfirmationDetails: {
+        currentPrice: 23.24,
+        previousClose: 21.1,
+        volume: 2400000,
+        averageVolume: 1200000,
+        spreadPct: 0.24,
+        tradable: true,
+        halted: false,
+      },
+      status: 'hot_hot',
+      priorityOverrideEligible: false,
+      rotationEligible: false,
+      reasonCodes: ['market_confirmation_passed'],
+      riskWarnings: [],
+      expiresAt: '2026-07-01T15:32:00.000Z',
+      lastDecision: 'hot_hot',
+      sourceProfile: {
+        sourceCount: 1,
+        dominantTier: 'tier_1',
+        tierCounts: { tier_1: 3 },
+        sources: [
+          { source: 'wallstreetbets', tier: 'tier_1', count: 3, weight: 1.35 },
+        ],
+      },
+      sourceConfirmations: { reddit: true, alpacaMarket: true, alpacaAssets: false, nasdaqHalts: true, secEdgar: true },
+      phaseB: {
+        socialConfirmation: { reddit: 92, stocktwits: 78, score: 86, reasonCodes: ['cross_source_social_confirmation'] },
+        marketConfirmation: { alpaca: 88, polygon: 86, alphaVantage: 72, score: 85, reasonCodes: ['cross_source_market_confirmation'] },
+        riskConfirmation: { nasdaqHalts: 'not_halted', alpacaAssets: 'tradable', secEdgar: 'no_blocking_filing', score: 94 },
+        finalMemeScore: 91,
+        status: 'hot_hot',
+        reasonCodes: ['cross_source_social_confirmation', 'cross_source_market_confirmation'],
+        riskWarnings: [],
+        crossSourceConfirmation: true,
+        phaseBConfirmation: true,
+        borderlineUpgrade: false,
+      },
+    }],
+    expired: [],
+    rejected: [],
+  }, null, 2));
+
+  const trader = http.createServer((req, res) => {
+    const payloads = {
+      '/status': { status: 'ok', mode: 'minimal-v1', uptime_minutes: 12, heartbeat_count: 3, last_request_at: '2026-06-19T15:00:00.000Z', timestamp: '2026-06-19T15:00:01.000Z' },
+      '/daily-live-results': { date: '2026-06-19', signal_count: 0, blocked_count: 0, approved_count: 0, paper_pnl: 0, execution_drag: 0, drawdown: 0, top_block_reasons: [] },
+      '/risk-policy': { accepted: true, policy_snapshot: { source: 'startup-config', policy: { minConfidenceForPaper: 72, maxOpenPositions: 9, positionSizeMultiplier: 1 } } },
+      '/performance/tuning': { tuning: { status: 'ok' } },
+      '/policy-effectiveness': { policy_effectiveness: { status: 'ok' } },
+      '/overnight-status': { status: 'ok', mode: 'minimal-v1', report_date: '2026-06-19', timestamp: '2026-06-19T15:00:00.000Z' },
+    };
+    const payload = payloads[req.url] || { status: 'ok' };
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise((resolve) => trader.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${trader.address().port}`;
+  const snapshot = await buildDashboardSnapshot({
+    env: {
+      ALPACA_API_KEY_ID: '',
+      ALPACA_API_SECRET_KEY: '',
+      STOCK_SCANNER_SYMBOLS: 'MU,IBM,SPCX',
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      REGULAR_WATCH_INTELLIGENCE_ENABLED: 'true',
+      REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: 'true',
+      REGULAR_WATCH_PRIORITY_SCORING_ENABLED: 'true',
+    },
+    repoRoot: tempDir,
+    dataDir,
+    fetchImpl: global.fetch,
+    traderBaseUrl: baseUrl,
+  }, {
+    dataDir,
+  }, {
+    dashboardPort: 1111,
+  });
+
+  await new Promise((resolve) => trader.close(resolve));
+
+  assert.equal(snapshot.watch.regularWatchList.length > 0, true);
+  assert.equal(snapshot.watch.regularWatchMovers.some((entry) => Number.isFinite(Number(entry.dailyMovePct))), true);
+  assert.equal(snapshot.watch.dynamicHotList.enabled, true);
+  assert.equal(snapshot.watch.dynamicHotList.symbols.some((entry) => entry.symbol === 'AMO'), true);
+  assert.equal(snapshot.watch.dynamicHotList.symbols.find((entry) => entry.symbol === 'AMO').scannerWatched, true);
+  assert.equal(snapshot.watch.dynamicHotList.symbols.find((entry) => entry.symbol === 'AMO').dynamicWatchlistMember, true);
+  assert.equal(snapshot.watch.dynamicHotList.symbols.find((entry) => entry.symbol === 'AMO').sources.includes('wallstreetbets (tier_1)'), true);
+  assert.equal(snapshot.watch.dynamicHotList.symbols.find((entry) => entry.symbol === 'AMO').sourceDetails[0].source.includes('wallstreetbets'), true);
+  assert.equal(snapshot.watch.dynamicHotList.symbols.find((entry) => entry.symbol === 'AMO').sourceConfirmations.reddit, true);
+  assert.equal(snapshot.watch.dynamicHotList.symbols.find((entry) => entry.symbol === 'AMO').phaseB.borderlineUpgrade, true);
+  assert.equal(snapshot.watch.hotHotList.enabled, true);
+  assert.equal(snapshot.watch.hotHotList.symbols.some((entry) => entry.symbol === 'SOUN'), true);
+  assert.equal(snapshot.watch.hotHotList.symbols.find((entry) => entry.symbol === 'SOUN').tradableStatus, 'tradable');
+  assert.equal(snapshot.watch.hotHotList.symbols.find((entry) => entry.symbol === 'SOUN').rotationEligible, true);
+  assert.equal(snapshot.watch.hotHotList.symbols.find((entry) => entry.symbol === 'SOUN').evictionCandidate, 'MARA');
+  assert.equal(snapshot.watch.hotHotList.symbols.find((entry) => entry.symbol === 'SOUN').lastRotationDecision, 'rotation_complete');
+  assert.equal(snapshot.watch.hotHotList.symbols.find((entry) => entry.symbol === 'SOUN').sources.includes('wallstreetbets (tier_1)'), true);
+  assert.equal(snapshot.watch.hotHotList.symbols.find((entry) => entry.symbol === 'SOUN').phaseB.finalMemeScore, 91);
+  assert.equal(snapshot.watch.hotHotList.symbols.find((entry) => entry.symbol === 'SOUN').sourceConfirmations.secEdgar, true);
+  assert.equal(snapshot.watch.hotSlotRotation.lastDecision, 'rotation_complete');
+  assert.equal(snapshot.memeMonitor.hotSlotRotation.lastDecision, 'rotation_complete');
+  assert.equal(snapshot.phaseB.status, 'active');
+  assert.equal(snapshot.memeMonitor.phaseA.status, 'active');
+  assert.equal(snapshot.memeMonitor.phaseA.sources.reddit.status, 'active');
+  assert.equal(snapshot.memeMonitor.phaseB.status, 'active');
+  assert.equal(snapshot.memeMonitor.phaseB.sources.stocktwits.status, 'active');
+  assert.equal(snapshot.regularWatchIntelligence.enabled, true);
+  assert.equal(snapshot.regularWatchIntelligence.status, 'active');
+  assert.equal(snapshot.regularWatchIntelligence.features.marketConfirmation, true);
+  assert.equal(snapshot.regularWatchIntelligence.scannerRanking.status, 'off');
+  assert.equal(snapshot.regularWatchIntelligence.positionAwareness.status, 'off');
+  assert.equal(Array.isArray(snapshot.regularWatchIntelligence.candidateComparison), true);
+  assert.equal(snapshot.regularWatchIntelligence.candidateComparison[0].symbol, 'SPCX');
+  assert.equal(snapshot.regularWatchIntelligence.candidateComparison[0].regularWatchStatus, 'watching');
+  assert.equal(snapshot.watch.regularWatchIntelligence.status, 'active');
+  assert.equal(snapshot.watch.phaseB.status, 'active');
+  assert.equal(snapshot.watch.memeMonitor.dynamicWatchlist.status, 'shadow');
+  assert.equal(snapshot.watch.memeMonitor.priorityOverride.status, 'off');
+  assert.equal(snapshot.watch.actionsState.some(([label, status]) => label === 'Regular Watch Intelligence' && status === 'active'), true);
+  assert.equal(snapshot.watch.featureState.master_enabled, true);
+});
+
+test('dashboard snapshot surfaces regular watch position awareness tags', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-position-awareness-test-'));
+  const dataDir = path.join(tempDir, 'data');
+  fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'logs', 'overnight-status.json'), JSON.stringify({ status: 'ok', mode: 'minimal-v1', report_date: '2026-06-19', timestamp: '2026-06-19T15:00:00.000Z' }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), JSON.stringify({
+    scanner: 'stock-scanner',
+    mode: 'live-market',
+    last_scan_time: '2026-06-19T15:01:00.000Z',
+    last_scan_duration_ms: 42,
+    candidate_rank_details: [{
+      symbol: 'AAA',
+      rank_score: 72,
+      adjusted_rank_score: 72,
+      current_price: 9.9,
+      previous_close: 9.5,
+      move_pct: 4.21,
+      spread_pct: 0.22,
+      volume: 1_200_000,
+      average_volume: 800_000,
+      volume_multiple: 1.5,
+      tradable_status: 'tradable',
+      halt_status: 'not_halted',
+      position_awareness_tags: ['strong_runner'],
+      source_status: [{
+        source: 'wallstreetbets',
+        tier: 'tier_1',
+        status: 'active',
+        lastScanAt: '2026-06-19T15:01:00.000Z',
+        lastError: null,
+        symbolsDetected: 4,
+        blockedReason: null,
+      }],
+    }],
+    recent_skips: [],
+    hot_slot_rotation: { enabled: false, status: 'off', lastDecision: 'rotation_off' },
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'state', 'regular-watch-state.json'), JSON.stringify({
+    version: '2026-06-30.regular-watch-state.1',
+    updated_at: '2026-06-19T15:00:00.000Z',
+    source: 'unit-test',
+    features: {
+      REGULAR_WATCH_INTELLIGENCE_ENABLED: { key: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', runtime: true, effective: true, status: 'active', changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: { key: 'REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED', runtime: true, effective: true, status: 'active', changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      REGULAR_WATCH_PRIORITY_SCORING_ENABLED: { key: 'REGULAR_WATCH_PRIORITY_SCORING_ENABLED', runtime: true, effective: true, status: 'active', changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      REGULAR_WATCH_SCANNER_RANKING_ENABLED: { key: 'REGULAR_WATCH_SCANNER_RANKING_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_POSITION_AWARENESS_ENABLED: { key: 'REGULAR_WATCH_POSITION_AWARENESS_ENABLED', runtime: true, effective: true, status: 'active', changed_at: '2026-06-19T15:00:00.000Z', changed_by: 'test', source: 'unit-test' },
+      REGULAR_WATCH_ASSET_VALIDATION_ENABLED: { key: 'REGULAR_WATCH_ASSET_VALIDATION_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_HALT_CHECK_ENABLED: { key: 'REGULAR_WATCH_HALT_CHECK_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_SEC_RISK_CHECK_ENABLED: { key: 'REGULAR_WATCH_SEC_RISK_CHECK_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_NEWS_CATALYST_ENABLED: { key: 'REGULAR_WATCH_NEWS_CATALYST_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED: { key: 'REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED: { key: 'REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED: { key: 'REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+      REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED: { key: 'REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED', runtime: false, effective: false, status: 'off', changed_at: null, changed_by: null, source: null },
+    },
+    summary: {
+      master_enabled: true,
+      source: 'unit-test',
+      blocked_features: [],
+      warnings: [],
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'regular-watch-status.json'), JSON.stringify({
+    version: '2026-06-30.regular-watch-status.2',
+    updated_at: '2026-06-19T15:01:00.000Z',
+    enabled: true,
+    regularWatchIntelligence: {
+      enabled: true,
+      status: 'active',
+      lastRunAt: '2026-06-19T15:01:00.000Z',
+      lastError: null,
+      symbolsChecked: 1,
+      moversFound: 1,
+      blockedSymbols: 0,
+      features: {
+        marketConfirmation: true,
+        assetValidation: false,
+        haltCheck: false,
+        secRiskCheck: false,
+        newsCatalyst: false,
+        priorityScoring: true,
+        scannerRanking: false,
+        positionAwareness: true,
+      },
+    },
+    scannerRanking: { enabled: false, status: 'off', lastRunAt: '2026-06-19T15:01:00.000Z', lastError: null },
+    positionAwareness: { enabled: true, status: 'active', lastRunAt: '2026-06-19T15:01:00.000Z', lastError: null },
+    regularWatchList: [{
+      symbol: 'AAA',
+      score: 88,
+      status: 'watching',
+      sourceStatus: [{
+        source: 'wallstreetbets',
+        tier: 'tier_1',
+        status: 'active',
+        lastScanAt: '2026-06-19T15:01:00.000Z',
+        lastError: null,
+        symbolsDetected: 4,
+        blockedReason: null,
+      }],
+    }],
+    regularWatchMovers: [{
+      symbol: 'AAA',
+      score: 88,
+      status: 'watching',
+      sourceStatus: [{
+        source: 'wallstreetbets',
+        tier: 'tier_1',
+        status: 'active',
+        lastScanAt: '2026-06-19T15:01:00.000Z',
+        lastError: null,
+        symbolsDetected: 4,
+        blockedReason: null,
+      }],
+    }],
+    summary: {
+      master_enabled: true,
+      source: 'unit-test',
+      blocked_features: [],
+      warnings: [],
+    },
+    generatedAt: '2026-06-19T15:01:00.000Z',
+    stale: false,
+    status: 'active',
+    lastRunAt: '2026-06-19T15:01:00.000Z',
+    lastError: null,
+  }, null, 2));
+
+  const positionsServer = http.createServer((req, res) => {
+    if (req.url === '/v2/positions') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify([
+        { symbol: 'AAA', qty: '2', avg_entry_price: '8.5', current_price: '9.9', unrealized_pl: '2.8' },
+      ]));
+      return;
+    }
+    if (req.url === '/v2/orders?status=open') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify([]));
+      return;
+    }
+    if (req.url === '/v2/account') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ equity: '1000', buying_power: '500' }));
+      return;
+    }
+    res.statusCode = 404;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ error: 'not_found' }));
+  });
+  await new Promise((resolve) => positionsServer.listen(0, '127.0.0.1', resolve));
+  const positionsBaseUrl = `http://127.0.0.1:${positionsServer.address().port}`;
+
+  const trader = http.createServer((req, res) => {
+    const payloads = {
+      '/status': { status: 'ok', mode: 'minimal-v1', uptime_minutes: 12, heartbeat_count: 3, last_request_at: '2026-06-19T15:00:00.000Z', timestamp: '2026-06-19T15:00:01.000Z' },
+      '/daily-live-results': { date: '2026-06-19', signal_count: 0, blocked_count: 0, approved_count: 0, paper_pnl: 0, execution_drag: 0, drawdown: 0, top_block_reasons: [] },
+      '/risk-policy': { accepted: true, policy_snapshot: { source: 'startup-config', policy: { minConfidenceForPaper: 72, maxOpenPositions: 9, positionSizeMultiplier: 1 } } },
+      '/performance/tuning': { tuning: { status: 'ok' } },
+      '/policy-effectiveness': { policy_effectiveness: { status: 'ok' } },
+      '/overnight-status': { status: 'ok', mode: 'minimal-v1', report_date: '2026-06-19', timestamp: '2026-06-19T15:00:00.000Z' },
+    };
+    const payload = payloads[req.url] || { status: 'ok' };
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise((resolve) => trader.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${trader.address().port}`;
+
+  const snapshot = await buildDashboardSnapshot({
+    env: {
+      ALPACA_API_KEY_ID: 'key',
+      ALPACA_API_SECRET_KEY: 'secret',
+      ALPACA_API_BASE_URL: positionsBaseUrl,
+      STOCK_SCANNER_SYMBOLS: 'AAA',
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      REGULAR_WATCH_INTELLIGENCE_ENABLED: 'true',
+      REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: 'true',
+      REGULAR_WATCH_PRIORITY_SCORING_ENABLED: 'true',
+      REGULAR_WATCH_POSITION_AWARENESS_ENABLED: 'true',
+    },
+    repoRoot: tempDir,
+    dataDir,
+    fetchImpl: global.fetch,
+    traderBaseUrl: baseUrl,
+  }, {
+    dataDir,
+  }, {
+    dashboardPort: 1112,
+  });
+
+  await new Promise((resolve) => trader.close(resolve));
+  await new Promise((resolve) => positionsServer.close(resolve));
+
+  assert.equal(Array.isArray(snapshot.watch.regularWatchList[0].positionTags), true);
+  assert.equal(Array.isArray(snapshot.watch.regularWatchIntelligence.candidateComparison[0].positionTags), true);
 });
 
 test('dashboard snapshot prefers live alpaca positions when available', async () => {
@@ -608,6 +1276,13 @@ test('dashboard snapshot prefers live alpaca positions when available', async ()
       ALPACA_API_KEY_ID: 'key',
       ALPACA_API_SECRET_KEY: 'secret',
       ALPACA_API_BASE_URL: positionsBaseUrl,
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
     },
     fetchImpl: global.fetch,
   }, {
@@ -695,6 +1370,13 @@ test('dashboard snapshot prefers Alpaca daily account change when available', as
       ALPACA_API_KEY_ID: 'key',
       ALPACA_API_SECRET_KEY: 'secret',
       ALPACA_API_BASE_URL: brokerBaseUrl,
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
     },
     fetchImpl: global.fetch,
   }, {
@@ -747,6 +1429,7 @@ test('dashboard server serves the new Home, Status, and Policy tabs', async () =
   const policy = await fetch(`http://127.0.0.1:${port}/policy`).then((response) => response.text());
   const exitRules = await fetch(`http://127.0.0.1:${port}/exit-rules`).then((response) => response.text());
   const alerts = await fetch(`http://127.0.0.1:${port}/alerts`).then((response) => response.text());
+  const watch = await fetch(`http://127.0.0.1:${port}/watch`).then((response) => response.text());
   const control = await fetch(`http://127.0.0.1:${port}/control`).then((response) => response.text());
 
   await new Promise((resolve) => server.close(resolve));
@@ -758,11 +1441,21 @@ test('dashboard server serves the new Home, Status, and Policy tabs', async () =
   assert(policy.includes('Policy'));
   assert(exitRules.includes('Exit Rules'));
   assert(alerts.includes('Alerts'));
+  assert(watch.includes('Watch'));
+  assert(watch.includes('Regular Watch List'));
+  assert(watch.includes('Regular Watch Movers'));
+  assert(watch.includes('Dynamic Hot List From Alerts'));
+  assert(watch.includes('Hot Hot List'));
+  assert(watch.includes('Rotation eligible'));
+  assert(watch.includes('Eviction candidate'));
+  assert(watch.includes('Last rotation decision'));
+  assert.equal(watch.includes('data-action='), false);
   assert(control.includes('Home'));
   assert(control.includes('Status'));
   assert(control.includes('Policy'));
   assert(control.includes('Exit Rules'));
   assert(control.includes('Alerts'));
+  assert(control.includes('Watch'));
 });
 
 test('dashboard launcher auto-open can be disabled explicitly', () => {

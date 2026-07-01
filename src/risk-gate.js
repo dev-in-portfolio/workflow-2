@@ -7,12 +7,14 @@ const { performPortfolioChecks } = require('./risk/portfolio-checks');
 const { performSignalChecks, calcRewardRiskRatio } = require('./risk/signal-checks');
 const { performBrokerChecks } = require('./risk/broker-checks');
 
+const DEFAULT_MAX_OPEN_POSITIONS = 2;
+
 function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext = {}, now = new Date()) {
   const config = {
     killSwitch: true,
     maxDailyLoss: 250,
     maxPositionNotional: 1000,
-    maxOpenPositions: 12,
+    maxOpenPositions: DEFAULT_MAX_OPEN_POSITIONS,
     maxTradesPerDay: 8,
     maxExposurePerAsset: 1500,
     maxExposurePerSector: 3000,
@@ -51,7 +53,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   const sizeMultiplier = clamp(safeNumber(config.positionSizeMultiplier, 1), 0.5, 1.35);
   const effectiveMaxDailyLoss = Math.abs(safeNumber(config.maxDailyLoss, 250)) * sizeMultiplier;
   const effectiveMaxPositionNotional = safeNumber(config.maxPositionNotional, 1000) * sizeMultiplier;
-  const effectiveMaxOpenPositions = Math.max(1, Math.round(safeNumber(config.maxOpenPositions, 12)));
+  const effectiveMaxOpenPositions = Math.max(1, Math.round(safeNumber(config.maxOpenPositions, DEFAULT_MAX_OPEN_POSITIONS)));
   const effectiveMaxExposurePerAsset = safeNumber(config.maxExposurePerAsset, 1500) * sizeMultiplier;
   const effectiveMaxExposurePerSector = safeNumber(config.maxExposurePerSector, 3000) * sizeMultiplier;
   const effectiveMaxCryptoExposure = safeNumber(config.maxCryptoExposure, 2000) * sizeMultiplier;

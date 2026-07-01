@@ -473,17 +473,19 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const stopLossMaxDollars = Math.max(Math.abs(stopLossDollars), safeNumber(options.stopLossMaxDollars, Math.abs(stopLossDollars)));
   const trailingStart = options.trailingProfitStartDollars ?? 0.5;
   const trailingGiveback = options.trailingProfitGivebackDollars ?? 0.3;
+  const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars, 0));
   const peak = safeNumber(trailingRecord.peak_unrealized_pl, null);
-  const trailingActive = Number.isFinite(peak) && peak >= trailingStart;
-  const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
   const entryPrice = safeNumber(options.position?.avg_entry_price ?? options.position?.avgEntryPrice ?? options.position_avg_entry_price, null);
   const entrySlippage = Math.max(0, safeNumber(options.position?.entry_slippage ?? options.position?.entrySlippage, 0));
   const exitSlippage = Math.max(0, safeNumber(options.exitSlippage ?? options.position?.exit_slippage ?? options.position?.exitSlippage, 0));
   const fees = Math.max(0, safeNumber(options.fees ?? options.position?.fees ?? options.position?.estimated_fees, 0));
+  const executionDrag = entrySlippage + exitSlippage + fees;
+  const effectiveTrailingStart = Math.max(trailingStart, sellNetProfitFloorDollars + trailingGiveback + executionDrag);
+  const trailingActive = Number.isFinite(peak) && peak >= effectiveTrailingStart;
+  const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
   const grossPnl = Number.isFinite(entryPrice)
     ? (currentPrice - entryPrice) * Math.abs(positionQty)
     : unrealized;
-  const executionDrag = entrySlippage + exitSlippage + fees;
   const netPnl = Number.isFinite(grossPnl) ? grossPnl - executionDrag : null;
   const positionMarketValue = safeNumber(
     options.position?.market_value ?? options.position?.marketValue,
@@ -512,7 +514,9 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     distance_to_stop_dollars: Number.isFinite(unrealized) ? roundCurrency(unrealized + effectiveStopLossDollars) : null,
     trailing_active: trailingActive,
     trailing_peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
+    trailing_activation_profit_dollars: roundCurrency(effectiveTrailingStart),
     trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? roundCurrency(trailingSellAt) : null,
+    sell_net_profit_floor_dollars: roundCurrency(sellNetProfitFloorDollars),
     sell_price: Number.isFinite(currentPrice) ? roundCurrency(currentPrice) : null,
     entry_price: Number.isFinite(entryPrice) ? roundCurrency(entryPrice) : null,
     quantity: Number(Math.abs(positionQty).toFixed(6)),
@@ -526,7 +530,13 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     exit_reason: exitReason,
   };
   if (!exitReason) {
-    options.skipTracker?.record?.('EXIT_TARGET_NOT_MET', { symbol, unrealized_pl: exitState.unrealized_pl });
+    options.skipTracker?.record?.('EXIT_TARGET_NOT_MET', {
+      symbol,
+      unrealized_pl: exitState.unrealized_pl,
+      net_pnl: exitState.net_pnl,
+      sell_net_profit_floor_dollars: exitState.sell_net_profit_floor_dollars,
+      trailing_activation_profit_dollars: exitState.trailing_activation_profit_dollars,
+    });
     return null;
   }
   return buildSignalCandidate({

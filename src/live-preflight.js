@@ -79,6 +79,7 @@ async function runLivePreflight(options = {}) {
     source: policyHealth.source,
     scope: policyHealth.scope,
     captured_at: policyHealth.captured_at,
+    approved_symbols: Array.isArray(policySnapshot?.policy?.approvedSymbols) ? policySnapshot.policy.approvedSymbols.slice() : [],
     deprecated_fields: policyHealth.deprecated_fields,
     suspicious_fields: policyHealth.suspicious_fields,
     drift: policyHealth.drift,

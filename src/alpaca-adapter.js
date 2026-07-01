@@ -73,6 +73,7 @@ class AlpacaTradeAdapter {
         : 'https://paper-api.alpaca.markets',
     );
     this.fetchImpl = options.fetch || globalThis.fetch;
+    this.requestTimeoutMs = Math.max(1, Number(options.requestTimeoutMs ?? 10_000) || 10_000);
     this.dryRun = options.dryRun ?? false;
     this.userAgent = options.userAgent || 'trading-automation-control-plane/0.1.0';
     this.requiresBrokerReconciliation = true;
@@ -131,18 +132,12 @@ class AlpacaTradeAdapter {
         }
       }
     }
-    const response = await this.fetchImpl(`${this.baseUrl}/v2/orders`, {
+    const response = await this.#fetchWithTimeout(`${this.baseUrl}/v2/orders`, {
       method: 'POST',
       headers: this.#headers(),
       body: JSON.stringify(payload),
     });
-    const bodyText = await response.text();
-    let body = null;
-    try {
-      body = bodyText ? JSON.parse(bodyText) : {};
-    } catch {
-      body = { raw: bodyText };
-    }
+    const { body, bodyText } = await this.#readResponseBody(response);
     if (!response.ok) {
       const brokerMessage = body?.message || body?.error || body?.detail || body?.raw || bodyText || 'unknown error';
       if (idempotencyKey && isDuplicateClientOrderError(response.status, brokerMessage)) {
@@ -181,17 +176,11 @@ class AlpacaTradeAdapter {
 
   async getAccount() {
     this.#ensureConfigured();
-    const response = await this.fetchImpl(`${this.baseUrl}/v2/account`, {
+    const response = await this.#fetchWithTimeout(`${this.baseUrl}/v2/account`, {
       method: 'GET',
       headers: this.#headers(),
     });
-    const bodyText = await response.text();
-    let body = null;
-    try {
-      body = bodyText ? JSON.parse(bodyText) : {};
-    } catch {
-      body = { raw: bodyText };
-    }
+    const { body } = await this.#readResponseBody(response);
     if (!response.ok) {
       const error = new Error(`Alpaca account request failed (${response.status})`);
       error.status = response.status;
@@ -206,17 +195,11 @@ class AlpacaTradeAdapter {
     if (!orderId) {
       throw new Error('Alpaca order lookup requires an order id');
     }
-    const response = await this.fetchImpl(`${this.baseUrl}/v2/orders/${encodeURIComponent(orderId)}`, {
+    const response = await this.#fetchWithTimeout(`${this.baseUrl}/v2/orders/${encodeURIComponent(orderId)}`, {
       method: 'GET',
       headers: this.#headers(),
     });
-    const bodyText = await response.text();
-    let body = null;
-    try {
-      body = bodyText ? JSON.parse(bodyText) : {};
-    } catch {
-      body = { raw: bodyText };
-    }
+    const { body } = await this.#readResponseBody(response);
     if (!response.ok) {
       const error = new Error(`Alpaca order lookup failed (${response.status})`);
       error.status = response.status;
@@ -228,17 +211,11 @@ class AlpacaTradeAdapter {
 
   async getOpenOrders() {
     this.#ensureConfigured();
-    const response = await this.fetchImpl(`${this.baseUrl}/v2/orders?status=open&limit=500`, {
+    const response = await this.#fetchWithTimeout(`${this.baseUrl}/v2/orders?status=open&limit=500`, {
       method: 'GET',
       headers: this.#headers(),
     });
-    const bodyText = await response.text();
-    let body = null;
-    try {
-      body = bodyText ? JSON.parse(bodyText) : {};
-    } catch {
-      body = { raw: bodyText };
-    }
+    const { body } = await this.#readResponseBody(response);
     if (!response.ok) {
       const error = new Error(`Alpaca open orders request failed (${response.status})`);
       error.status = response.status;
@@ -250,17 +227,11 @@ class AlpacaTradeAdapter {
 
   async getPositions() {
     this.#ensureConfigured();
-    const response = await this.fetchImpl(`${this.baseUrl}/v2/positions`, {
+    const response = await this.#fetchWithTimeout(`${this.baseUrl}/v2/positions`, {
       method: 'GET',
       headers: this.#headers(),
     });
-    const bodyText = await response.text();
-    let body = null;
-    try {
-      body = bodyText ? JSON.parse(bodyText) : {};
-    } catch {
-      body = { raw: bodyText };
-    }
+    const { body } = await this.#readResponseBody(response);
     if (!response.ok) {
       const error = new Error(`Alpaca positions request failed (${response.status})`);
       error.status = response.status;
@@ -275,17 +246,11 @@ class AlpacaTradeAdapter {
     if (!clientOrderId) {
       throw new Error('Alpaca client order lookup requires a client order id');
     }
-    const response = await this.fetchImpl(`${this.baseUrl}/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`, {
+    const response = await this.#fetchWithTimeout(`${this.baseUrl}/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`, {
       method: 'GET',
       headers: this.#headers(),
     });
-    const bodyText = await response.text();
-    let body = null;
-    try {
-      body = bodyText ? JSON.parse(bodyText) : {};
-    } catch {
-      body = { raw: bodyText };
-    }
+    const { body } = await this.#readResponseBody(response);
     if (!response.ok) {
       const error = new Error(`Alpaca client order lookup failed (${response.status})`);
       error.status = response.status;
@@ -316,6 +281,42 @@ class AlpacaTradeAdapter {
       'content-type': 'application/json',
       'user-agent': this.userAgent,
     };
+  }
+
+  async #fetchWithTimeout(url, init = {}) {
+    const timeoutMs = Math.max(1, Number(init.timeoutMs ?? this.requestTimeoutMs) || this.requestTimeoutMs);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await this.fetchImpl(url, {
+        ...init,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const timeoutError = new Error(`Alpaca request timed out after ${timeoutMs}ms`);
+        timeoutError.code = 'ALPACA_REQUEST_TIMEOUT';
+        timeoutError.status = 504;
+        timeoutError.timeoutMs = timeoutMs;
+        timeoutError.url = url;
+        timeoutError.cause = error;
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #readResponseBody(response) {
+    const bodyText = await response.text();
+    let body = null;
+    try {
+      body = bodyText ? JSON.parse(bodyText) : {};
+    } catch {
+      body = { raw: bodyText };
+    }
+    return { body, bodyText };
   }
 
   #ensureConfigured() {

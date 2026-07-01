@@ -15,6 +15,8 @@ const {
 } = require('./execution-quality-state');
 const { nowIso, safeNumber } = require('./util');
 
+const DEFAULT_MAX_OPEN_POSITIONS = 2;
+
 class PerformanceStore {
   constructor(options = {}) {
     this.historyPath = options.historyPath || null;
@@ -352,7 +354,7 @@ class PerformanceStore {
         drawdown: calculateDrawdown(relevantOutcomes),
       });
       const recommendedMaxOpenPositions = recommendOpenPositionCap({
-        currentMaxOpenPositions: snapshot.policy?.maxOpenPositions ?? 12,
+        currentMaxOpenPositions: snapshot.policy?.maxOpenPositions ?? DEFAULT_MAX_OPEN_POSITIONS,
         paperPnl,
         winRate: relevantOutcomes.length ? wins / relevantOutcomes.length : 0,
         blockedRate: relevantDecisions.length ? relevantDecisions.filter((decision) => decision.decision === 'BLOCKED').length / relevantDecisions.length : 0,
@@ -398,7 +400,7 @@ class PerformanceStore {
       best_policy: bestPolicy,
       worst_policy: worstPolicy,
       recommended_position_size_multiplier: bestPolicy?.recommended_position_size_multiplier ?? 1,
-      recommended_max_open_positions: bestPolicy?.recommended_max_open_positions ?? this.getPolicySnapshot().policy?.maxOpenPositions ?? 12,
+      recommended_max_open_positions: bestPolicy?.recommended_max_open_positions ?? this.getPolicySnapshot().policy?.maxOpenPositions ?? DEFAULT_MAX_OPEN_POSITIONS,
       intervals: scoredIntervals,
     };
   }
@@ -468,9 +470,9 @@ class PerformanceStore {
 
   rebalancePolicyCapacity({ dateFrom = null, dateTo = null, limit = 20 } = {}) {
     const effectiveness = this.getPolicyEffectiveness({ dateFrom, dateTo, limit });
-    const recommendedMaxOpenPositions = Math.max(1, Math.round(safeNumber(effectiveness.recommended_max_open_positions, 12)));
+    const recommendedMaxOpenPositions = Math.max(1, Math.round(safeNumber(effectiveness.recommended_max_open_positions, DEFAULT_MAX_OPEN_POSITIONS)));
     const currentSnapshot = this.getPolicySnapshot();
-    const currentMaxOpenPositions = Math.max(1, Math.round(safeNumber(currentSnapshot.policy?.maxOpenPositions, 12)));
+    const currentMaxOpenPositions = Math.max(1, Math.round(safeNumber(currentSnapshot.policy?.maxOpenPositions, DEFAULT_MAX_OPEN_POSITIONS)));
     if (recommendedMaxOpenPositions === currentMaxOpenPositions) {
       return {
         accepted: false,
@@ -520,7 +522,7 @@ class PerformanceStore {
     const bucketStats = this.getCalibrationByBucket();
     const suggestions = [...report.recommended_tuning_notes];
     const effectiveness = this.getPolicyEffectiveness();
-    const currentMaxOpenPositions = Math.max(1, Math.round(safeNumber(this.getPolicySnapshot().policy?.maxOpenPositions, 12)));
+    const currentMaxOpenPositions = Math.max(1, Math.round(safeNumber(this.getPolicySnapshot().policy?.maxOpenPositions, DEFAULT_MAX_OPEN_POSITIONS)));
     if (effectiveness.recommended_max_open_positions > currentMaxOpenPositions) {
       suggestions.push(`Recent performance supports raising maxOpenPositions from ${currentMaxOpenPositions} to ${effectiveness.recommended_max_open_positions}.`);
     } else if (effectiveness.recommended_max_open_positions < currentMaxOpenPositions) {
@@ -732,7 +734,7 @@ function defaultPolicySnapshot() {
       maxRiskScore: 70,
       minLiquidityScore: 40,
       minVolume: 1000,
-      maxOpenPositions: 12,
+      maxOpenPositions: DEFAULT_MAX_OPEN_POSITIONS,
       positionSizeMultiplier: 1,
       sellProfitThresholdPct: 5,
       sellNetProfitFloorDollars: 1,
@@ -776,7 +778,7 @@ function normalizePolicySnapshot(snapshot) {
       maxRiskScore: safeNumber(policy.maxRiskScore ?? 70, 70),
       minLiquidityScore: safeNumber(policy.minLiquidityScore ?? 40, 40),
       minVolume: safeNumber(policy.minVolume ?? 1000, 1000),
-      maxOpenPositions: Math.max(1, Math.round(safeNumber(policy.maxOpenPositions ?? 12, 12))),
+      maxOpenPositions: Math.max(1, Math.round(safeNumber(policy.maxOpenPositions ?? DEFAULT_MAX_OPEN_POSITIONS, DEFAULT_MAX_OPEN_POSITIONS))),
       positionSizeMultiplier: safeNumber(policy.positionSizeMultiplier ?? 1, 1),
       sellProfitThresholdPct: safeNumber(policy.sellProfitThresholdPct ?? 5, 5),
       sellNetProfitFloorDollars: safeNumber(policy.sellNetProfitFloorDollars ?? 1, 1),

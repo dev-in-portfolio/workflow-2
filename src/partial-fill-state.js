@@ -129,6 +129,18 @@ async function reconcilePartialFills({
       const detailedOrder = await fetchKnownOrder(executionAdapter, record);
       if (detailedOrder) {
         next = updatePartialFillStateFromOrder(next, detailedOrder, { now, reconciled: true, staleMinutes: options.staleMinutes });
+      } else if (options.authoritativeOpenOrders && Array.isArray(openOrders)) {
+        next.orders[key] = {
+          ...record,
+          status: 'canceled',
+          remaining_qty: 0,
+          last_reconciled_at: now,
+          action_required: false,
+          recommended_action: null,
+          stale: false,
+          reason_codes: mergeCodes(record.reason_codes, [PartialFillReason.PARTIAL_ORDER_CANCELED]),
+          warnings: [],
+        };
       } else {
         next.orders[key] = {
           ...record,
@@ -171,7 +183,7 @@ async function reconcilePartialFillState(options = {}) {
 function summarizePartialFillState(state = {}) {
   const normalized = normalizeState(state);
   const orders = Object.values(normalized.orders);
-  const active = orders.filter((order) => isActivePartialStatus(order.status) || order.remaining_qty > 0);
+  const active = orders.filter((order) => isActivePartialStatus(order.status) || (order.remaining_qty > 0 && !isTerminalPartialStatus(order.status)));
   const partialBuys = active.filter((order) => order.side === 'buy');
   const partialSells = active.filter((order) => order.side === 'sell');
   const stale = active.filter((order) => order.stale);
@@ -256,6 +268,10 @@ function classifyPartialRecord(record, { now = nowIso(), staleMinutes = 30 } = {
 
 function isActivePartialStatus(status) {
   return ['partially_filled', 'accepted', 'new', 'pending_new'].includes(String(status || '').toLowerCase());
+}
+
+function isTerminalPartialStatus(status) {
+  return ['filled', 'cancelled', 'canceled', 'expired', 'rejected', 'failed'].includes(String(status || '').toLowerCase());
 }
 
 function remainingNotional(order) {

@@ -1,0 +1,64 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { buildPolicyExitOverrides } = require('../scripts/start-stock-scanner');
+
+test('stock scanner launcher maps live policy exit rules into scanner options', () => {
+  const overrides = buildPolicyExitOverrides({
+    positionStopLossDollars: 1.25,
+    positionStopLossNotionalPct: 0.6,
+    positionStopLossMaxDollars: 3,
+    trailingProfitStartDollars: 0.8,
+    trailingProfitGivebackDollars: 0.35,
+  });
+
+  assert.deepEqual(overrides, {
+    stopLossDollars: 1.25,
+    stopLossNotionalPct: 0.6,
+    stopLossMaxDollars: 3,
+    trailingProfitStartDollars: 0.8,
+    trailingProfitGivebackDollars: 0.35,
+  });
+});
+
+test('stock scanner launcher preserves env-driven multi-source confirmation behavior', () => {
+  const scriptPath = require.resolve('../scripts/start-stock-scanner');
+  const stockScannerPath = require.resolve('../src/stock-scanner');
+  const originalStockScannerModule = require.cache[stockScannerPath];
+  let capturedOptions = null;
+
+  require.cache[stockScannerPath] = {
+    id: stockScannerPath,
+    filename: stockScannerPath,
+    loaded: true,
+    exports: {
+      createStockScanner(options) {
+        capturedOptions = options;
+        return { start() {} };
+      },
+    },
+  };
+
+  delete require.cache[scriptPath];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = () => true;
+  try {
+    const { main } = require('../scripts/start-stock-scanner');
+    main({
+      ...process.env,
+      TWELVE_DATA_API_KEY: 'test-twelve-data',
+      STOCK_SCANNER_SYMBOLS: 'NVDA',
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+    delete require.cache[scriptPath];
+    if (originalStockScannerModule) {
+      require.cache[stockScannerPath] = originalStockScannerModule;
+    } else {
+      delete require.cache[stockScannerPath];
+    }
+  }
+
+  assert(capturedOptions);
+  assert.equal(capturedOptions.scannerConfig.requireMultiSourceConfirmation, true);
+  assert.notEqual(capturedOptions.requireMultiSourceConfirmation, false);
+});

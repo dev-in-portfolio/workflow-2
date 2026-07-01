@@ -4,7 +4,13 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { createStockScanner, processTradingSignal, summarizePartialFillState, updatePartialFillStateFromOrder } = require('../src');
+const {
+  createStockScanner,
+  processTradingSignal,
+  reconcilePartialFills,
+  summarizePartialFillState,
+  updatePartialFillStateFromOrder,
+} = require('../src');
 
 function buySignal(overrides = {}) {
   return {
@@ -200,6 +206,41 @@ test('stock scanner blocks duplicate buy, occupies slot, reserves buying power, 
   assert.equal(requests.length, 1);
   assert.equal(requests[0].symbol, 'NVDA');
   assert.equal(runtime.partial_fill_state.count, 1);
+});
+
+test('authoritative broker open orders clear stale partial buy slot reservations', async () => {
+  let partialFillState = updatePartialFillStateFromOrder({}, {
+    id: 'stale-accepted',
+    client_order_id: 'stale-accepted',
+    symbol: 'AAPL',
+    side: 'buy',
+    status: 'accepted',
+    notional: 150,
+  });
+  partialFillState = updatePartialFillStateFromOrder(partialFillState, {
+    id: 'old-filled',
+    client_order_id: 'old-filled',
+    symbol: 'ETH/USD',
+    side: 'buy',
+    status: 'filled',
+    qty: '0.027939',
+    filled_qty: '0.025',
+    filled_avg_price: '1789.61',
+    notional: 50,
+  });
+
+  const reconciled = await reconcilePartialFills({
+    previousState: partialFillState,
+    openOrders: [],
+    positions: [],
+    now: '2026-06-30T14:10:00.000Z',
+    options: { authoritativeOpenOrders: true },
+  });
+  const summary = summarizePartialFillState(reconciled);
+
+  assert.equal(summary.count, 0);
+  assert.equal(summary.partial_buys.length, 0);
+  assert.equal(summary.reserved_buy_notional, 0);
 });
 
 function snapshot(price, timestamp) {

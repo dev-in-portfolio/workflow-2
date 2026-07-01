@@ -53,7 +53,7 @@ function createOvernightScanner(options = {}) {
   const maxCandidatesPerRun = Math.max(1, Number(options.maxCandidatesPerRun ?? env.OVERNIGHT_SCANNER_MAX_CANDIDATES ?? 5) || 5);
   const notional = Math.max(1, Number(options.notional ?? env.OVERNIGHT_SCANNER_NOTIONAL ?? 25) || 25);
   const minBuyNotional = Math.max(1, Number(options.minBuyNotional ?? env.MIN_BUY_NOTIONAL ?? 25) || 25);
-  const maxOpenPositions = Math.max(1, Number(options.maxOpenPositions ?? env.MAX_OPEN_POSITIONS ?? 12) || 12);
+  const maxOpenPositions = Math.max(1, Number(options.maxOpenPositions ?? env.MAX_OPEN_POSITIONS ?? 2) || 2);
   const sellProfitThresholdPct = Math.max(5.0, Number(options.sellProfitThresholdPct ?? env.OVERNIGHT_SCANNER_SELL_PROFIT_THRESHOLD_PCT ?? 5.0) || 5.0);
   const sellNetProfitFloorDollars = Math.max(
     0,

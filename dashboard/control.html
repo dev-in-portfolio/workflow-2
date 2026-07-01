@@ -41,6 +41,7 @@
           <a class="page-tab" href="/policy">Policy</a>
           <a class="page-tab" href="/exit-rules">Exit Rules</a>
           <a class="page-tab" href="/alerts">Alerts</a>
+          <a class="page-tab" href="/watch">Watch</a>
           <a class="page-tab active" href="/control">Operator tab</a>
         </nav>
       </header>
@@ -72,6 +73,111 @@
             <span class="subtle" id="scannerProfile">approved stocks only</span>
           </div>
           <div class="state-grid" id="scannerState"></div>
+        </article>
+
+        <article class="panel control-panel">
+          <div class="card-head">
+            <span class="card-title">Meme Monitor</span>
+            <span class="pill" id="memeMonitorPill">Loading</span>
+          </div>
+          <div class="schedule-banner">
+            <span class="tag cyan" id="memeMonitorSource">Meme feature state source: -</span>
+            <span class="subtle" id="memeMonitorHint">Disabled by default</span>
+          </div>
+          <div class="state-grid" id="memeFeatureState"></div>
+          <div class="state-grid" id="memeRuntimeState"></div>
+          <div class="state-grid" id="memeSourceState"></div>
+          <div class="state-grid" id="memePhaseBState"></div>
+          <div class="button-grid meme-buttons">
+            <button class="control-button" data-meme-feature="MEME_MONITOR_ENABLED" data-meme-enabled="true">Enable Meme Monitor</button>
+            <button class="control-button" data-meme-feature="MEME_MONITOR_ENABLED" data-meme-enabled="false">Disable Meme Monitor</button>
+            <button class="control-button" data-meme-feature="MEME_REDDIT_SCANNER_ENABLED" data-meme-enabled="true">Enable Reddit Scanner</button>
+            <button class="control-button" data-meme-feature="MEME_REDDIT_SCANNER_ENABLED" data-meme-enabled="false">Disable Reddit Scanner</button>
+            <button class="control-button" data-meme-feature="MEME_HOT_LIST_ENABLED" data-meme-enabled="true">Enable Hot List</button>
+            <button class="control-button" data-meme-feature="MEME_HOT_LIST_ENABLED" data-meme-enabled="false">Disable Hot List</button>
+            <button class="control-button" data-meme-feature="MEME_DYNAMIC_WATCHLIST_ENABLED" data-meme-enabled="true">Enable Dynamic Watchlist</button>
+            <button class="control-button" data-meme-feature="MEME_DYNAMIC_WATCHLIST_ENABLED" data-meme-enabled="false">Disable Dynamic Watchlist</button>
+            <button class="control-button" data-meme-feature="MEME_PRIORITY_OVERRIDE_ENABLED" data-meme-enabled="true">Enable Priority Override</button>
+            <button class="control-button" data-meme-feature="MEME_PRIORITY_OVERRIDE_ENABLED" data-meme-enabled="false">Disable Priority Override</button>
+            <button class="control-button" data-meme-feature="MEME_HOT_SLOT_ROTATION_ENABLED" data-meme-enabled="true">Enable Hot Slot Rotation</button>
+            <button class="control-button" data-meme-feature="MEME_HOT_SLOT_ROTATION_ENABLED" data-meme-enabled="false">Disable Hot Slot Rotation</button>
+          </div>
+          <div class="meme-lock-note">Phase A data sources can be enabled independently. They only update source status, scoring context, and dashboard visibility.</div>
+          <div class="button-grid meme-buttons">
+            <button class="control-button" data-meme-feature="MEME_SOURCE_REDDIT_ENABLED" data-meme-enabled="true">Enable Reddit API</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_REDDIT_ENABLED" data-meme-enabled="false">Disable Reddit API</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_ALPACA_MARKET_ENABLED" data-meme-enabled="true">Enable Alpaca Market Data</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_ALPACA_MARKET_ENABLED" data-meme-enabled="false">Disable Alpaca Market Data</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_ALPACA_ASSETS_ENABLED" data-meme-enabled="true">Enable Alpaca Tradability</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_ALPACA_ASSETS_ENABLED" data-meme-enabled="false">Disable Alpaca Tradability</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_NASDAQ_HALTS_ENABLED" data-meme-enabled="true">Enable Nasdaq Halts</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_NASDAQ_HALTS_ENABLED" data-meme-enabled="false">Disable Nasdaq Halts</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_SEC_EDGAR_ENABLED" data-meme-enabled="true">Enable SEC EDGAR</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_SEC_EDGAR_ENABLED" data-meme-enabled="false">Disable SEC EDGAR</button>
+          </div>
+          <div class="meme-lock-note">Phase B sources are optional confirmation layers only. They can be refreshed without changing trading behavior.</div>
+          <div class="button-grid meme-buttons">
+            <button class="control-button" data-meme-feature="MEME_SOURCE_STOCKTWITS_ENABLED" data-meme-enabled="true">Enable Stocktwits Source</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_STOCKTWITS_ENABLED" data-meme-enabled="false">Disable Stocktwits Source</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_POLYGON_ENABLED" data-meme-enabled="true">Enable Polygon Source</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_POLYGON_ENABLED" data-meme-enabled="false">Disable Polygon Source</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_ALPHA_VANTAGE_ENABLED" data-meme-enabled="true">Enable Alpha Vantage Source</button>
+            <button class="control-button" data-meme-feature="MEME_SOURCE_ALPHA_VANTAGE_ENABLED" data-meme-enabled="false">Disable Alpha Vantage Source</button>
+          </div>
+          <div class="meme-lock-note" id="memeRotationNote">Hot Slot Rotation may sell a weak break-even/profitable position to free a slot for a Hot Hot candidate. It cannot bypass broker reconciliation, risk controls, or max-position rules.</div>
+          <div class="button-grid meme-buttons">
+            <button class="control-button" data-meme-action="start-shadow-scan">Start Meme Monitor Shadow Scan</button>
+            <button class="control-button" data-meme-action="stop-meme-monitor">Stop Meme Monitor</button>
+            <button class="control-button" data-meme-action="refresh-hot-scores-now">Refresh Hot Scores Now</button>
+            <button class="control-button" data-meme-action="clear-expired-hot-symbols">Clear Expired Hot Symbols</button>
+            <button class="control-button" data-meme-action="reset-meme-scores">Reset Meme Scores</button>
+            <button class="control-button" data-meme-action="refresh-all-phase-b-sources-now">Refresh All Phase B Sources Now</button>
+            <button class="control-button" data-meme-action="refresh-stocktwits-source-now">Refresh Stocktwits Source Now</button>
+            <button class="control-button" data-meme-action="refresh-polygon-source-now">Refresh Polygon Source Now</button>
+            <button class="control-button" data-meme-action="refresh-alpha-vantage-source-now">Refresh Alpha Vantage Source Now</button>
+          </div>
+          <div class="action-status" id="memeActionStatus">No meme action yet.</div>
+          <div class="meme-lock-note" id="memeAutoActionNote">Auto Action is locked until the repo has a safe implementation path.</div>
+          <div class="state-grid" id="memeAutoActionState"></div>
+          <div class="card-head" style="margin-top: 1rem;">
+            <span class="card-title">Regular Watch Intelligence</span>
+            <span class="pill" id="regularWatchPill">Loading</span>
+          </div>
+          <div class="schedule-banner">
+            <span class="tag cyan" id="regularWatchSource">Regular Watch feature state source: -</span>
+            <span class="subtle" id="regularWatchHint">Disabled by default</span>
+          </div>
+          <div class="state-grid" id="regularWatchFeatureState"></div>
+          <div class="state-grid" id="regularWatchSourceState"></div>
+          <div class="state-grid" id="regularWatchRuntimeState"></div>
+          <div class="button-grid meme-buttons">
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_INTELLIGENCE_ENABLED" data-regular-watch-enabled="true">Enable Regular Watch Intelligence</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_INTELLIGENCE_ENABLED" data-regular-watch-enabled="false">Disable Regular Watch Intelligence</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED" data-regular-watch-enabled="true">Enable Regular Market Confirmation</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED" data-regular-watch-enabled="false">Disable Regular Market Confirmation</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_ASSET_VALIDATION_ENABLED" data-regular-watch-enabled="true">Enable Regular Asset Validation</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_ASSET_VALIDATION_ENABLED" data-regular-watch-enabled="false">Disable Regular Asset Validation</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_HALT_CHECK_ENABLED" data-regular-watch-enabled="true">Enable Regular Halt Check</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_HALT_CHECK_ENABLED" data-regular-watch-enabled="false">Disable Regular Halt Check</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_SEC_RISK_CHECK_ENABLED" data-regular-watch-enabled="true">Enable Regular SEC Risk Check</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_SEC_RISK_CHECK_ENABLED" data-regular-watch-enabled="false">Disable Regular SEC Risk Check</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_NEWS_CATALYST_ENABLED" data-regular-watch-enabled="true">Enable Regular News/Catalyst Check</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_NEWS_CATALYST_ENABLED" data-regular-watch-enabled="false">Disable Regular News/Catalyst Check</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_PRIORITY_SCORING_ENABLED" data-regular-watch-enabled="true">Enable Regular Priority Scoring</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_PRIORITY_SCORING_ENABLED" data-regular-watch-enabled="false">Disable Regular Priority Scoring</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_SCANNER_RANKING_ENABLED" data-regular-watch-enabled="true">Enable Regular Scanner Ranking</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_SCANNER_RANKING_ENABLED" data-regular-watch-enabled="false">Disable Regular Scanner Ranking</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_POSITION_AWARENESS_ENABLED" data-regular-watch-enabled="true">Enable Regular Position Awareness</button>
+            <button class="control-button" data-regular-watch-feature="REGULAR_WATCH_POSITION_AWARENESS_ENABLED" data-regular-watch-enabled="false">Disable Regular Position Awareness</button>
+          </div>
+          <div class="meme-lock-note">Regular Watch Intelligence scores approved symbols only. It does not add outside symbols, place trades by itself, or bypass risk controls.</div>
+          <div class="meme-lock-note">Regular Watch Scanner Ranking changes candidate priority only. It does not bypass broker reconciliation, risk gates, max-position rules, or execution safeguards.</div>
+          <div class="button-grid meme-buttons">
+            <button class="control-button" data-regular-watch-action="refresh-regular-watch-status">Refresh Regular Watch Status</button>
+            <button class="control-button" data-regular-watch-action="clear-regular-watch-errors">Clear Regular Watch Errors</button>
+            <button class="control-button" data-regular-watch-action="reset-regular-watch-runtime-state">Reset Regular Watch Runtime State</button>
+          </div>
+          <div class="action-status" id="regularWatchActionStatus">No regular watch action yet.</div>
         </article>
       </section>
 

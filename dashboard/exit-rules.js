@@ -31,9 +31,9 @@ function render(snapshot) {
   $('regimeValue').textContent = 'Live Market';
   $('rulePill').textContent = exitManagement.state ? String(exitManagement.state).toUpperCase() : 'No data';
   $('rulePill').className = `pill ${state.error || exitManagement.managed === false ? 'critical' : 'ok'}`;
-  $('profitExitThreshold').textContent = formatCurrency(regime.stop_loss_dollars ?? summary.stop_loss_dollars ?? 10);
-  $('profitExitFloor').textContent = formatCurrency(regime.trailing_profit_start_dollars ?? summary.trailing_profit_start_dollars ?? 5);
-  $('lossExitThreshold').textContent = formatCurrency(regime.trailing_profit_giveback_dollars ?? summary.trailing_profit_giveback_dollars ?? 3);
+  $('profitExitThreshold').textContent = formatPercent(regime.sell_profit_threshold_pct ?? summary.sell_profit_threshold_pct ?? 5);
+  $('profitExitFloor').textContent = formatCurrency(regime.sell_net_profit_floor_dollars ?? summary.sell_net_profit_floor_dollars ?? 1);
+  $('lossExitThreshold').textContent = formatCurrency(regime.stop_loss_dollars ?? summary.stop_loss_dollars ?? 10);
   $('thresholdDetails').innerHTML = `
     <div><strong>Market open</strong> ${regime.market_open ? 'Yes' : 'No'}</div>
     <div><strong>Exit manager</strong> ${escapeHtml(exitManagement.state || '-')}</div>
@@ -47,7 +47,11 @@ function renderRuleGrid(snapshot, exitManagement = {}) {
   const regime = snapshot?.regime || {};
   const rows = [
     ['Mode', 'Live Market'],
+    ['Sell-profit threshold', formatPercent(regime.sell_profit_threshold_pct)],
+    ['Sell-profit floor', formatCurrency(regime.sell_net_profit_floor_dollars)],
     ['Position stop', formatCurrency(regime.stop_loss_dollars)],
+    ['Stop notional percent', formatPercent(regime.stop_loss_notional_pct)],
+    ['Stop max', formatCurrency(regime.stop_loss_max_dollars)],
     ['Trailing starts', formatCurrency(regime.trailing_profit_start_dollars)],
     ['Trailing giveback', formatCurrency(regime.trailing_profit_giveback_dollars)],
     ['Approved symbols', Array.isArray(regime.approved_symbols) ? regime.approved_symbols.join(', ') : '-'],

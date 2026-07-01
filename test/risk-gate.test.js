@@ -78,6 +78,22 @@ test('risk gate blocks duplicate open buy orders from live portfolio context', (
   assert(decision.reason_codes.includes('OPEN_BUY_ORDER_FOR_SYMBOL'));
 });
 
+test('risk gate allows scale-in buys to pass through same-symbol holdings and open orders', () => {
+  const decision = evaluateRiskGate(baseSignal({
+    symbol: 'NVDA',
+    allow_scale_in: true,
+  }), {
+    available: true,
+    open_positions_count: 1,
+    symbols_held: ['NVDA'],
+    open_orders: [{ symbol: 'NVDA', side: 'buy', status: 'new' }],
+  }, basePolicy());
+
+  assert.equal(decision.pass, true);
+  assert.equal(decision.reason_codes.includes('EXISTING_POSITION_FOR_SYMBOL'), false);
+  assert.equal(decision.reason_codes.includes('OPEN_BUY_ORDER_FOR_SYMBOL'), false);
+});
+
 test('risk gate respects a widened live-market spread ceiling', () => {
   const tightPolicy = basePolicy({ maxSpreadSlippagePct: 0.75 });
   const loosePolicy = basePolicy({ maxSpreadSlippagePct: 7 });

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#05070f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Watch</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Local-only dashboard</div>
+          <h1>Watch</h1>
+          <p class="lede">Approved symbols, live movers, and alert-driven meme lists in one read-only view. No trade controls live here.</p>
+          <div class="status-rail" id="watchFeatureRail">
+            <span class="tag cyan">Loading</span>
+          </div>
+        </div>
+        <div class="header-metrics">
+          <div class="metric-chip">
+            <span>Dashboard port</span>
+            <strong id="dashboardPort">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Trader base URL</span>
+            <strong id="traderBaseUrl">-</strong>
+          </div>
+          <div class="metric-chip">
+            <span>Watch state</span>
+            <strong id="watchStateValue">-</strong>
+          </div>
+        </div>
+        <nav class="page-tabs" aria-label="Dashboard pages">
+          <a class="page-tab" href="/">Home</a>
+          <a class="page-tab" href="/status">Status</a>
+          <a class="page-tab" href="/policy">Policy</a>
+          <a class="page-tab" href="/exit-rules">Exit Rules</a>
+          <a class="page-tab" href="/alerts">Alerts</a>
+          <a class="page-tab active" href="/watch">Watch</a>
+          <a class="page-tab" href="/control">Operator tab</a>
+        </nav>
+      </header>
+
+      <section class="hero-grid">
+        <article class="hero-card watch-hero">
+          <div class="card-head">
+            <span class="card-title">Watch overview</span>
+            <span class="pill warn" id="watchPill">Loading</span>
+          </div>
+          <div class="focus-summary" id="watchSummary">Loading watch data.</div>
+          <div class="watch-summary-grid">
+            <div class="watch-summary-card">
+              <span>Regular symbols</span>
+              <strong id="watchRegularCount">-</strong>
+              <small>Approved list</small>
+            </div>
+            <div class="watch-summary-card">
+              <span>Movers</span>
+              <strong id="watchMoverCount">-</strong>
+              <small>Scanner-ranked</small>
+            </div>
+            <div class="watch-summary-card">
+              <span>Dynamic alerts</span>
+              <strong id="watchDynamicCount">-</strong>
+              <small>Reddit/social</small>
+            </div>
+            <div class="watch-summary-card">
+              <span>Hot hot</span>
+              <strong id="watchHotHotCount">-</strong>
+              <small>Heat + market</small>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="watch-grid">
+        <article class="panel watch-panel">
+          <div class="card-head">
+            <span class="card-title">Regular Watch List</span>
+            <span class="subtle" id="regularWatchMeta">Configured symbols</span>
+          </div>
+          <div id="regularWatchList" class="watch-list"></div>
+        </article>
+
+        <article class="panel watch-panel">
+          <div class="card-head">
+            <span class="card-title">Regular Watch Movers</span>
+            <span class="subtle" id="regularWatchMoversMeta">Movement and relevance</span>
+          </div>
+          <div id="regularWatchMovers" class="watch-list"></div>
+        </article>
+
+        <article class="panel watch-panel">
+          <div class="card-head">
+            <span class="card-title">Dynamic Hot List From Alerts</span>
+            <span class="subtle" id="dynamicHotListMeta">Meme monitor output</span>
+          </div>
+          <div id="dynamicHotList" class="watch-list"></div>
+        </article>
+
+        <article class="panel watch-panel">
+          <div class="card-head">
+            <span class="card-title">Hot Hot List</span>
+            <span class="subtle" id="hotHotListMeta">Social heat plus market confirmation</span>
+          </div>
+          <p class="panel-note">Rotation eligible, Eviction candidate, and Last rotation decision are shown on each Hot Hot card when hot slot rotation is active.</p>
+          <div id="hotHotList" class="watch-list"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/watch.js"></script>
+    <script src="/mobile.js"></script>
+  </body>
+</html>

@@ -136,6 +136,24 @@ test('minimal server accepts approved signals and records an outcome', async () 
   }
 });
 
+test('minimal server returns invalid_json for malformed payloads', async () => {
+  const server = createMinimalTradingServer();
+  await new Promise((resolve) => server.listen(0, resolve));
+  const { port } = server.address();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 400);
+    assert.equal(payload.error, 'invalid_json');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('minimal server rejects stale data and legacy admin routes', async () => {
   const performance = new PerformanceStore();
   performance.setPolicySnapshot({

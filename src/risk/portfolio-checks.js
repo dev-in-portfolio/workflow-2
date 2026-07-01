@@ -41,10 +41,12 @@ function performPortfolioChecks(
     ...(Array.isArray(portfolio.open_orders) ? portfolio.open_orders.filter((order) => String(order.side || '').toLowerCase() === 'buy').map((order) => order.symbol) : []),
   ].map(normalizePortfolioSymbol).filter(Boolean));
 
-  if (signalSide === 'buy' && normalizedSignalSymbol && heldSymbols.has(normalizedSignalSymbol)) {
+  const allowScaleIn = Boolean(signal?.allow_scale_in || signal?.allowScaleIn);
+
+  if (signalSide === 'buy' && normalizedSignalSymbol && !allowScaleIn && heldSymbols.has(normalizedSignalSymbol)) {
     reasonCodes.push('EXISTING_POSITION_FOR_SYMBOL');
   }
-  if (signalSide === 'buy' && normalizedSignalSymbol && openBuySymbols.has(normalizedSignalSymbol)) {
+  if (signalSide === 'buy' && normalizedSignalSymbol && !allowScaleIn && openBuySymbols.has(normalizedSignalSymbol)) {
     reasonCodes.push('OPEN_BUY_ORDER_FOR_SYMBOL');
   }
 

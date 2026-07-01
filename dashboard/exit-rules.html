@@ -41,6 +41,7 @@
           <a class="page-tab" href="/policy">Policy</a>
           <a class="page-tab active" href="/exit-rules">Exit Rules</a>
           <a class="page-tab" href="/alerts">Alerts</a>
+          <a class="page-tab" href="/watch">Watch</a>
           <a class="page-tab" href="/control">Operator tab</a>
         </nav>
       </header>
@@ -53,11 +54,11 @@
           </div>
           <div class="threshold-block">
             <div class="threshold-value" id="profitExitThreshold">-</div>
-            <div class="threshold-caption">Hard stop per position</div>
+            <div class="threshold-caption">Adaptive sell-profit threshold</div>
           </div>
           <div class="threshold-details">
-            <div><strong>Trailing starts</strong> <span id="profitExitFloor">-</span></div>
-            <div><strong>Giveback</strong> <span id="lossExitThreshold">-</span></div>
+            <div><strong>Profit floor</strong> <span id="profitExitFloor">-</span></div>
+            <div><strong>Hard stop</strong> <span id="lossExitThreshold">-</span></div>
           </div>
           <div class="threshold-details" id="thresholdDetails"></div>
         </article>
