@@ -9,8 +9,7 @@ This repository is a simplified Live Market trading control plane with a direct-
 - Uses live Alpaca positions, open orders, account buying power, and Daily Change as the source of truth.
 - Holds at most two open positions.
 - Buys up to `$150` per position and refuses dust buys below `$25`.
-- Cuts a full position at `-$10` unrealized P/L.
-- Lets winners run, then sells after a `$3` giveback once a position has reached at least `+$5`.
+- Uses the configured stop and trail rules from `POSITION_STOP_LOSS_DOLLARS`, `POSITION_STOP_LOSS_NOTIONAL_PCT`, `POSITION_STOP_LOSS_MAX_DOLLARS`, `TRAILING_PROFIT_START_DOLLARS`, and `TRAILING_PROFIT_GIVEBACK_DOLLARS`.
 - Keeps a local dashboard focused on the few numbers that matter.
 
 ## Safety Model
@@ -18,17 +17,103 @@ This repository is a simplified Live Market trading control plane with a direct-
 - Safe example config is the default.
 - Live trading still requires local `.env.local` credentials and explicit enablement.
 - Risk enforcement is deterministic code, not an LLM prompt.
-- The operator dashboard does not include liquidation, manual buy, manual sell, or cancel buttons.
+- The operator dashboard does not include manual trade controls such as buy, sell, liquidate, close position, or cancel order.
 
-## Feature Control Model
+## Feature Activation Model
 
 - Meme Monitor and Regular Watch each split controls into runtime-only display toggles, two-key toggles that need both config allowment and a dashboard toggle, source toggles that can be validated at runtime, and locked controls that stay disabled.
 - The dashboard Actions tab shows each feature's category, config allowment, runtime toggle, effective state, and any block reason so you can see why something is on or off.
-- Meme Monitor Reddit sources are tiered through `MEME_REDDIT_SOURCES_TIER_1`, `MEME_REDDIT_SOURCES_TIER_2`, `MEME_REDDIT_SOURCES_TIER_3`, `MEME_REDDIT_SOURCES_TICKER_SPECIFIC`, and `MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE`.
-- Optional high-noise sources stay off by default unless you explicitly enable them.
-- Reddit collection is safe to leave partially configured: missing credentials, private or banned communities, quarantines, inaccessible subreddits, and rate limits are marked inactive instead of crashing the scanner.
-- Reddit source validation and listing calls use the shared source-fetch path with cache support so repeated scans do less work, and the dashboard source-health view shows active, inactive, and error states without exposing secrets.
 - Auto Action remains locked until a safe implementation path exists.
+
+## Watch Tab
+
+- The Watch tab always uses four columns: `Regular Watch List`, `Regular Watch Movers List`, `Dynamic Hot List From Alerts`, and `Hot Hot List`.
+- The tab shows which sources contributed to each ticker, along with status, score, freshness, spread, and rotation or priority context when available.
+- The watch snapshot is contract-stable, so operators can compare what the scanner saw with what the dashboard rendered.
+
+## Actions Tab
+
+- The Actions tab shows feature state, source state, and runtime health in one place.
+- Each row carries status, effective state, block reasons, and last error context when available.
+- The dashboard shows controls for feature toggles and safe workflow actions, but it never exposes manual trade execution buttons.
+
+## Meme Monitor
+
+- Meme Monitor is source-driven and degrades one source at a time.
+- It reads active sources from config and runtime state, validates each source before scanning, and marks missing or inaccessible sources inactive with a reason.
+- Reddit collection, Phase A sources, and Phase B sources all mark failures as inactive instead of crashing the monitor.
+- The monitor preserves source-level reasons so the dashboard can explain why a source is off.
+
+## Reddit Source Tiers
+
+- Tier 1 is the highest-heat default set and should carry the heaviest heat-score weight.
+- Tier 2 is broader market chatter and contributes meaningful but lower-weight signal.
+- Tier 3 is context-only unless market confirmation is strong.
+- Ticker-specific communities help with known meme names, but they should not create Hot Hot status on their own.
+- Optional high-noise sources stay disabled by default unless explicitly enabled.
+
+## Phase A Confirmation Sources
+
+- Phase A combines Reddit with Alpaca market, Alpaca assets, Nasdaq halts, and SEC EDGAR confirmation.
+- Each source can fail independently, and the runtime records the inactive reason instead of crashing.
+- Missing credentials, private communities, quarantines, bans, inaccessible sources, and rate limits are expected failure modes.
+
+## Phase B Confirmation Sources
+
+- Phase B adds StockTwits, Polygon, and Alpha Vantage confirmation.
+- Phase B should keep running even when one or more confirmation providers are down or rate-limited.
+- The dashboard source-health view shows the provider state with redacted error text.
+
+## Dynamic Hot List vs Hot Hot List
+
+- The Dynamic Hot List is the broader meme-alert list.
+- The Hot Hot List is the stronger confirmation list used for higher urgency and priority override.
+- A ticker can appear in the dynamic list without being strong enough for Hot Hot treatment.
+
+## Dynamic Watchlist
+
+- The dynamic watchlist is the scanner-facing symbol set that can be expanded from alert flow.
+- The watch tab shows which symbols entered through meme alerts, regular watch, or approved-symbol policy.
+- Dynamic watchlist entries should stay visible even when the source that created them has gone stale.
+
+## Priority Override
+
+- Priority override can boost ranking, but it does not fabricate confirmation.
+- Hot Hot status can influence ranking and slot selection, but it should still respect safety and market context.
+- Ticker-specific communities and noisy sources should not auto-promote a ticker without stronger support.
+
+## Hot Slot Rotation
+
+- Hot slot rotation only replaces a slot when the replacement meets the breakeven-or-better safety rules.
+- Rotation must respect the configured loss floor, timeout, and runner-protection rules.
+- The rotation state should show whether a candidate was skipped, replaced, or protected.
+
+## Regular Watch Intelligence
+
+- Regular Watch uses market confirmation, asset validation, halt checks, SEC risk checks, news/catalyst context, priority scoring, scanner ranking, and position awareness.
+- `REGULAR_WATCH_PRIORITY_SCORING_ENABLED`, `REGULAR_WATCH_SCANNER_RANKING_ENABLED`, and `REGULAR_WATCH_POSITION_AWARENESS_ENABLED` remain gated by effective state, not just runtime intent.
+- Regular Watch should keep the output readable even when some sources are unavailable.
+
+## External Source Health
+
+- The dashboard source-health summary exposes active, inactive, and error states for both meme-monitor and regular-watch sources.
+- A single bad provider must not crash the scanner.
+- Error text should be redacted so secrets do not leak into the dashboard.
+
+## Cache / Timeout / Redaction
+
+- Reddit and external source fetches use the shared source-fetch path with cache helpers and timeout handling.
+- Source validation should prefer cached results when they are still fresh.
+- Error payloads must stay short, redacted, and operator-safe.
+
+## Safe Defaults
+
+- Dangerous and influence-heavy flags default to `false`.
+- `MEME_AUTO_ACTION_ENABLED` stays locked off.
+- Optional high-noise sources are disabled by default.
+- Hot Slot Rotation uses breakeven-safe defaults.
+- Regular Watch scanner ranking and position awareness stay off until explicitly enabled.
+- The repo ships with safe defaults in `.env.example` and no secrets.
 
 ## Architecture
 
@@ -107,7 +192,7 @@ The repo ships with these defaults:
 - `ALPACA_EXECUTION_ENABLED=false`
 
 The config loader rejects unsafe live-trading combinations. Risk-budget sizing and structure-aware stop selection are optional and disabled by default; when disabled, the scanner keeps the fixed-notional sizing path.
-See [.env.example](/C:/Users/dtoro/OneDrive/Documents/Workflow2/.env.example) for safe defaults. For local live operation, `.env.local` should set `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, `ALPACA_EXECUTION_ENABLED=true`, and the Alpaca credentials/base URL.
+See [.env.example](./.env.example) for safe defaults. For local live operation, `.env.local` should set `TRADING_MODE=live`, `LIVE_TRADING_ENABLED=true`, `ALPACA_EXECUTION_ENABLED=true`, and the Alpaca credentials/base URL.
 
 ## Running Tests
 
@@ -130,9 +215,9 @@ npm start
 npm run dashboard
 ```
 
-The dashboard is read-only and starts on `http://127.0.0.1:1111` when free, or the next available local port if `1111` is already occupied. It reads the existing trader endpoints and local history files without changing any execution behavior.
+The dashboard starts on `http://127.0.0.1:1111` when free, or the next available local port if `1111` is already occupied. It reads the existing trader endpoints and local history files without changing execution behavior, and it exposes operational controls plus feature toggles without manual trade buttons.
 It also opens your browser automatically when launched from `npm run dashboard`, unless you disable that with `DASHBOARD_OPEN_BROWSER=false`.
-For a one-double-click launch on Windows, use [`start-dashboard.cmd`](/C:/Users/dtoro/OneDrive/Documents/Workflow2/start-dashboard.cmd).
+For a one-double-click launch on Windows, use [start-dashboard.cmd](./start-dashboard.cmd).
 If you want to pin a different local dashboard port, set `TRADER_DASHBOARD_PORT` in your environment. The dashboard still defaults to `1111`.
 The Watch tab now shows which source groups contributed to each symbol, and the source-health summary keeps meme-monitor and regular-watch source states visible in one place.
 
@@ -243,7 +328,15 @@ If you need an emergency retreat, `POST /policy-rollback` will restore the best 
 - Confirm the dashboard Home page says `Live Market`, max positions `2`, buy cap `$150`, and workflow `stopped`.
 - Start the workflow only during regular US market hours.
 - Watch that only one trader and one stock scanner run.
-- Confirm the scanner only considers `NVDA`, `TSLA`, `IREN`, `MRVL`, `INTC`, and `MARA`.
+- Confirm the approved symbol list comes from `STOCK_SCANNER_SYMBOLS` and the live policy snapshot in `data/live-policy.json`.
+
+## Operator Do-Not-Do List
+
+- Do not enable auto action unless the implementation path is safe and reviewed.
+- Do not use manual buy, sell, liquidate, close position, or cancel-order controls from the dashboard, because they are intentionally not provided.
+- Do not assume a single source is enough when source health is degraded.
+- Do not treat tier 3 or ticker-specific chatter as Hot Hot by itself.
+- Do not forget to verify the live policy snapshot before market open.
 
 ## Daily Automation
 

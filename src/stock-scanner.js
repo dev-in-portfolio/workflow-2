@@ -2985,5 +2985,6 @@ module.exports = {
   createStockScanner,
   normalizeRecentTradePenaltyMap,
   rankScannerBuyCandidates,
+  resolveMemeWatchlistAttention: resolveScannerWatchConfig,
   resolveScannerWatchConfig,
 };
