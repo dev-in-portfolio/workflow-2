@@ -1,17 +1,19 @@
-const { fetchWithTimeout, nowIso } = require('../../util');
+const path = require('path');
+const { nowIso } = require('../../util');
+const { buildSourceStatus, fetchJsonWithTimeout } = require('../../source-fetch');
 const { URL } = require('url');
 
 async function fetchAlphaVantageSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKey = String(env?.ALPHA_VANTAGE_API_KEY || '').trim();
   if (!apiKey) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alphaVantage', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'ALPHA_VANTAGE_API_KEY missing', blockedReason: 'missing_credentials' }),
+      sourceStatus: buildSourceStatus({ source: 'alphaVantage', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'ALPHA_VANTAGE_API_KEY missing', blockedReason: 'missing_credentials' }),
       symbols: [],
     };
   }
   if (!symbols.length) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alphaVantage', enabled: true, available: true, status: 'active', newsItemsMatched: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'alphaVantage', enabled: true, available: true, status: 'active', newsItemsMatched: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }
@@ -24,31 +26,37 @@ async function fetchAlphaVantageSignals({ env = process.env, fetchImpl = globalT
     for (const symbol of limitedSymbols) {
       const items = [];
       if (intradayEnabled) {
-        items.push(fetchWithTimeout(fetchImpl, buildUrl('TIME_SERIES_INTRADAY', { symbol, apiKey }), { timeoutMs }));
+        items.push(fetchJsonWithTimeout(fetchImpl, buildUrl('TIME_SERIES_INTRADAY', { symbol, apiKey }), {
+          timeoutMs,
+          cache: sourceCacheOptions(env, symbol, 'intraday', timeoutMs),
+        }));
       }
       if (newsEnabled) {
-        items.push(fetchWithTimeout(fetchImpl, buildUrl('NEWS_SENTIMENT', { symbol, apiKey }), { timeoutMs }));
+        items.push(fetchJsonWithTimeout(fetchImpl, buildUrl('NEWS_SENTIMENT', { symbol, apiKey }), {
+          timeoutMs,
+          cache: sourceCacheOptions(env, symbol, 'news', timeoutMs),
+        }));
       }
       const responses = await Promise.all(items);
       const payloads = [];
       for (const response of responses) {
         if (response.status === 429) {
           return {
-            sourceStatus: normalizeSourceStatus({ source: 'alphaVantage', enabled: true, available: false, status: 'rate_limited', newsItemsMatched: out.length, lastRunAt: null, lastError: 'rate_limited', blockedReason: 'rate_limited' }),
+            sourceStatus: buildSourceStatus({ source: 'alphaVantage', enabled: true, available: false, status: 'rate_limited', newsItemsMatched: out.length, lastRunAt: null, lastError: 'rate_limited', blockedReason: 'rate_limited', cache: response.cache }),
             symbols: out,
           };
         }
-        payloads.push(await readJson(response));
+        payloads.push(response.body);
       }
       out.push(buildAlphaVantageSignal(symbol, payloads, { intradayEnabled, newsEnabled, safeMode }));
     }
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alphaVantage', enabled: true, available: true, status: 'active', newsItemsMatched: out.reduce((sum, entry) => sum + Number(entry.rawSummary.newsItemsMatched || 0), 0), lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'alphaVantage', enabled: true, available: true, status: 'active', newsItemsMatched: out.reduce((sum, entry) => sum + Number(entry.rawSummary.newsItemsMatched || 0), 0), lastRunAt: nowIso(), lastError: null, cache: { used: false, hit: false, ageSeconds: null, ttlSeconds: null, stale: false } }),
       symbols: out,
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alphaVantage', enabled: true, available: false, status: 'error', newsItemsMatched: 0, lastRunAt: null, lastError: error.message, blockedReason: 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'alphaVantage', enabled: true, available: false, status: error?.name === 'AbortError' ? 'timeout' : 'error', newsItemsMatched: 0, lastRunAt: null, lastError: error.message, blockedReason: error?.name === 'AbortError' ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -133,29 +141,6 @@ function sentimentIsBearish(item = {}) {
   return ['bearish', 'somewhat_bearish', 'negative'].includes(value);
 }
 
-function normalizeSourceStatus(entry = {}) {
-  return {
-    source: entry.source || 'alphaVantage',
-    enabled: Boolean(entry.enabled),
-    available: Boolean(entry.available),
-    status: String(entry.status || 'off').toLowerCase(),
-    lastRunAt: entry.lastRunAt || null,
-    lastScanAt: entry.lastScanAt || entry.lastRunAt || null,
-    lastError: entry.lastError || null,
-    newsItemsMatched: Number.isFinite(Number(entry.newsItemsMatched)) ? Number(entry.newsItemsMatched) : 0,
-    blockedReason: entry.blockedReason || null,
-  };
-}
-
-async function readJson(response) {
-  const text = await response.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return { raw: text };
-  }
-}
-
 function clampScore(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
@@ -165,3 +150,13 @@ function clampScore(value) {
 module.exports = {
   fetchAlphaVantageSignals,
 };
+
+function sourceCacheOptions(env, symbol, category, ttlSeconds) {
+  return {
+    cacheDir: path.resolve(process.cwd(), 'data', 'runtime', 'source-cache'),
+    source: 'alphaVantage',
+    category,
+    key: `alphaVantage:${String(symbol || '').toUpperCase()}:${category}`,
+    ttlSeconds: Math.max(0, Number(env?.MEME_PHASE_B_SOURCE_CACHE_SECONDS || ttlSeconds || 0) || 0),
+  };
+}

@@ -1,27 +1,32 @@
-const { fetchWithTimeout, nowIso } = require('../../util');
+const path = require('path');
+const { nowIso } = require('../../util');
+const { buildSourceStatus, fetchJsonWithTimeout } = require('../../source-fetch');
 
 async function fetchStocktwitsSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKey = String(env?.STOCKTWITS_API_KEY || '').trim();
   if (!apiKey) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'STOCKTWITS_API_KEY missing', blockedReason: 'missing_credentials' }),
+      sourceStatus: buildSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'STOCKTWITS_API_KEY missing', blockedReason: 'missing_credentials' }),
       symbols: [],
     };
   }
   if (!symbols.length) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'stocktwits', enabled: true, available: true, status: 'active', symbolsDetected: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'stocktwits', enabled: true, available: true, status: 'active', symbolsDetected: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }
   try {
     const out = [];
     for (const symbol of symbols) {
-      const response = await fetchWithTimeout(fetchImpl, `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(symbol)}.json?access_token=${encodeURIComponent(apiKey)}`, { timeoutMs });
-      const body = await readJson(response);
+      const result = await fetchJsonWithTimeout(fetchImpl, `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(symbol)}.json?access_token=${encodeURIComponent(apiKey)}`, {
+        timeoutMs,
+        cache: sourceCacheOptions(env, 'stocktwits', symbol, timeoutMs),
+      });
+      const { response, body } = result;
       if (response.status === 429) {
         return {
-          sourceStatus: normalizeSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: 'rate_limited', symbolsDetected: out.length, lastRunAt: null, lastError: 'rate_limited', blockedReason: 'rate_limited' }),
+          sourceStatus: buildSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: 'rate_limited', symbolsDetected: out.length, lastRunAt: null, lastError: 'rate_limited', blockedReason: 'rate_limited', cache: result.cache }),
           symbols: out,
         };
       }
@@ -33,12 +38,12 @@ async function fetchStocktwitsSignals({ env = process.env, fetchImpl = globalThi
       out.push(buildStocktwitsSignal(symbol, messages, { available: true }));
     }
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'stocktwits', enabled: true, available: true, status: 'active', symbolsDetected: out.length, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'stocktwits', enabled: true, available: true, status: 'active', symbolsDetected: out.length, lastRunAt: nowIso(), lastError: null, cache: { used: false, hit: false, ageSeconds: null, ttlSeconds: null, stale: false } }),
       symbols: out,
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: 'error', symbolsDetected: 0, lastRunAt: null, lastError: error.message, blockedReason: 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'stocktwits', enabled: true, available: false, status: error?.name === 'AbortError' ? 'timeout' : 'error', symbolsDetected: 0, lastRunAt: null, lastError: error.message, blockedReason: error?.name === 'AbortError' ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -89,33 +94,20 @@ function isBearish(message = {}) {
   return ['bearish', 'strong_bearish', 'negative'].includes(sentiment);
 }
 
-function normalizeSourceStatus(entry = {}) {
-  return {
-    source: entry.source || 'stocktwits',
-    enabled: Boolean(entry.enabled),
-    available: Boolean(entry.available),
-    status: String(entry.status || 'off').toLowerCase(),
-    lastRunAt: entry.lastRunAt || null,
-    lastScanAt: entry.lastScanAt || entry.lastRunAt || null,
-    lastError: entry.lastError || null,
-    symbolsDetected: Number.isFinite(Number(entry.symbolsDetected)) ? Number(entry.symbolsDetected) : 0,
-    blockedReason: entry.blockedReason || null,
-  };
-}
-
-async function readJson(response) {
-  const text = await response.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return { raw: text };
-  }
-}
-
 function clampScore(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
   return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function sourceCacheOptions(env, source, category, ttlSeconds) {
+  return {
+    cacheDir: path.resolve(process.cwd(), 'data', 'runtime', 'source-cache'),
+    source,
+    category,
+    key: `${source}:${category}`,
+    ttlSeconds: Math.max(0, Number(env?.MEME_PHASE_B_SOURCE_CACHE_SECONDS || ttlSeconds || 0) || 0),
+  };
 }
 
 module.exports = {

@@ -1,31 +1,37 @@
+const path = require('path');
 const { scoreMarketConfirmation } = require('../market-confirmation-score');
-const { fetchWithTimeout, nowIso } = require('../../util');
+const { nowIso } = require('../../util');
+const { buildSourceStatus, fetchJsonWithTimeout } = require('../../source-fetch');
 
 async function fetchPolygonMarketSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
   const apiKey = String(env?.POLYGON_API_KEY || '').trim();
   if (!apiKey) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'polygon', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'POLYGON_API_KEY missing', blockedReason: 'missing_credentials' }),
+      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'POLYGON_API_KEY missing', blockedReason: 'missing_credentials' }),
       symbols: [],
     };
   }
   if (!symbols.length) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'polygon', enabled: true, available: true, status: 'active', symbolsConfirmed: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: true, status: 'active', symbolsConfirmed: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }
   try {
     const out = [];
     for (const symbol of symbols) {
-      const snapshotResponse = await fetchWithTimeout(fetchImpl, `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}?apiKey=${encodeURIComponent(apiKey)}`, { timeoutMs });
+      const result = await fetchJsonWithTimeout(fetchImpl, `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/${encodeURIComponent(symbol)}?apiKey=${encodeURIComponent(apiKey)}`, {
+        timeoutMs,
+        cache: sourceCacheOptions(env, symbol, 'snapshot', timeoutMs),
+      });
+      const snapshotResponse = result.response;
       if (snapshotResponse.status === 429) {
         return {
-          sourceStatus: normalizeSourceStatus({ source: 'polygon', enabled: true, available: false, status: 'rate_limited', symbolsConfirmed: out.length, lastRunAt: null, lastError: 'rate_limited', blockedReason: 'rate_limited' }),
+          sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: false, status: 'rate_limited', symbolsConfirmed: out.length, lastRunAt: null, lastError: 'rate_limited', blockedReason: 'rate_limited', cache: result.cache }),
           symbols: out,
         };
       }
-      const body = await readJson(snapshotResponse);
+      const body = result.body;
       if (!snapshotResponse.ok) {
         out.push(buildPolygonSignal(symbol, null, { unavailable: true, error: `HTTP ${snapshotResponse.status}` }));
         continue;
@@ -53,12 +59,12 @@ async function fetchPolygonMarketSignals({ env = process.env, fetchImpl = global
       });
     }
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'polygon', enabled: true, available: true, status: 'active', symbolsConfirmed: out.length, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: true, status: 'active', symbolsConfirmed: out.length, lastRunAt: nowIso(), lastError: null, cache: { used: false, hit: false, ageSeconds: null, ttlSeconds: null, stale: false } }),
       symbols: out,
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'polygon', enabled: true, available: false, status: 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: false, status: error?.name === 'AbortError' ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: error?.name === 'AbortError' ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -109,29 +115,16 @@ function buildPolygonSignal(symbol, snapshot, options = {}) {
   };
 }
 
-function normalizeSourceStatus(entry = {}) {
-  return {
-    source: entry.source || 'polygon',
-    enabled: Boolean(entry.enabled),
-    available: Boolean(entry.available),
-    status: String(entry.status || 'off').toLowerCase(),
-    lastRunAt: entry.lastRunAt || null,
-    lastScanAt: entry.lastScanAt || entry.lastRunAt || null,
-    lastError: entry.lastError || null,
-    symbolsConfirmed: Number.isFinite(Number(entry.symbolsConfirmed)) ? Number(entry.symbolsConfirmed) : 0,
-    blockedReason: entry.blockedReason || null,
-  };
-}
-
-async function readJson(response) {
-  const text = await response.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return { raw: text };
-  }
-}
-
 module.exports = {
   fetchPolygonMarketSignals,
 };
+
+function sourceCacheOptions(env, symbol, category, ttlSeconds) {
+  return {
+    cacheDir: path.resolve(process.cwd(), 'data', 'runtime', 'source-cache'),
+    source: 'polygon',
+    category,
+    key: `polygon:${category}:${String(symbol || '').toUpperCase()}`,
+    ttlSeconds: Math.max(0, Number(env?.MEME_PHASE_B_SOURCE_CACHE_SECONDS || ttlSeconds || 0) || 0),
+  };
+}

@@ -1,8 +1,10 @@
+const path = require('path');
 const { resolveMemeMonitorStatePath, loadMemeMonitorState } = require('../meme-monitor-state');
 const { createRedditCollector } = require('./reddit-collector');
 const { extractMentionsFromRecord } = require('./symbol-extractor');
 const { scoreMarketConfirmation } = require('./market-confirmation-score');
-const { fetchWithTimeout, nowIso, safeNumber } = require('../util');
+const { nowIso, safeNumber } = require('../util');
+const { buildSourceStatus, classifyHttpSourceStatus, fetchJsonWithTimeout, fetchTextWithTimeout } = require('../source-fetch');
 
 function resolvePhaseASourceRuntime(env = process.env, runtimeState = null) {
   const featureState = runtimeState || loadMemeMonitorState({ env, filePath: resolveMemeMonitorStatePath({ env }) });
@@ -214,24 +216,28 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
   const baseUrl = String(env?.ALPACA_DATA_BASE_URL || '').trim() || 'https://data.alpaca.markets';
   if (!apiKeyId || !apiSecretKey) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: 'missing_credentials', symbolsConfirmed: 0, lastRunAt: null, lastError: 'ALPACA credentials missing', blockedReason: 'missing_credentials' }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: 'missing_credentials', symbolsConfirmed: 0, lastRunAt: null, lastError: 'ALPACA credentials missing', blockedReason: 'missing_credentials' }),
       symbols: [],
     };
   }
   if (!symbols.length) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaMarket', enabled: true, available: true, status: 'active', symbolsConfirmed: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: true, status: 'active', symbolsConfirmed: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }
   try {
     const encodedSymbols = encodeURIComponent(symbols.join(','));
     const url = `${trimTrailingSlash(baseUrl)}/v2/stocks/snapshots?symbols=${encodedSymbols}&feed=iex`;
-    const response = await fetchWithTimeout(fetchImpl, url, { timeoutMs, headers: alpacaHeaders(apiKeyId, apiSecretKey) });
-    const body = await readJson(response);
+    const result = await fetchJsonWithTimeout(fetchImpl, url, {
+      timeoutMs,
+      headers: alpacaHeaders(apiKeyId, apiSecretKey),
+      cache: sourceCacheOptions({ env, cacheKey: symbols.join(',') }, 'alpacaMarket', 'snapshots', timeoutMs),
+    });
+    const { response, body } = result;
     if (!response.ok) {
       return {
-        sourceStatus: normalizeSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: `HTTP ${response.status}`, blockedReason: 'source_not_found_or_inaccessible' }),
+        sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: response.status === 429 ? 'rate_limited' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: `HTTP ${response.status}`, blockedReason: classifyHttpSourceStatus(response.status, body).blockedReason, cache: result.cache }),
         symbols: [],
       };
     }
@@ -284,12 +290,12 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
       });
     }
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaMarket', enabled: true, available: true, status: 'active', symbolsConfirmed: out.length, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: true, status: 'active', symbolsConfirmed: out.length, lastRunAt: nowIso(), lastError: null, cache: result.cache }),
       symbols: out,
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -301,22 +307,26 @@ async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs
   const baseUrl = String(env?.ALPACA_API_BASE_URL || '').trim() || 'https://paper-api.alpaca.markets';
   if (!apiKeyId || !apiSecretKey) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: 'missing_credentials', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: 'ALPACA credentials missing', blockedReason: 'missing_credentials' }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: 'missing_credentials', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: 'ALPACA credentials missing', blockedReason: 'missing_credentials' }),
       symbols: [],
     };
   }
   if (!symbols.length) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaAssets', enabled: true, available: true, status: 'active', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaAssets', enabled: true, available: true, status: 'active', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }
   try {
-    const response = await fetchWithTimeout(fetchImpl, `${trimTrailingSlash(baseUrl)}/v2/assets`, { timeoutMs, headers: alpacaHeaders(apiKeyId, apiSecretKey) });
-    const body = await readJson(response);
+    const result = await fetchJsonWithTimeout(fetchImpl, `${trimTrailingSlash(baseUrl)}/v2/assets`, {
+      timeoutMs,
+      headers: alpacaHeaders(apiKeyId, apiSecretKey),
+      cache: sourceCacheOptions({ env, cacheKey: 'assets' }, 'alpacaAssets', 'assets', timeoutMs),
+    });
+    const { response, body } = result;
     if (!response.ok) {
       return {
-        sourceStatus: normalizeSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: `HTTP ${response.status}`, blockedReason: 'source_not_found_or_inaccessible' }),
+        sourceStatus: buildSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: response.status === 429 ? 'rate_limited' : 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: `HTTP ${response.status}`, blockedReason: classifyHttpSourceStatus(response.status, body).blockedReason, cache: result.cache }),
         symbols: [],
       };
     }
@@ -343,12 +353,12 @@ async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs
       });
     }
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaAssets', enabled: true, available: true, status: 'active', symbolsTradable: out.filter((entry) => entry.tradableStatus === 'tradable').length, symbolsBlocked: out.filter((entry) => entry.tradableStatus !== 'tradable').length, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaAssets', enabled: true, available: true, status: 'active', symbolsTradable: out.filter((entry) => entry.tradableStatus === 'tradable').length, symbolsBlocked: out.filter((entry) => entry.tradableStatus !== 'tradable').length, lastRunAt: nowIso(), lastError: null, cache: result.cache }),
       symbols: out,
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'alpacaAssets', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', symbolsTradable: 0, symbolsBlocked: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -358,16 +368,20 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs
   const feedUrl = String(env?.NASDAQ_HALTS_RSS_URL || 'https://www.nasdaqtrader.com/Trader.aspx?id=TradeHaltRSS');
   if (!symbols.length) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'nasdaqHalts', enabled: true, available: true, status: 'active', blockedSymbols: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'nasdaqHalts', enabled: true, available: true, status: 'active', blockedSymbols: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }
   try {
-    const response = await fetchWithTimeout(fetchImpl, feedUrl, { timeoutMs, headers: { 'user-agent': env?.REDDIT_USER_AGENT || 'workflow-2-meme-monitor' } });
-    const text = await response.text();
+    const result = await fetchTextWithTimeout(fetchImpl, feedUrl, {
+      timeoutMs,
+      headers: { 'user-agent': env?.REDDIT_USER_AGENT || 'workflow-2-meme-monitor' },
+      cache: sourceCacheOptions({ env, cacheKey: feedUrl }, 'nasdaqHalts', 'rss', timeoutMs),
+    });
+    const { response, text } = result;
     if (!response.ok) {
       return {
-        sourceStatus: normalizeSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: 'error', blockedSymbols: 0, lastRunAt: null, lastError: `HTTP ${response.status}`, blockedReason: 'source_not_found_or_inaccessible' }),
+        sourceStatus: buildSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: response.status === 429 ? 'rate_limited' : 'error', blockedSymbols: 0, lastRunAt: null, lastError: `HTTP ${response.status}`, blockedReason: classifyHttpSourceStatus(response.status, text).blockedReason, cache: result.cache }),
         symbols: [],
       };
     }
@@ -381,12 +395,12 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs
       marketContext: { halted: haltedSymbols.has(symbol.toUpperCase()), halt_status: haltedSymbols.has(symbol.toUpperCase()) ? 'halted' : 'open' },
     }));
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'nasdaqHalts', enabled: true, available: true, status: 'active', blockedSymbols: out.filter((entry) => entry.haltStatus === 'halted').length, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'nasdaqHalts', enabled: true, available: true, status: 'active', blockedSymbols: out.filter((entry) => entry.haltStatus === 'halted').length, lastRunAt: nowIso(), lastError: null, cache: result.cache }),
       symbols: out,
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', blockedSymbols: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'nasdaqHalts', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', blockedSymbols: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
@@ -396,7 +410,7 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 
   const lookbackDays = Math.max(1, Number(env?.MEME_SEC_EDGAR_LOOKBACK_DAYS || 5) || 5);
   if (!symbols.length) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'secEdgar', enabled: true, available: true, status: 'active', catalystsDetected: 0, riskWarnings: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'secEdgar', enabled: true, available: true, status: 'active', catalystsDetected: 0, riskWarnings: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }
@@ -460,24 +474,25 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 
       });
     }
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'secEdgar', enabled: true, available: true, status: 'active', catalystsDetected: out.filter((entry) => entry.catalystScore > 0).length, riskWarnings: out.reduce((sum, entry) => sum + entry.riskWarnings.length, 0), lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'secEdgar', enabled: true, available: true, status: 'active', catalystsDetected: out.filter((entry) => entry.catalystScore > 0).length, riskWarnings: out.reduce((sum, entry) => sum + entry.riskWarnings.length, 0), lastRunAt: nowIso(), lastError: null }),
       symbols: out,
     };
   } catch (error) {
     return {
-      sourceStatus: normalizeSourceStatus({ source: 'secEdgar', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', catalystsDetected: 0, riskWarnings: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
+      sourceStatus: buildSourceStatus({ source: 'secEdgar', enabled: true, available: false, status: isTimeoutError(error) ? 'timeout' : 'error', catalystsDetected: 0, riskWarnings: 0, lastRunAt: null, lastError: error.message, blockedReason: isTimeoutError(error) ? 'timeout' : 'source_not_found_or_inaccessible' }),
       symbols: [],
     };
   }
 }
 
 async function fetchSecTickerMap(fetchImpl, timeoutMs = 5000) {
-  const response = await fetchWithTimeout(fetchImpl, 'https://www.sec.gov/files/company_tickers.json', {
+  const result = await fetchJsonWithTimeout(fetchImpl, 'https://www.sec.gov/files/company_tickers.json', {
     timeoutMs,
     headers: { 'user-agent': 'workflow-2-meme-monitor' },
+    cache: sourceCacheOptions({ repoRoot: process.cwd(), cacheKey: 'ticker-map' }, 'secEdgar', 'ticker-map', timeoutMs),
   });
-  if (!response.ok) return new Map();
-  const body = await readJson(response);
+  if (!result.response.ok) return new Map();
+  const body = result.body;
   const items = Array.isArray(body) ? body : Object.values(body || {});
   const map = new Map();
   for (const item of items) {
@@ -489,12 +504,13 @@ async function fetchSecTickerMap(fetchImpl, timeoutMs = 5000) {
 }
 
 async function fetchSecFilings(fetchImpl, cik, timeoutMs = 5000) {
-  const response = await fetchWithTimeout(fetchImpl, `https://data.sec.gov/submissions/CIK${cik}.json`, {
+  const result = await fetchJsonWithTimeout(fetchImpl, `https://data.sec.gov/submissions/CIK${cik}.json`, {
     timeoutMs,
     headers: { 'user-agent': 'workflow-2-meme-monitor' },
+    cache: sourceCacheOptions({ repoRoot: process.cwd(), cacheKey: cik }, 'secEdgar', 'filings', timeoutMs),
   });
-  if (!response.ok) return [];
-  const body = await readJson(response);
+  if (!result.response.ok) return [];
+  const body = result.body;
   const recent = body?.filings?.recent || {};
   const count = Array.isArray(recent.form) ? recent.form.length : 0;
   const filings = [];
@@ -623,13 +639,17 @@ function trimTrailingSlash(value) {
   return String(value || '').replace(/\/+$/, '');
 }
 
-async function readJson(response) {
-  const text = await response.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return { raw: text };
-  }
+function sourceCacheOptions(context = {}, source, category, ttlSeconds) {
+  const env = context.env || process.env;
+  const repoRoot = context.repoRoot || process.cwd();
+  const cacheEnabled = String(env?.MEME_PHASE_A_SOURCE_CACHE_SECONDS || ttlSeconds || 0);
+  return {
+    cacheDir: path.resolve(repoRoot, 'data', 'runtime', 'source-cache'),
+    source,
+    category,
+    key: `${category}:${context.cacheKey || 'default'}:${cacheEnabled}`,
+    ttlSeconds: Math.max(0, Number(env?.MEME_PHASE_A_SOURCE_CACHE_SECONDS || ttlSeconds || 0) || 0),
+  };
 }
 
 module.exports = {
