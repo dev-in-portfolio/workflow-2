@@ -917,9 +917,10 @@ function createStockScanner(options = {}) {
         }
       }
 
-      const buyCandidatesToPost = !hotSlotRotationEnabled || !rotationPlan?.accountFull
-        ? buyCandidates
-        : [];
+      const rotationCandidateSymbol = normalizeWatchSymbol(rotationPlan?.candidate);
+      const buyCandidatesToPost = shouldAttemptRotation && rotationCandidateSymbol
+        ? buyCandidates.filter((candidate) => normalizeWatchSymbol(candidate?.symbol) !== rotationCandidateSymbol)
+        : buyCandidates;
 
       for (const candidate of buyCandidatesToPost) {
         await postCandidate(candidate);

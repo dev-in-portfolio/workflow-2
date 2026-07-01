@@ -49,7 +49,7 @@ function render(snapshot) {
   $('regularWatchMeta').textContent = `Approved symbols: ${formatCount(regularWatchList.length)}`;
   $('regularWatchMoversMeta').textContent = regularWatchMovers.length ? 'Sorted by opportunity score' : 'No movement data';
   $('dynamicHotListMeta').textContent = resolveColumnMeta(watch.dynamicHotList, 'Dynamic hot list');
-  $('hotHotListMeta').textContent = `${resolveColumnMeta(watch.hotHotList, 'Hot hot list')} | rotation ${formatMemeRuntimeStatus(hotSlotRotation.status || 'off')}`;
+  $('hotHotListMeta').textContent = `${resolveColumnMeta(watch.hotHotList, 'Hot hot list')} | rotation ${formatHotSlotRotationStatus(hotSlotRotation)}`;
   $('watchFeatureRail').innerHTML = featureRows.map(([label, status]) => renderFeatureChip(label, status)).join('');
 
   renderRegularWatchList(regularWatchList);
@@ -60,7 +60,7 @@ function render(snapshot) {
     $('watchSummary').textContent += ` Priority override is active and still subject to risk checks.`;
   }
   if ($('watchSummary') && hotSlotRotation?.enabled) {
-    $('watchSummary').textContent += ` Hot slot rotation: ${String(hotSlotRotation.status || 'off').toUpperCase()} (${hotSlotRotation.lastDecision || 'none'}).`;
+    $('watchSummary').textContent += ` Hot slot rotation: ${formatHotSlotRotationStatus(hotSlotRotation)} (${hotSlotRotation.lastDecision || 'none'}).`;
   }
 }
 
@@ -299,6 +299,22 @@ function resolveColumnMeta(section, label) {
 function renderFeatureChip(label, status) {
   const tone = featureTone(status);
   return `<span class="tag ${tone}">${escapeHtml(label)}: ${escapeHtml(String(status || 'off').toUpperCase())}</span>`;
+}
+
+function formatHotSlotRotationStatus(rotation) {
+  if (rotation?.waitingForBrokerReconciliation) {
+    return 'WAITING FOR BROKER RECONCILIATION';
+  }
+  return formatMemeRuntimeStatus(rotation?.status || 'off');
+}
+
+function formatMemeRuntimeStatus(value) {
+  const normalized = String(value || 'off').toLowerCase();
+  if (normalized === 'blocked') return 'BLOCKED';
+  if (normalized === 'missing_credentials') return 'MISSING CREDENTIALS';
+  if (normalized === 'dynamic_watch') return 'SHADOW';
+  if (normalized === 'waiting_for_broker_reconciliation') return 'WAITING FOR BROKER RECONCILIATION';
+  return normalized.toUpperCase();
 }
 
 function watchTone(status) {

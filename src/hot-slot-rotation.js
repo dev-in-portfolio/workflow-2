@@ -423,6 +423,7 @@ function evaluateRotationPositionCandidate(position = {}, {
 function summarizeHotSlotRotationRuntime(rotationState = {}, featureState = null) {
   const status = String(rotationState?.status || 'off').toLowerCase();
   const enabled = Boolean(featureState?.effective ?? rotationState?.enabled ?? false);
+  const waitingForBrokerReconciliation = String(rotationState?.lastDecision || rotationState?.decision || '').toLowerCase() === 'rotation_reconcile_after_exit_started';
   return {
     enabled,
     status: rotationState?.status || (enabled ? 'active' : 'off'),
@@ -439,6 +440,7 @@ function summarizeHotSlotRotationRuntime(rotationState = {}, featureState = null
     rotationEligible: Boolean(rotationState?.rotationEligible),
     blockReason: rotationState?.blockReason || null,
     requested: Boolean(rotationState?.requested),
+    waitingForBrokerReconciliation,
     enabled_effective: enabled,
     raw_status: status,
   };
