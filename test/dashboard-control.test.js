@@ -115,9 +115,20 @@ test('dashboard control routes serve the operator tab and route actions locally'
 
     const memeState = await fetch(`http://127.0.0.1:${port}/api/meme/features`).then((response) => response.json());
     assert.equal(memeState.ok, true);
+    assert.equal(memeState.status, 'ok');
+    assert.ok(memeState.features);
+    assert.ok(Array.isArray(memeState.blocked_features));
+    assert.ok(Array.isArray(memeState.warnings));
     assert.equal(memeState.summary.master_enabled, false);
     assert.equal(memeState.features.MEME_MONITOR_ENABLED.status, 'off');
     assert.equal(memeState.features.MEME_REDDIT_SCANNER_ENABLED.status, 'blocked');
+
+    const regularWatchState = await fetch(`http://127.0.0.1:${port}/api/regular-watch/features`).then((response) => response.json());
+    assert.equal(regularWatchState.ok, true);
+    assert.equal(regularWatchState.status, 'ok');
+    assert.ok(regularWatchState.features);
+    assert.ok(Array.isArray(regularWatchState.blocked_features));
+    assert.ok(Array.isArray(regularWatchState.warnings));
 
     const memeStatus = await fetch(`http://127.0.0.1:${port}/api/meme/status`).then((response) => response.json());
     assert.equal(memeStatus.ok, true);
@@ -132,7 +143,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
 
     const regularWatchStatus = await fetch(`http://127.0.0.1:${port}/api/regular-watch/status`).then((response) => response.json());
     assert.equal(regularWatchStatus.ok, true);
-    assert.equal(regularWatchStatus.regularWatchIntelligence.status, 'off');
+    assert.equal(regularWatchStatus.regularWatchIntelligence.status, 'warn');
     assert.equal(regularWatchStatus.scannerRanking.status, 'off');
     assert.equal(regularWatchStatus.positionAwareness.status, 'off');
 
@@ -167,15 +178,22 @@ test('dashboard control routes serve the operator tab and route actions locally'
       body: JSON.stringify({ featureKey: 'MEME_SOURCE_STOCKTWITS_ENABLED', enabled: true }),
     }).then((response) => response.json());
     assert.equal(sourceAction.ok, true);
-    assert.equal(sourceAction.state.features.MEME_SOURCE_STOCKTWITS_ENABLED.status, 'active');
+    assert.equal(sourceAction.state.features.MEME_SOURCE_STOCKTWITS_ENABLED.status, 'missing_credentials');
+
+    const regularWatchMaster = await fetch(`http://127.0.0.1:${port}/api/regular-watch/features`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ featureKey: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', enabled: true }),
+    }).then((response) => response.json());
+    assert.equal(regularWatchMaster.ok, true);
 
     const regularWatchChild = await fetch(`http://127.0.0.1:${port}/api/regular-watch/features`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ featureKey: 'REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED', enabled: true }),
     }).then((response) => response.json());
-    assert.equal(regularWatchChild.ok, false);
-    assert.equal(regularWatchChild.error, 'feature_disabled_in_config');
+    assert.equal(regularWatchChild.ok, true);
+    assert.equal(regularWatchChild.state.features.REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED.status, 'active');
 
     const regularWatchRanking = await fetch(`http://127.0.0.1:${port}/api/regular-watch/features`, {
       method: 'POST',
@@ -183,7 +201,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
       body: JSON.stringify({ featureKey: 'REGULAR_WATCH_SCANNER_RANKING_ENABLED', enabled: true }),
     }).then((response) => response.json());
     assert.equal(regularWatchRanking.ok, false);
-    assert.equal(regularWatchRanking.error, 'feature_locked');
+    assert.equal(regularWatchRanking.error, 'feature_disabled_in_config');
 
     const runtimeAction = await fetch(`http://127.0.0.1:${port}/api/meme/action`, {
       method: 'POST',
@@ -199,7 +217,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
       body: JSON.stringify({ action: 'refresh-regular-watch-status' }),
     }).then((response) => response.json());
     assert.equal(regularWatchAction.ok, true);
-    assert.equal(regularWatchAction.regularWatchIntelligence.status, 'off');
+    assert.equal(regularWatchAction.regularWatchIntelligence.status, 'warn');
 
     const cryptoAction = await fetch(`http://127.0.0.1:${port}/api/control/action`, {
       method: 'POST',

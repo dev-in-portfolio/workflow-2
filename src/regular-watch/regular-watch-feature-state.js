@@ -20,19 +20,19 @@ const FEATURE_KEYS = [
 ];
 
 const FEATURE_META = {
-  REGULAR_WATCH_INTELLIGENCE_ENABLED: { label: 'Regular Watch Intelligence', parent: null },
-  REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: { label: 'Market Confirmation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_ASSET_VALIDATION_ENABLED: { label: 'Asset Validation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_HALT_CHECK_ENABLED: { label: 'Halt Check', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_SEC_RISK_CHECK_ENABLED: { label: 'SEC Risk Check', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_NEWS_CATALYST_ENABLED: { label: 'News/Catalyst Check', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_PRIORITY_SCORING_ENABLED: { label: 'Priority Scoring', parent: 'REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED' },
-  REGULAR_WATCH_SCANNER_RANKING_ENABLED: { label: 'Scanner Ranking', parent: 'REGULAR_WATCH_PRIORITY_SCORING_ENABLED', locked: true },
-  REGULAR_WATCH_POSITION_AWARENESS_ENABLED: { label: 'Position Awareness', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', locked: true },
-  REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED: { label: 'Polygon Confirmation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED: { label: 'Alpha Vantage Confirmation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED: { label: 'Social Context', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
-  REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED: { label: 'Options Context', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED' },
+  REGULAR_WATCH_INTELLIGENCE_ENABLED: { label: 'Regular Watch Intelligence', parent: null, category: 'display_runtime_toggle' },
+  REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: { label: 'Market Confirmation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_ASSET_VALIDATION_ENABLED: { label: 'Asset Validation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_HALT_CHECK_ENABLED: { label: 'Halt Check', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_SEC_RISK_CHECK_ENABLED: { label: 'SEC Risk Check', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_NEWS_CATALYST_ENABLED: { label: 'News/Catalyst Check', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_PRIORITY_SCORING_ENABLED: { label: 'Priority Scoring', parent: 'REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED', category: 'two_key_runtime_toggle' },
+  REGULAR_WATCH_SCANNER_RANKING_ENABLED: { label: 'Scanner Ranking', parent: 'REGULAR_WATCH_PRIORITY_SCORING_ENABLED', category: 'two_key_runtime_toggle' },
+  REGULAR_WATCH_POSITION_AWARENESS_ENABLED: { label: 'Position Awareness', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'two_key_runtime_toggle' },
+  REGULAR_WATCH_POLYGON_CONFIRMATION_ENABLED: { label: 'Polygon Confirmation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_ALPHA_VANTAGE_CONFIRMATION_ENABLED: { label: 'Alpha Vantage Confirmation', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_SOCIAL_CONTEXT_ENABLED: { label: 'Social Context', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
+  REGULAR_WATCH_OPTIONS_CONTEXT_ENABLED: { label: 'Options Context', parent: 'REGULAR_WATCH_INTELLIGENCE_ENABLED', category: 'display_runtime_toggle' },
 };
 
 function resolveRegularWatchStatePath(input = {}) {
@@ -62,6 +62,51 @@ function defaultRegularWatchState() {
     source: 'env + runtime state',
     features,
   };
+}
+
+function resolveRegularWatchFeatureStatus(meta, { configured = false, runtime = false, parentEffective = true } = {}) {
+  if (!parentEffective) {
+    return {
+      status: configured || runtime ? 'blocked' : 'off',
+      effective: false,
+      blockedReason: `${meta.parent || 'parent'} is off`,
+    };
+  }
+
+  if (meta.category === 'display_runtime_toggle') {
+    if (runtime) {
+      return { status: 'active', effective: true, blockedReason: null };
+    }
+    if (configured) {
+      return { status: 'shadow', effective: false, blockedReason: null };
+    }
+    return { status: 'off', effective: false, blockedReason: null };
+  }
+
+  if (meta.category === 'two_key_runtime_toggle') {
+    if (configured && runtime) {
+      return { status: 'active', effective: true, blockedReason: null };
+    }
+    if (runtime && !configured) {
+      return {
+        status: 'blocked',
+        effective: false,
+        blockedReason: `${meta.label} requires config allowment`,
+      };
+    }
+    if (configured) {
+      return { status: 'shadow', effective: false, blockedReason: null };
+    }
+    return { status: 'off', effective: false, blockedReason: null };
+  }
+
+  if (runtime) {
+    return { status: 'active', effective: true, blockedReason: null };
+  }
+  if (configured) {
+    return { status: 'shadow', effective: false, blockedReason: null };
+  }
+  return { status: 'off', effective: false, blockedReason: null };
 }
 
 function loadRegularWatchState(input = {}) {
@@ -129,31 +174,24 @@ function evaluateRegularWatchState(state = {}, options = {}) {
     const parentEffective = parent ? parent.effective : true;
     const parentBlockedReason = parent?.blocked_reason || null;
     const dependencyBlocked = Boolean(parentKey && !parentEffective);
-    const locked = Boolean(meta.locked);
-    const configConflict = runtime && !configured;
+    const configConflict = runtime && !configured && meta.category === 'two_key_runtime_toggle';
 
     if (configConflict) {
       warnings.push(`${key} runtime toggle is on but config is off`);
     }
 
-    let status = 'off';
-    let blockedReason = null;
-    let effective = false;
-
-    if (locked) {
-      status = 'locked';
-      blockedReason = 'not_implemented';
-    } else if (dependencyBlocked) {
-      status = (configured || runtime) ? 'blocked' : 'off';
-      blockedReason = parentBlockedReason || `${parentKey} is off`;
-      blockedFeatures.push(meta.label);
-    } else if (configured && runtime) {
-      status = 'active';
-      effective = true;
-    } else if (configured || runtime) {
-      status = 'blocked';
-      blockedReason = `${key} requires config and runtime enablement`;
-    }
+    const resolved = resolveRegularWatchFeatureStatus(meta, {
+      configured,
+      runtime,
+      parentEffective,
+    });
+    const status = dependencyBlocked
+      ? (configured || runtime ? 'blocked' : 'off')
+      : resolved.status;
+    const blockedReason = dependencyBlocked
+      ? (parentBlockedReason || `${parentKey} is off`)
+      : resolved.blockedReason || null;
+    const effective = dependencyBlocked ? false : Boolean(resolved.effective);
 
     const computed = {
       key,
@@ -168,16 +206,16 @@ function evaluateRegularWatchState(state = {}, options = {}) {
       changed_by: normalized.features[key]?.changed_by || null,
       source: normalized.features[key]?.source || null,
       reason: normalized.features[key]?.reason || null,
-      locked,
+      category: meta.category,
     };
 
-    if (!dependencyBlocked && !locked && !configured && !runtime) {
-      computed.status = 'off';
-      computed.blocked_reason = null;
+    if (status === 'blocked') {
+      blockedFeatures.push(meta.label);
     }
 
-    if (dependencyBlocked) {
-      computed.effective = false;
+    if (!dependencyBlocked && !configured && !runtime) {
+      computed.status = 'off';
+      computed.blocked_reason = null;
     }
 
     featureEntries[key] = computed;
@@ -186,8 +224,8 @@ function evaluateRegularWatchState(state = {}, options = {}) {
   const counts = {
     off: 0,
     active: 0,
+    shadow: 0,
     blocked: 0,
-    locked: 0,
     error: 0,
   };
   for (const feature of Object.values(featureEntries)) {
@@ -202,6 +240,10 @@ function evaluateRegularWatchState(state = {}, options = {}) {
     blocked_features: blockedFeatures,
     warnings: [...new Set(warnings)],
     master_enabled: Boolean(featureEntries.REGULAR_WATCH_INTELLIGENCE_ENABLED?.effective),
+    feature_categories: {
+      display_runtime_toggle: FEATURE_KEYS.filter((key) => FEATURE_META[key].category === 'display_runtime_toggle'),
+      two_key_runtime_toggle: FEATURE_KEYS.filter((key) => FEATURE_META[key].category === 'two_key_runtime_toggle'),
+    },
     dependency_chain: FEATURE_KEYS.map((key) => ({
       key,
       label: FEATURE_META[key].label,
@@ -265,19 +307,7 @@ function updateRegularWatchFeatureState({
     };
   }
 
-  if (meta.locked) {
-    return {
-      ok: false,
-      error: 'feature_locked',
-      action: 'enable',
-      featureKey: key,
-      message: `${meta.label} is locked and not implemented yet`,
-      blocked_reason: 'not_implemented',
-      state: evaluated,
-    };
-  }
-
-  if (!parseBoolish(env?.[key], false)) {
+  if (meta.category === 'two_key_runtime_toggle' && !parseBoolish(env?.[key], false)) {
     return {
       ok: false,
       error: 'feature_disabled_in_config',
@@ -328,6 +358,7 @@ function resolveFeatureAncestry(features = {}, featureKey = null) {
       key: currentKey,
       label: meta.label,
       effective: Boolean(features[currentKey]?.effective),
+      category: meta.category || null,
     });
     currentKey = meta.parent;
   }

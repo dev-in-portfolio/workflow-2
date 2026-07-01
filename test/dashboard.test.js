@@ -531,7 +531,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.live.anti_churn_summary.recent_winner_protection.length, 1);
   assert.equal(snapshot.live.setup_fatigue_summary.active_setup_count, 1);
   assert.equal(snapshot.live.meme_monitor_state.summary.master_enabled, false);
-  assert(snapshot.live.meme_monitor_state.summary.blocked_features.includes('Reddit Scanner'));
+  assert.deepEqual(snapshot.live.meme_monitor_state.summary.blocked_features, []);
   assert.equal(snapshot.live.session_guards.buy_blocked, true);
   assert.equal(snapshot.live.session_guards.manage_only, true);
   assert.equal(snapshot.live.risk_budget_sizing.config.enabled, true);
@@ -551,7 +551,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.setup_fatigue_active_count, 1);
   assert.equal(snapshot.summary.session_guard_buy_blocked, true);
   assert.equal(snapshot.summary.meme_monitor_enabled, false);
-  assert(snapshot.summary.meme_monitor_blocked_features.includes('Hot Slot Rotation'));
+  assert.deepEqual(snapshot.summary.meme_monitor_blocked_features, []);
   assert.equal(snapshot.summary.risk_budget_sizing_enabled, true);
   assert.equal(snapshot.summary.risk_budget_latest_candidate_count, 1);
   assert.equal(snapshot.watch.dynamicHotList.status, 'disabled');

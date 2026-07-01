@@ -346,7 +346,7 @@ function render() {
   ]);
 
   $('memeMonitorPill').textContent = statusLabel(memeFeatures.MEME_MONITOR_ENABLED?.status || 'off');
-  $('memeMonitorPill').className = `pill ${memeFeatures.MEME_MONITOR_ENABLED?.status === 'blocked' ? 'critical' : memeFeatures.MEME_MONITOR_ENABLED?.status === 'enabled' || memeFeatures.MEME_MONITOR_ENABLED?.status === 'shadow' ? 'ok' : memeFeatures.MEME_MONITOR_ENABLED?.status === 'locked' ? 'warn' : 'warn'}`;
+  $('memeMonitorPill').className = `pill ${['blocked', 'missing_credentials', 'error'].includes(String(memeFeatures.MEME_MONITOR_ENABLED?.status || '').toLowerCase()) ? 'critical' : ['active', 'shadow'].includes(String(memeFeatures.MEME_MONITOR_ENABLED?.status || '').toLowerCase()) ? 'ok' : String(memeFeatures.MEME_MONITOR_ENABLED?.status || '').toLowerCase() === 'locked' ? 'warn' : 'warn'}`;
   $('memeMonitorSource').textContent = `Meme feature state source: ${memeSummary.source || meme.source || 'env + runtime state'}`;
   $('memeMonitorHint').textContent = memeSummary.blocked_features?.length
     ? `Blocked features: ${memeSummary.blocked_features.join(', ')}`
@@ -406,7 +406,7 @@ function render() {
     : 'Auto Action remains disabled unless a safe implementation path exists.';
 
   $('regularWatchPill').textContent = statusLabel(regularWatchStatus?.regularWatchIntelligence?.status || regularWatch?.status || 'off');
-  $('regularWatchPill').className = `pill ${regularWatchStatus?.regularWatchIntelligence?.status === 'blocked' ? 'critical' : regularWatchStatus?.regularWatchIntelligence?.status === 'active' ? 'ok' : regularWatchStatus?.regularWatchIntelligence?.status === 'locked' ? 'warn' : 'warn'}`;
+  $('regularWatchPill').className = `pill ${['blocked', 'error', 'missing_credentials'].includes(String(regularWatchStatus?.regularWatchIntelligence?.status || '').toLowerCase()) ? 'critical' : ['active', 'shadow'].includes(String(regularWatchStatus?.regularWatchIntelligence?.status || '').toLowerCase()) ? 'ok' : String(regularWatchStatus?.regularWatchIntelligence?.status || '').toLowerCase() === 'locked' ? 'warn' : 'warn'}`;
   $('regularWatchSource').textContent = `Regular Watch feature state source: ${regularWatchFeatureState?.source || regularWatch?.source || 'env + runtime state'}`;
   $('regularWatchHint').textContent = regularWatchFeatureState?.blocked_features?.length
     ? `Blocked features: ${regularWatchFeatureState.blocked_features.join(', ')}`
@@ -579,6 +579,7 @@ function renderMemeStateRow(label, feature) {
   }
   const status = String(feature.status || 'off').toUpperCase();
   const details = [
+    `category ${feature.category || 'unknown'}`,
     feature.configured ? 'config on' : 'config off',
     feature.runtime ? 'runtime on' : 'runtime off',
     feature.effective ? 'effective' : 'inactive',
@@ -593,10 +594,10 @@ function renderRegularWatchStateRow(label, feature) {
   }
   const status = String(feature.status || 'off').toUpperCase();
   const details = [
+    `category ${feature.category || 'unknown'}`,
     feature.configured ? 'config on' : 'config off',
     feature.runtime ? 'runtime on' : 'runtime off',
     feature.effective ? 'effective' : 'inactive',
-    feature.locked ? 'locked' : 'unlocked',
   ].join(' / ');
   const blocked = feature.blocked_reason ? ` | ${feature.blocked_reason}` : '';
   return [label, `${status} | ${details}${blocked}`];

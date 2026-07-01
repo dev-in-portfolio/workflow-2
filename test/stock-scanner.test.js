@@ -1679,6 +1679,8 @@ test('stock scanner ignores dynamic watchlist symbols when the feature is disabl
 });
 
 test('stock scanner includes fresh dynamic watchlist symbols and keeps expired symbols out', async () => {
+  const freshScoredAt = new Date().toISOString();
+  const freshExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const harness = createScannerHarness({
     env: {
       MEME_MONITOR_ENABLED: 'true',
@@ -1695,8 +1697,8 @@ test('stock scanner includes fresh dynamic watchlist symbols and keeps expired s
       OLD: rankedSnapshot({ bid: 29.90, ask: 30.10, previousClose: 29.50, volume: 250_000, timestamp: '2026-06-19T15:00:00.000Z' }),
     },
     dynamicHotList: {
-      generatedAt: '2026-07-01T00:00:00.000Z',
-      lastScoredAt: '2026-07-01T00:00:00.000Z',
+      generatedAt: freshScoredAt,
+      lastScoredAt: freshScoredAt,
       mode: 'active',
       source: 'test',
       enabled: true,
@@ -1709,7 +1711,7 @@ test('stock scanner includes fresh dynamic watchlist symbols and keeps expired s
         status: 'dynamic_watch',
         reasonCodes: ['social_heat'],
         riskWarnings: [],
-        expiresAt: '2026-07-02T15:00:00.000Z',
+        expiresAt: freshExpiresAt,
       }],
       hotHotList: [],
       expired: [{

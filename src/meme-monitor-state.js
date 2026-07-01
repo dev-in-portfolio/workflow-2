@@ -22,22 +22,44 @@ const FEATURE_KEYS = [
 ];
 
 const FEATURE_META = {
-  MEME_MONITOR_ENABLED: { label: 'Meme Monitor', parent: null, shadowable: true },
-  MEME_REDDIT_SCANNER_ENABLED: { label: 'Reddit Scanner', parent: 'MEME_MONITOR_ENABLED', shadowable: true },
-  MEME_HOT_LIST_ENABLED: { label: 'Hot List', parent: 'MEME_REDDIT_SCANNER_ENABLED', shadowable: true },
-  MEME_DYNAMIC_WATCHLIST_ENABLED: { label: 'Dynamic Watchlist', parent: 'MEME_HOT_LIST_ENABLED', shadowable: false },
-  MEME_PRIORITY_OVERRIDE_ENABLED: { label: 'Priority Override', parent: 'MEME_DYNAMIC_WATCHLIST_ENABLED', shadowable: false },
-  MEME_HOT_SLOT_ROTATION_ENABLED: { label: 'Hot Slot Rotation', parent: 'MEME_PRIORITY_OVERRIDE_ENABLED', shadowable: false },
-  MEME_AUTO_ACTION_ENABLED: { label: 'Auto Action', parent: 'MEME_HOT_SLOT_ROTATION_ENABLED', locked: true, shadowable: false },
-  MEME_SOURCE_REDDIT_ENABLED: { label: 'Reddit Source', parent: null, sourceFlag: true },
-  MEME_SOURCE_ALPACA_MARKET_ENABLED: { label: 'Alpaca Market Source', parent: null, sourceFlag: true },
-  MEME_SOURCE_ALPACA_ASSETS_ENABLED: { label: 'Alpaca Asset Source', parent: null, sourceFlag: true },
-  MEME_SOURCE_NASDAQ_HALTS_ENABLED: { label: 'Nasdaq Halt Source', parent: null, sourceFlag: true },
-  MEME_SOURCE_SEC_EDGAR_ENABLED: { label: 'SEC EDGAR Source', parent: null, sourceFlag: true },
-  MEME_SOURCE_STOCKTWITS_ENABLED: { label: 'Stocktwits Source', parent: null, sourceFlag: true },
-  MEME_SOURCE_POLYGON_ENABLED: { label: 'Polygon Source', parent: null, sourceFlag: true },
-  MEME_SOURCE_ALPHA_VANTAGE_ENABLED: { label: 'Alpha Vantage Source', parent: null, sourceFlag: true },
+  MEME_MONITOR_ENABLED: { label: 'Meme Monitor', parent: null, category: 'display_runtime_toggle' },
+  MEME_REDDIT_SCANNER_ENABLED: { label: 'Reddit Scanner', parent: 'MEME_MONITOR_ENABLED', category: 'display_runtime_toggle' },
+  MEME_HOT_LIST_ENABLED: { label: 'Hot List', parent: 'MEME_REDDIT_SCANNER_ENABLED', category: 'display_runtime_toggle' },
+  MEME_DYNAMIC_WATCHLIST_ENABLED: { label: 'Dynamic Watchlist', parent: 'MEME_HOT_LIST_ENABLED', category: 'two_key_runtime_toggle' },
+  MEME_PRIORITY_OVERRIDE_ENABLED: { label: 'Priority Override', parent: 'MEME_DYNAMIC_WATCHLIST_ENABLED', category: 'two_key_runtime_toggle' },
+  MEME_HOT_SLOT_ROTATION_ENABLED: { label: 'Hot Slot Rotation', parent: 'MEME_PRIORITY_OVERRIDE_ENABLED', category: 'two_key_runtime_toggle' },
+  MEME_AUTO_ACTION_ENABLED: { label: 'Auto Action', parent: 'MEME_HOT_SLOT_ROTATION_ENABLED', category: 'locked' },
+  MEME_SOURCE_REDDIT_ENABLED: { label: 'Reddit Source', parent: null, category: 'source_runtime_toggle' },
+  MEME_SOURCE_ALPACA_MARKET_ENABLED: { label: 'Alpaca Market Source', parent: null, category: 'source_runtime_toggle' },
+  MEME_SOURCE_ALPACA_ASSETS_ENABLED: { label: 'Alpaca Asset Source', parent: null, category: 'source_runtime_toggle' },
+  MEME_SOURCE_NASDAQ_HALTS_ENABLED: { label: 'Nasdaq Halt Source', parent: null, category: 'source_runtime_toggle' },
+  MEME_SOURCE_SEC_EDGAR_ENABLED: { label: 'SEC EDGAR Source', parent: null, category: 'source_runtime_toggle' },
+  MEME_SOURCE_STOCKTWITS_ENABLED: { label: 'Stocktwits Source', parent: null, category: 'source_runtime_toggle' },
+  MEME_SOURCE_POLYGON_ENABLED: { label: 'Polygon Source', parent: null, category: 'source_runtime_toggle' },
+  MEME_SOURCE_ALPHA_VANTAGE_ENABLED: { label: 'Alpha Vantage Source', parent: null, category: 'source_runtime_toggle' },
 };
+
+const SOURCE_CREDENTIALS = {
+  MEME_SOURCE_REDDIT_ENABLED: ['REDDIT_CLIENT_ID', 'REDDIT_CLIENT_SECRET'],
+  MEME_SOURCE_ALPACA_MARKET_ENABLED: ['ALPACA_API_KEY_ID', 'ALPACA_API_SECRET_KEY'],
+  MEME_SOURCE_ALPACA_ASSETS_ENABLED: ['ALPACA_API_KEY_ID', 'ALPACA_API_SECRET_KEY'],
+  MEME_SOURCE_STOCKTWITS_ENABLED: ['STOCKTWITS_API_KEY'],
+  MEME_SOURCE_POLYGON_ENABLED: ['POLYGON_API_KEY'],
+  MEME_SOURCE_ALPHA_VANTAGE_ENABLED: ['ALPHA_VANTAGE_API_KEY'],
+};
+
+const SOURCE_STATUS_PRIORITY = new Set([
+  'missing_credentials',
+  'blocked',
+  'error',
+  'rate_limited',
+  'private',
+  'banned',
+  'quarantined',
+  'inaccessible',
+  'source_not_found_or_inaccessible',
+  'source_private_or_banned',
+]);
 
 function resolveMemeMonitorStatePath(input = {}) {
   if (typeof input === 'string') return path.resolve(input);
@@ -67,6 +89,125 @@ function defaultMemeMonitorState() {
     source: 'env + runtime state',
     features,
   };
+}
+
+function resolveSourceFeatureStatus(key, { configured = false, runtime = false, env = process.env, parentEffective = true, current = {} } = {}) {
+  if (!parentEffective) {
+    return {
+      status: configured || runtime ? 'blocked' : 'off',
+      effective: false,
+      blockedReason: `${FEATURE_META[key]?.parent || 'parent'} is off`,
+    };
+  }
+
+  if (!runtime) {
+    return {
+      status: configured ? 'shadow' : 'off',
+      effective: false,
+      blockedReason: null,
+    };
+  }
+
+  const credentialNames = SOURCE_CREDENTIALS[key] || [];
+  const missingCredentials = credentialNames.length
+    && credentialNames.some((name) => !String(env?.[name] || '').trim());
+  if (missingCredentials) {
+    return {
+      status: 'missing_credentials',
+      effective: false,
+      blockedReason: 'missing_credentials',
+    };
+  }
+
+  const persistedStatus = normalizeSourceStatusValue(current.status || current.reason || current.blocked_reason || null);
+  if (SOURCE_STATUS_PRIORITY.has(persistedStatus) && persistedStatus !== 'missing_credentials') {
+    return {
+      status: persistedStatus,
+      effective: false,
+      blockedReason: current.blocked_reason || current.reason || persistedStatus,
+    };
+  }
+
+  return {
+    status: 'active',
+    effective: true,
+    blockedReason: null,
+  };
+}
+
+function resolveSourceStatusValue(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'inactive') return 'blocked';
+  if (normalized === 'enabled') return 'active';
+  return normalized;
+}
+
+function normalizeSourceStatusValue(value) {
+  return resolveSourceStatusValue(value);
+}
+
+function resolveFeatureStatus(meta, { configured = false, runtime = false, env = process.env, parentEffective = true, current = {} } = {}) {
+  if (!parentEffective) {
+    return {
+      status: configured || runtime ? 'blocked' : 'off',
+      effective: false,
+      blockedReason: `${meta.parent || 'parent'} is off`,
+    };
+  }
+
+  if (meta.category === 'locked') {
+    return {
+      status: 'locked',
+      effective: false,
+      blockedReason: 'locked',
+    };
+  }
+
+  if (meta.category === 'display_runtime_toggle') {
+    if (runtime) {
+      return { status: 'active', effective: true, blockedReason: null };
+    }
+    if (configured) {
+      return { status: 'shadow', effective: false, blockedReason: null };
+    }
+    return { status: 'off', effective: false, blockedReason: null };
+  }
+
+  if (meta.category === 'two_key_runtime_toggle') {
+    if (configured && runtime) {
+      return { status: 'active', effective: true, blockedReason: null };
+    }
+    if (runtime && !configured) {
+      return {
+        status: 'blocked',
+        effective: false,
+        blockedReason: `${meta.label} requires config allowment`,
+      };
+    }
+    if (configured) {
+      return { status: 'shadow', effective: false, blockedReason: null };
+    }
+    return { status: 'off', effective: false, blockedReason: null };
+  }
+
+  if (meta.category === 'source_runtime_toggle') {
+    return resolveSourceFeatureStatus(current.key || '', {
+      configured,
+      runtime,
+      env,
+      parentEffective,
+      current,
+    });
+  }
+
+  if (runtime) {
+    return { status: 'active', effective: true, blockedReason: null };
+  }
+  if (configured) {
+    return { status: 'shadow', effective: false, blockedReason: null };
+  }
+  return { status: 'off', effective: false, blockedReason: null };
 }
 
 function loadMemeMonitorState(input = {}) {
@@ -136,73 +277,30 @@ function evaluateMemeMonitorState(state = {}, options = {}) {
     const parentKey = meta.parent;
     const parent = parentKey ? featureEntries[parentKey] : null;
     const parentEffective = parent ? parent.effective : true;
-    const parentBlockingReason = parent && parent.blocked_reason ? parent.blocked_reason : null;
-    const configConflict = runtime && !configured;
     const dependencyBlocked = Boolean(parentKey && !parentEffective);
-    let status = 'off';
-    let blockedReason = null;
-    let effective = false;
-    const locked = Boolean(meta.locked);
-    const sourceFlag = Boolean(meta.sourceFlag);
+    const resolved = resolveFeatureStatus(meta, {
+      configured,
+      runtime,
+      env,
+      parentEffective,
+      current: { ...normalized.features[key], key },
+    });
+    const blockedReason = dependencyBlocked
+      ? (parent?.blocked_reason || `${parentKey} is off`)
+      : resolved.blockedReason || null;
+    const effective = dependencyBlocked ? false : Boolean(resolved.effective);
+    const status = dependencyBlocked
+      ? (configured || runtime ? 'blocked' : 'off')
+      : resolved.status;
 
-    if (configConflict && !sourceFlag) {
+    if (runtime && !configured && meta.category === 'two_key_runtime_toggle') {
       warnings.push(`${key} runtime toggle is on but config is off`);
     }
-
-    if (sourceFlag) {
-      if (runtime) {
-        status = 'active';
-        effective = true;
-      } else if (configured) {
-        status = 'shadow';
-        effective = false;
-      } else {
-        status = 'off';
-        effective = false;
+    if (meta.category === 'source_runtime_toggle') {
+      const issueStatus = resolveSourceStatusValue(status);
+      if (issueStatus && issueStatus !== 'active' && issueStatus !== 'shadow' && issueStatus !== 'off') {
+        warnings.push(`${key} source is ${issueStatus}`);
       }
-    } else if (dependencyBlocked) {
-      blockedReason = parentBlockingReason || `${parentKey} is off`;
-      if (configured || runtime) {
-        status = 'blocked';
-      }
-      blockedFeatures.push(meta.label);
-    } else if (locked) {
-      if (configured || runtime) {
-        status = 'locked';
-        blockedReason = 'MEME_AUTO_ACTION_ENABLED is locked and not implemented';
-        blockedFeatures.push(meta.label);
-      }
-    } else if (meta.shadowable) {
-      if (configured || runtime) {
-        status = 'shadow';
-      }
-      effective = configured && runtime;
-    } else if (configured && runtime) {
-      status = 'enabled';
-      effective = true;
-    } else {
-      status = 'off';
-      effective = false;
-    }
-
-    if (!sourceFlag && !dependencyBlocked && !locked && !configured && runtime) {
-      status = 'off';
-      blockedReason = null;
-      effective = false;
-    }
-
-    if (!dependencyBlocked && !locked && configured && !runtime && meta.shadowable) {
-      status = 'shadow';
-    }
-
-    if (!dependencyBlocked && !locked && configured && runtime && meta.shadowable) {
-      status = 'shadow';
-      effective = true;
-    }
-
-    if (!dependencyBlocked && !locked && configured && runtime && !meta.shadowable) {
-      status = 'enabled';
-      effective = true;
     }
 
     const computed = {
@@ -218,17 +316,11 @@ function evaluateMemeMonitorState(state = {}, options = {}) {
       changed_by: normalized.features[key]?.changed_by || null,
       source: normalized.features[key]?.source || null,
       reason: normalized.features[key]?.reason || null,
-      shadowable: meta.shadowable,
-      locked,
-      source_flag: sourceFlag,
+      category: meta.category,
     };
 
-    if (!dependencyBlocked && !locked && !configured && !runtime) {
-      computed.status = 'off';
-    }
-
-    if (dependencyBlocked) {
-      computed.effective = false;
+    if (status === 'blocked' || status === 'missing_credentials' || status === 'error') {
+      blockedFeatures.push(meta.label);
     }
 
     featureEntries[key] = computed;
@@ -237,9 +329,10 @@ function evaluateMemeMonitorState(state = {}, options = {}) {
   const counts = {
     off: 0,
     shadow: 0,
-    enabled: 0,
+    active: 0,
     blocked: 0,
     locked: 0,
+    missing_credentials: 0,
     error: 0,
   };
   for (const feature of Object.values(featureEntries)) {
@@ -254,6 +347,12 @@ function evaluateMemeMonitorState(state = {}, options = {}) {
     blocked_features: blockedFeatures,
     warnings: [...new Set(warnings)],
     master_enabled: Boolean(featureEntries.MEME_MONITOR_ENABLED?.effective),
+    feature_categories: {
+      display_runtime_toggle: FEATURE_KEYS.filter((key) => FEATURE_META[key].category === 'display_runtime_toggle'),
+      two_key_runtime_toggle: FEATURE_KEYS.filter((key) => FEATURE_META[key].category === 'two_key_runtime_toggle'),
+      source_runtime_toggle: FEATURE_KEYS.filter((key) => FEATURE_META[key].category === 'source_runtime_toggle'),
+      locked: FEATURE_KEYS.filter((key) => FEATURE_META[key].category === 'locked'),
+    },
     dependency_chain: FEATURE_KEYS.map((key) => ({
       key,
       label: FEATURE_META[key].label,
@@ -317,7 +416,7 @@ function updateMemeMonitorFeatureState({
     };
   }
 
-  if (meta.locked) {
+  if (meta.category === 'locked') {
     return {
       ok: false,
       error: 'feature_locked',
@@ -329,7 +428,7 @@ function updateMemeMonitorFeatureState({
     };
   }
 
-  if (!meta.sourceFlag && !parseBoolish(env?.[key], false)) {
+  if (meta.category === 'two_key_runtime_toggle' && !parseBoolish(env?.[key], false)) {
     return {
       ok: false,
       error: 'feature_disabled_in_config',
@@ -380,6 +479,7 @@ function resolveFeatureAncestry(features = {}, featureKey = null) {
       key: currentKey,
       label: meta.label,
       effective: Boolean(features[currentKey]?.effective),
+      category: meta.category || null,
     });
     currentKey = meta.parent;
   }

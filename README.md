@@ -20,6 +20,14 @@ This repository is a simplified Live Market trading control plane with a direct-
 - Risk enforcement is deterministic code, not an LLM prompt.
 - The operator dashboard does not include liquidation, manual buy, manual sell, or cancel buttons.
 
+## Feature Control Model
+
+- Meme Monitor and Regular Watch each split controls into runtime-only display toggles, two-key toggles that need both config allowment and a dashboard toggle, source toggles that can be validated at runtime, and locked controls that stay disabled.
+- The dashboard Actions tab shows each feature's category, config allowment, runtime toggle, effective state, and any block reason so you can see why something is on or off.
+- Meme Monitor Reddit sources are tiered through `MEME_REDDIT_SOURCES_TIER_1`, `MEME_REDDIT_SOURCES_TIER_2`, `MEME_REDDIT_SOURCES_TIER_3`, `MEME_REDDIT_SOURCES_TICKER_SPECIFIC`, and `MEME_REDDIT_SOURCES_OPTIONAL_HIGH_NOISE`.
+- Optional high-noise sources stay off by default unless you explicitly enable them.
+- Auto Action remains locked until a safe implementation path exists.
+
 ## Architecture
 
 Market data providers

@@ -262,6 +262,7 @@ function buildFeatureRows(memeState, regularWatchIntelligence) {
     ['Regular Watch', regularWatchFeatures.REGULAR_WATCH_INTELLIGENCE_ENABLED?.status || regularWatchIntelligence?.status || 'off'],
     ['Regular Priority Scoring', regularWatchFeatures.REGULAR_WATCH_PRIORITY_SCORING_ENABLED?.status || 'off'],
     ['Regular Scanner Ranking', regularWatchFeatures.REGULAR_WATCH_SCANNER_RANKING_ENABLED?.status || 'off'],
+    ['Regular Position Awareness', regularWatchFeatures.REGULAR_WATCH_POSITION_AWARENESS_ENABLED?.status || 'off'],
   ];
 }
 
@@ -302,7 +303,7 @@ function renderFeatureChip(label, status) {
 
 function watchTone(status) {
   const value = String(status || '').toLowerCase();
-  if (['watching', 'moving', 'tradable', 'hot_hot', 'shadow', 'live', 'enabled'].includes(value)) return 'green';
+  if (['watching', 'moving', 'tradable', 'hot_hot', 'shadow', 'live', 'enabled', 'active'].includes(value)) return 'green';
   if (['blocked', 'excluded', 'stale', 'disabled', 'halted'].includes(value)) return 'amber';
   if (['error', 'critical'].includes(value)) return 'red';
   return 'cyan';
@@ -310,7 +311,7 @@ function watchTone(status) {
 
 function featureTone(status) {
   const value = String(status || '').toLowerCase();
-  if (['enabled', 'shadow', 'live'].includes(value)) return 'green';
+  if (['enabled', 'active', 'shadow', 'live'].includes(value)) return 'green';
   if (['blocked', 'locked', 'off', 'disabled', 'stale'].includes(value)) return 'amber';
   if (['error', 'critical'].includes(value)) return 'red';
   return 'cyan';

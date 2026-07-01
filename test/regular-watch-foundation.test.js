@@ -42,8 +42,8 @@ test('regular watch defaults stay off with safe status placeholders', () => {
   assert.equal(state.features.REGULAR_WATCH_INTELLIGENCE_ENABLED.status, 'off');
   assert.equal(state.features.REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED.status, 'off');
   assert.equal(state.features.REGULAR_WATCH_PRIORITY_SCORING_ENABLED.status, 'off');
-  assert.equal(state.features.REGULAR_WATCH_SCANNER_RANKING_ENABLED.status, 'locked');
-  assert.equal(state.features.REGULAR_WATCH_POSITION_AWARENESS_ENABLED.status, 'locked');
+  assert.equal(state.features.REGULAR_WATCH_SCANNER_RANKING_ENABLED.status, 'off');
+  assert.equal(state.features.REGULAR_WATCH_POSITION_AWARENESS_ENABLED.status, 'off');
   assert.equal(status.status, 'disabled');
   assert.equal(status.stale, true);
   assert.deepEqual(status.regularWatchList, []);
@@ -87,7 +87,28 @@ test('regular watch scanner ranking cannot enable while priority scoring is off'
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.error, 'feature_locked');
+  assert.equal(result.error, 'dependency_blocked');
+});
+
+test('regular watch scanner ranking still requires config allowment', () => {
+  const { dataDir } = tempWorkspace();
+  const filePath = resolveRegularWatchStatePath({ dataDir });
+  const result = updateRegularWatchFeatureState({
+    featureKey: 'REGULAR_WATCH_SCANNER_RANKING_ENABLED',
+    enabled: true,
+    env: {
+      REGULAR_WATCH_INTELLIGENCE_ENABLED: 'true',
+      REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: 'true',
+      REGULAR_WATCH_PRIORITY_SCORING_ENABLED: 'true',
+      REGULAR_WATCH_SCANNER_RANKING_ENABLED: 'false',
+    },
+    filePath,
+    changedBy: 'test',
+    source: 'unit-test',
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'feature_disabled_in_config');
 });
 
 test('regular watch runtime state does not rewrite .env.local', () => {
