@@ -1443,9 +1443,10 @@ test('dashboard server serves the new Home, Status, and Policy tabs', async () =
   assert(alerts.includes('Alerts'));
   assert(watch.includes('Watch'));
   assert(watch.includes('Regular Watch List'));
-  assert(watch.includes('Regular Watch Movers'));
+  assert(watch.includes('Regular Watch Movers List'));
   assert(watch.includes('Dynamic Hot List From Alerts'));
   assert(watch.includes('Hot Hot List'));
+  assert.equal((watch.match(/class="panel watch-panel"/g) || []).length, 4);
   assert(watch.includes('Rotation eligible'));
   assert(watch.includes('Eviction candidate'));
   assert(watch.includes('Last rotation decision'));

@@ -68,9 +68,25 @@ function buildSummaryLine(snapshot, watch, featureRows, error) {
   if (error) {
     return `Snapshot error: ${error}`;
   }
+  const regularWatchStatus = String(watch.regularWatchIntelligence?.status || 'off').toUpperCase();
+  const memeMonitorStatus = String(watch.memeMonitor?.dynamicWatchlist?.status || watch.memeMonitor?.priorityOverride?.status || watch.memeMonitor?.hotSlotRotation?.status || 'off').toUpperCase();
+  const hotSlotRotationStatus = formatHotSlotRotationStatus(watch.hotSlotRotation || watch.memeMonitor?.hotSlotRotation || {});
+  const lastScanAt = watch.regularWatchIntelligence?.lastRunAt || watch.regularWatchIntelligence?.generatedAt || snapshot?.timestamp || null;
+  const sourceWarnings = [
+    watch.regularWatchIntelligence?.lastError ? `Regular Watch: ${watch.regularWatchIntelligence.lastError}` : null,
+    watch.dynamicHotList?.lastError ? `Dynamic Hot List: ${watch.dynamicHotList.lastError}` : null,
+    watch.hotHotList?.lastError ? `Hot Hot List: ${watch.hotHotList.lastError}` : null,
+  ].filter(Boolean);
   const statusText = `${formatCount(watch.regularWatchList?.length || 0)} approved symbols, ${formatCount(watch.regularWatchMovers?.length || 0)} movers, ${formatCount(watch.dynamicHotList?.symbols?.length || 0)} dynamic alerts, ${formatCount(watch.hotHotList?.symbols?.length || 0)} hot hot symbols.`;
   const featureText = featureRows.map(([label, status]) => `${label}: ${String(status || 'off').toUpperCase()}`).join(' | ');
-  return `${statusText} Actions tab state: ${featureText}.`;
+  const summaryBits = [
+    `Regular Watch ${regularWatchStatus}`,
+    `Meme Monitor ${memeMonitorStatus}`,
+    `Hot Slot Rotation ${hotSlotRotationStatus}`,
+    `Last scan ${formatClock(lastScanAt)}`,
+    `Source warnings ${sourceWarnings.length ? sourceWarnings.join(' | ') : 'none'}`,
+  ];
+  return `${statusText} ${summaryBits.join(' | ')}. Actions tab state: ${featureText}.`;
 }
 
 function renderRegularWatchList(items) {
