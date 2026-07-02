@@ -89,7 +89,7 @@ function createDashboardServer(options = {}) {
     repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
     env: options.env || process.env,
     fetchImpl: options.fetchImpl || globalThis.fetch,
-    traderPort: Number(options.traderPort || DEFAULT_TRADER_CONTROL_PORT),
+    traderPort: Number(options.traderPort || options.env?.TRADER_PORT || options.env?.PORT || DEFAULT_TRADER_CONTROL_PORT),
   });
   const memeMonitor = options.memeMonitor || createMemeMonitorLoop({
     repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
