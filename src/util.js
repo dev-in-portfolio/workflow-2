@@ -81,7 +81,7 @@ function roundEquityPrice(value) {
   return Number(numericValue.toFixed(decimals));
 }
 
-async function fetchWithTimeout(fetchImpl, url, { timeoutMs = 5000, headers = {}, ...init } = {}) {
+async function fetchWithTimeout(fetchImpl, url, { timeoutMs = 5000, headers = {}, cache: _cache, ...init } = {}) {
   // New external source adapters should prefer src/source-fetch.js so cache,
   // status classification, and redaction stay consistent across the app.
   const controller = new AbortController();
