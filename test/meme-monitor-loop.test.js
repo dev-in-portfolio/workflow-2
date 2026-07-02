@@ -63,17 +63,22 @@ test('meme monitor loop stays inactive when the master flag is off', async () =>
   assert.equal(status.redditScanner.status, 'off');
 });
 
-test('meme monitor loop stays inactive when the reddit flag is off', async () => {
+test('meme monitor loop still runs its shadow path when the reddit flag is off', async () => {
   const { repoRoot, dataDir } = tempWorkspace();
+  const featureEnv = {
+    MEME_MONITOR_ENABLED: 'true',
+    MEME_HOT_LIST_ENABLED: 'true',
+  };
+  const env = {
+    ...featureEnv,
+    MEME_REDDIT_SCANNER_ENABLED: 'false',
+  };
+  enableMemeFeatures({ dataDir, env: featureEnv });
   const collectorCalls = [];
   const loop = createMemeMonitorLoop({
     repoRoot,
     dataDir,
-    env: {
-      MEME_MONITOR_ENABLED: 'true',
-      MEME_REDDIT_SCANNER_ENABLED: 'false',
-      MEME_HOT_LIST_ENABLED: 'true',
-    },
+    env,
     collector: {
       collectSources: async () => {
         collectorCalls.push('called');
@@ -84,7 +89,10 @@ test('meme monitor loop stays inactive when the reddit flag is off', async () =>
 
   const status = await loop.refresh();
   assert.equal(collectorCalls.length, 0);
-  assert.equal(status.redditScanner.status, 'off');
+  assert.equal(status.enabled, true);
+  assert.equal(status.redditScanner.status, 'shadow');
+  assert.equal(status.hotList.status, 'shadow');
+  assert.equal(status.hotHotScoring.status, 'shadow');
 });
 
 test('meme monitor loop writes a shadow hot list with reasons and expiration', async () => {

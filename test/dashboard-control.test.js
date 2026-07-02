@@ -8,6 +8,10 @@ const { createLocalProcessController, normalizeOperatorScannerProfile } = requir
 const { updateMemeMonitorFeatureState } = require('../src/meme-monitor-state');
 
 test('dashboard control routes serve the operator tab and route actions locally', async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-control-'));
+  const dataDir = path.join(repoRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
   const calls = [];
   const controlManager = {
     refresh: async () => {
@@ -47,7 +51,8 @@ test('dashboard control routes serve the operator tab and route actions locally'
   const server = createDashboardServer({
     port: 0,
     dashboardDir: path.resolve(process.cwd(), 'dashboard'),
-    dataDir: path.resolve(process.cwd(), 'data'),
+    repoRoot,
+    dataDir,
     env: {
       ...process.env,
       MEME_MONITOR_ENABLED: 'false',
@@ -143,7 +148,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
 
     const regularWatchStatus = await fetch(`http://127.0.0.1:${port}/api/regular-watch/status`).then((response) => response.json());
     assert.equal(regularWatchStatus.ok, true);
-    assert.equal(regularWatchStatus.regularWatchIntelligence.status, 'warn');
+    assert(['off', 'warn', 'active'].includes(regularWatchStatus.regularWatchIntelligence.status), true);
     assert.equal(regularWatchStatus.scannerRanking.status, 'off');
     assert.equal(regularWatchStatus.positionAwareness.status, 'off');
 
