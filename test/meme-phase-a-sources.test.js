@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { URL } = require('url');
 const {
   fetchAlpacaMarketSignals,
@@ -31,6 +34,7 @@ function textResponse(text, { ok = true, status = 200 } = {}) {
 }
 
 test('phase A adapters surface market, tradability, halt, and SEC signals', async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'meme-phase-a-sources-'));
   const fetchImpl = async (url) => {
     if (String(url).includes('/v2/stocks/snapshots')) {
       return jsonResponse({
@@ -79,6 +83,7 @@ test('phase A adapters surface market, tradability, halt, and SEC signals', asyn
       MEME_MARKET_CONFIRMATION_MIN_SCORE: '70',
     },
     fetchImpl,
+    repoRoot,
     symbols: ['GME'],
   });
   assert.equal(market.sourceStatus.status, 'active');
@@ -92,17 +97,18 @@ test('phase A adapters surface market, tradability, halt, and SEC signals', asyn
       ALPACA_API_SECRET_KEY: 'secret',
     },
     fetchImpl,
+    repoRoot,
     symbols: ['GME'],
   });
   assert.equal(assets.sourceStatus.status, 'active');
   assert.equal(assets.symbols[0].tradableStatus, 'blocked');
   assert.equal(assets.symbols[0].marketContext.excluded, true);
 
-  const halts = await fetchNasdaqHaltsSignals({ env: {}, fetchImpl, symbols: ['GME'] });
+  const halts = await fetchNasdaqHaltsSignals({ env: {}, fetchImpl, repoRoot, symbols: ['GME'] });
   assert.equal(halts.sourceStatus.status, 'active');
   assert.equal(halts.symbols[0].haltStatus, 'halted');
 
-  const sec = await fetchSecEdgarSignals({ env: { MEME_SEC_EDGAR_LOOKBACK_DAYS: '5' }, fetchImpl, symbols: ['GME'] });
+  const sec = await fetchSecEdgarSignals({ env: { MEME_SEC_EDGAR_LOOKBACK_DAYS: '5' }, fetchImpl, repoRoot, symbols: ['GME'] });
   assert.equal(sec.sourceStatus.status, 'active');
   assert.equal(sec.symbols[0].catalystScore > 0, true);
   assert(sec.symbols[0].riskWarnings.includes('sec_offering_risk_detected'));

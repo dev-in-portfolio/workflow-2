@@ -83,7 +83,7 @@ test('source fetch timeout wrapper does not pass cache metadata to fetch', async
   const result = await fetchJsonWithTimeout(fetchImpl, 'https://example.com/data', {
     timeoutMs: 10,
     cache: {
-      cacheDir: path.join(os.tmpdir(), 'source-cache-regression'),
+      cacheDir: fs.mkdtempSync(path.join(os.tmpdir(), 'source-cache-regression-')),
       source: 'alpacaMarket',
       category: 'snapshots',
       key: 'SPCX',

@@ -76,6 +76,7 @@ async function runRegularWatchSources(options = {}) {
   const sourceResults = await runEnabledSources({
     env,
     fetchImpl: timedFetch,
+    repoRoot,
     symbols,
     timeoutMs,
     sourceRuntime,
@@ -141,7 +142,7 @@ async function runRegularWatchSources(options = {}) {
   return saveRegularWatchStatus(status, { dataDir, filePath: statusPath });
 }
 
-async function runEnabledSources({ env, fetchImpl, symbols, timeoutMs, sourceRuntime } = {}) {
+async function runEnabledSources({ env, fetchImpl, repoRoot, symbols, timeoutMs, sourceRuntime } = {}) {
   const sourceStatusMap = {};
   const sourceSignals = [];
   let anyErrors = false;
@@ -161,15 +162,15 @@ async function runEnabledSources({ env, fetchImpl, symbols, timeoutMs, sourceRun
   };
 
   addResult('alpacaMarket', sourceRuntime.marketConfirmation || sourceRuntime.assetValidation || sourceRuntime.haltCheck || sourceRuntime.secRiskCheck
-    ? await fetchAlpacaMarketSignals({ env, fetchImpl, symbols, timeoutMs })
+    ? await fetchAlpacaMarketSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs })
     : inactiveSource('alpacaMarket'));
 
   addResult('alpacaAssets', sourceRuntime.assetValidation || sourceRuntime.positionAwareness
-    ? await fetchAlpacaAssetSignals({ env, fetchImpl, symbols, timeoutMs })
+    ? await fetchAlpacaAssetSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs })
     : inactiveSource('alpacaAssets'));
 
   addResult('nasdaqHalts', sourceRuntime.haltCheck
-    ? await fetchNasdaqHaltsSignals({ env, fetchImpl, symbols, timeoutMs })
+    ? await fetchNasdaqHaltsSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs })
     : inactiveSource('nasdaqHalts'));
 
   addResult('secEdgar', sourceRuntime.secRiskCheck || sourceRuntime.newsCatalyst

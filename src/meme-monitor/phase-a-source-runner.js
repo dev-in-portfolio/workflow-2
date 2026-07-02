@@ -22,6 +22,7 @@ function resolvePhaseASourceRuntime(env = process.env, runtimeState = null) {
 async function runPhaseASources(options = {}) {
   const env = options.env || process.env;
   const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const repoRoot = options.repoRoot || process.cwd();
   const runtimeState = options.runtimeState || null;
   const sourceRuntime = resolvePhaseASourceRuntime(env, runtimeState);
   const timeoutMs = Math.max(1000, Number(env.MEME_PHASE_A_SOURCE_TIMEOUT_MS || options.timeoutMs || 5000) || 5000);
@@ -87,7 +88,7 @@ async function runPhaseASources(options = {}) {
 
   const symbols = [...phaseASymbols.keys()].slice(0, maxSymbolsPerRun);
   if (sourceRuntime.alpacaMarket) {
-    const market = await fetchAlpacaMarketSignals({ env, fetchImpl, symbols, timeoutMs });
+    const market = await fetchAlpacaMarketSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs });
     sources.alpacaMarket = market.sourceStatus;
     for (const signal of market.symbols) {
       const entry = phaseASymbols.get(signal.symbol) || createPhaseASymbolEntry(signal.symbol);
@@ -104,7 +105,7 @@ async function runPhaseASources(options = {}) {
   }
 
   if (sourceRuntime.alpacaAssets) {
-    const assets = await fetchAlpacaAssetSignals({ env, fetchImpl, symbols, timeoutMs });
+    const assets = await fetchAlpacaAssetSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs });
     sources.alpacaAssets = assets.sourceStatus;
     for (const signal of assets.symbols) {
       const entry = phaseASymbols.get(signal.symbol) || createPhaseASymbolEntry(signal.symbol);
@@ -121,7 +122,7 @@ async function runPhaseASources(options = {}) {
   }
 
   if (sourceRuntime.nasdaqHalts) {
-    const halts = await fetchNasdaqHaltsSignals({ env, fetchImpl, symbols, timeoutMs });
+    const halts = await fetchNasdaqHaltsSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs });
     sources.nasdaqHalts = halts.sourceStatus;
     for (const signal of halts.symbols) {
       const entry = phaseASymbols.get(signal.symbol) || createPhaseASymbolEntry(signal.symbol);
@@ -138,7 +139,7 @@ async function runPhaseASources(options = {}) {
   }
 
   if (sourceRuntime.secEdgar) {
-    const sec = await fetchSecEdgarSignals({ env, fetchImpl, symbols, timeoutMs });
+    const sec = await fetchSecEdgarSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs });
     sources.secEdgar = sec.sourceStatus;
     for (const signal of sec.symbols) {
       const entry = phaseASymbols.get(signal.symbol) || createPhaseASymbolEntry(signal.symbol);
@@ -204,7 +205,7 @@ async function runPhaseASources(options = {}) {
   };
 }
 
-async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000 } = {}) {
+async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000, repoRoot = process.cwd() } = {}) {
   const apiKeyId = String(env?.ALPACA_API_KEY_ID || '').trim();
   const apiSecretKey = String(env?.ALPACA_API_SECRET_KEY || '').trim();
   const baseUrl = String(env?.ALPACA_DATA_BASE_URL || '').trim() || 'https://data.alpaca.markets';
@@ -226,7 +227,7 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
     const result = await fetchJsonWithTimeout(fetchImpl, url, {
       timeoutMs,
       headers: alpacaHeaders(apiKeyId, apiSecretKey),
-      cache: sourceCacheOptions({ env, cacheKey: symbols.join(',') }, 'alpacaMarket', 'snapshots', timeoutMs),
+      cache: sourceCacheOptions({ env, repoRoot, cacheKey: symbols.join(',') }, 'alpacaMarket', 'snapshots', timeoutMs),
     });
     const { response, body } = result;
     if (!response.ok) {
@@ -295,7 +296,7 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
   }
 }
 
-async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000 } = {}) {
+async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000, repoRoot = process.cwd() } = {}) {
   const apiKeyId = String(env?.ALPACA_API_KEY_ID || '').trim();
   const apiSecretKey = String(env?.ALPACA_API_SECRET_KEY || '').trim();
   const baseUrl = String(env?.ALPACA_API_BASE_URL || '').trim() || 'https://paper-api.alpaca.markets';
@@ -315,7 +316,7 @@ async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs
     const result = await fetchJsonWithTimeout(fetchImpl, `${trimTrailingSlash(baseUrl)}/v2/assets`, {
       timeoutMs,
       headers: alpacaHeaders(apiKeyId, apiSecretKey),
-      cache: sourceCacheOptions({ env, cacheKey: 'assets' }, 'alpacaAssets', 'assets', timeoutMs),
+      cache: sourceCacheOptions({ env, repoRoot, cacheKey: 'assets' }, 'alpacaAssets', 'assets', timeoutMs),
     });
     const { response, body } = result;
     if (!response.ok) {
@@ -358,7 +359,7 @@ async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs
   }
 }
 
-async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000 } = {}) {
+async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000, repoRoot = process.cwd() } = {}) {
   const feedUrl = String(env?.NASDAQ_HALTS_RSS_URL || 'https://www.nasdaqtrader.com/Trader.aspx?id=TradeHaltRSS');
   if (!symbols.length) {
     return {
@@ -370,7 +371,7 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs
     const result = await fetchTextWithTimeout(fetchImpl, feedUrl, {
       timeoutMs,
       headers: { 'user-agent': env?.REDDIT_USER_AGENT || 'workflow-2-meme-monitor' },
-      cache: sourceCacheOptions({ env, cacheKey: feedUrl }, 'nasdaqHalts', 'rss', timeoutMs),
+      cache: sourceCacheOptions({ env, repoRoot, cacheKey: feedUrl }, 'nasdaqHalts', 'rss', timeoutMs),
     });
     const { response, text } = result;
     if (!response.ok) {
@@ -400,7 +401,7 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs
   }
 }
 
-async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000 } = {}) {
+async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000, repoRoot = process.cwd() } = {}) {
   const lookbackDays = Math.max(1, Number(env?.MEME_SEC_EDGAR_LOOKBACK_DAYS || 5) || 5);
   if (!symbols.length) {
     return {
@@ -409,7 +410,7 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 
     };
   }
   try {
-    const tickerMap = await fetchSecTickerMap(fetchImpl, timeoutMs);
+    const tickerMap = await fetchSecTickerMap(fetchImpl, timeoutMs, repoRoot);
     const out = [];
     for (const symbol of symbols) {
       const entry = tickerMap.get(symbol.toUpperCase());
@@ -426,7 +427,7 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 
         continue;
       }
       const cik = String(entry.cik).padStart(10, '0');
-      const filings = await fetchSecFilings(fetchImpl, cik, timeoutMs);
+      const filings = await fetchSecFilings(fetchImpl, cik, timeoutMs, repoRoot);
       const recent = filterRecentFilings(filings, lookbackDays);
       const riskWarnings = [];
       const reasonCodes = ['sec_edgar_source_active'];
@@ -479,11 +480,11 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 
   }
 }
 
-async function fetchSecTickerMap(fetchImpl, timeoutMs = 5000) {
+async function fetchSecTickerMap(fetchImpl, timeoutMs = 5000, repoRoot = process.cwd()) {
   const result = await fetchJsonWithTimeout(fetchImpl, 'https://www.sec.gov/files/company_tickers.json', {
     timeoutMs,
     headers: { 'user-agent': 'workflow-2-meme-monitor' },
-    cache: sourceCacheOptions({ repoRoot: process.cwd(), cacheKey: 'ticker-map' }, 'secEdgar', 'ticker-map', timeoutMs),
+    cache: sourceCacheOptions({ repoRoot, cacheKey: 'ticker-map' }, 'secEdgar', 'ticker-map', timeoutMs),
   });
   if (!result.response.ok) return new Map();
   const body = result.body;
@@ -497,11 +498,11 @@ async function fetchSecTickerMap(fetchImpl, timeoutMs = 5000) {
   return map;
 }
 
-async function fetchSecFilings(fetchImpl, cik, timeoutMs = 5000) {
+async function fetchSecFilings(fetchImpl, cik, timeoutMs = 5000, repoRoot = process.cwd()) {
   const result = await fetchJsonWithTimeout(fetchImpl, `https://data.sec.gov/submissions/CIK${cik}.json`, {
     timeoutMs,
     headers: { 'user-agent': 'workflow-2-meme-monitor' },
-    cache: sourceCacheOptions({ repoRoot: process.cwd(), cacheKey: cik }, 'secEdgar', 'filings', timeoutMs),
+    cache: sourceCacheOptions({ repoRoot, cacheKey: cik }, 'secEdgar', 'filings', timeoutMs),
   });
   if (!result.response.ok) return [];
   const body = result.body;
