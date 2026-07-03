@@ -593,6 +593,69 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert(snapshot.source_health.length >= 5);
 });
 
+test('dashboard snapshot reports resolved port and prefers controller trader', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-port-trader-'));
+  const dataDir = path.join(tempDir, 'data');
+  fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+
+  const buildTrader = (mode) => http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/risk-policy') {
+      res.end(JSON.stringify({ accepted: true, policy_snapshot: { source: mode, policy: {} } }));
+      return;
+    }
+    res.end(JSON.stringify({ status: 'ok', mode, timestamp: '2026-07-03T00:00:00.000Z' }));
+  });
+  const staleTrader = buildTrader('direct');
+  const activeTrader = buildTrader('minimal-v1');
+  await new Promise((resolve) => staleTrader.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => activeTrader.listen(0, '127.0.0.1', resolve));
+  const activePort = activeTrader.address().port;
+  const activeBaseUrl = `http://127.0.0.1:${activePort}`;
+
+  const controlManager = {
+    async refresh() {
+      return {
+        trader: { status: 'running', port: activePort, base_url: activeBaseUrl },
+        scanner: { status: 'running', profile: 'live-market' },
+        workflow: { status: 'running' },
+      };
+    },
+  };
+
+  const snapshot = await buildDashboardSnapshot({
+    port: 1111,
+    dataDir,
+    env: {
+      DASHBOARD_TRADER_PORTS: String(staleTrader.address().port),
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
+    },
+    fetchImpl: global.fetch,
+  }, {
+    dataDir,
+    controlManager,
+  }, {
+    dashboardPort: 1112,
+    startedAt: '2026-07-03T00:00:00.000Z',
+  });
+
+  await new Promise((resolve) => staleTrader.close(resolve));
+  await new Promise((resolve) => activeTrader.close(resolve));
+
+  assert.equal(snapshot.dashboard.port, 1112);
+  assert.equal(snapshot.dashboard.base_url, 'http://127.0.0.1:1112');
+  assert.equal(snapshot.dashboard.trader_base_url, activeBaseUrl);
+  assert.equal(snapshot.dashboard.trader_discovery.selected, activeBaseUrl);
+});
+
 test('dashboard snapshot includes watch data when watch fixtures exist', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-watch-test-'));
   const dataDir = path.join(tempDir, 'data');

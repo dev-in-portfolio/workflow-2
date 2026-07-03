@@ -473,12 +473,21 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const nowProvider = options.nowProvider || (() => new Date());
   const currentDate = nowProvider();
   const now = nowIso();
-  const dashboardPort = options.port || state.dashboardPort || DEFAULT_DASHBOARD_PORT;
+  const dashboardPort = state.dashboardPort || options.port || DEFAULT_DASHBOARD_PORT;
+  const controlState = context.controlManager?.refresh
+    ? await context.controlManager.refresh()
+    : context.controlManager?.getState?.() || null;
+  const controlTraderBaseUrl = controlState?.trader?.status === 'running'
+    ? controlState.trader.base_url
+    : null;
   const traderDiscovery = await resolveTraderBaseUrl({
     env: runtimeEnv,
     fetchImpl,
-    preferredBaseUrl: options.traderBaseUrl || runtimeEnv.DASHBOARD_TRADER_BASE_URL || runtimeEnv.TRADER_BASE_URL || null,
-    candidatePorts: parsePortList(runtimeEnv.DASHBOARD_TRADER_PORTS, DEFAULT_TRADER_PORTS),
+    preferredBaseUrl: options.traderBaseUrl || runtimeEnv.DASHBOARD_TRADER_BASE_URL || runtimeEnv.TRADER_BASE_URL || controlTraderBaseUrl || null,
+    candidatePorts: uniqueNumbers([
+      controlState?.trader?.port,
+      ...parsePortList(runtimeEnv.DASHBOARD_TRADER_PORTS, DEFAULT_TRADER_PORTS),
+    ]),
   });
   const processDiscovery = await discoverRepoProcesses();
 
@@ -564,9 +573,6 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const timeline = buildOperatorTimeline(operatorTimeline, recentEntries, scannerRuntimeFile);
   const recentPolicyChanges = summarizePolicyHistory(policyHistory.entries);
   const livePositionSummary = normalizeLivePositions(livePositions);
-  const controlState = context.controlManager?.refresh
-    ? await context.controlManager.refresh()
-    : context.controlManager?.getState?.() || null;
   const exitProtection = classifyExitProtection({
     positions: livePositionSummary.positions,
     openOrders: liveOpenOrders.orders,
@@ -1332,6 +1338,12 @@ function parsePortList(raw, fallback) {
     .map((part) => Number(part.trim()))
     .filter((part) => Number.isFinite(part) && part > 0);
   return values.length ? [...new Set(values)] : fallback.slice();
+}
+
+function uniqueNumbers(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0))];
 }
 
 function readJsonFileIfPresent(filePath) {
