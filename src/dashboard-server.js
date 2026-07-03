@@ -158,7 +158,7 @@ function createDashboardServer(options = {}) {
 
     if (req.method === 'GET' && url.pathname === '/api/home-summary') {
       try {
-        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
         return sendJson(res, 200, buildHomeSummary(snapshot));
       } catch (error) {
         return sendJson(res, 500, {
@@ -172,7 +172,7 @@ function createDashboardServer(options = {}) {
 
     if (req.method === 'GET' && url.pathname === '/api/watch-snapshot') {
       try {
-        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
         return sendJson(res, 200, buildWatchSnapshotResponse(snapshot));
       } catch (error) {
         return sendJson(res, 500, {
@@ -186,7 +186,7 @@ function createDashboardServer(options = {}) {
 
     if (req.method === 'GET' && url.pathname === '/api/control-summary') {
       try {
-        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
         return sendJson(res, 200, buildControlSummary(snapshot));
       } catch (error) {
         return sendJson(res, 500, {
@@ -200,7 +200,7 @@ function createDashboardServer(options = {}) {
 
     if (req.method === 'GET' && url.pathname === '/api/source-health-summary') {
       try {
-        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
         return sendJson(res, 200, buildSourceHealthSummary(snapshot));
       } catch (error) {
         return sendJson(res, 500, {
@@ -515,6 +515,140 @@ async function getCachedSnapshot(state, options, context) {
   state.cache = snapshot;
   state.cacheAtMs = nowMs;
   return snapshot;
+}
+
+async function getSummarySnapshot(state, options, context) {
+  if (state.cache) {
+    return state.cache;
+  }
+  return buildLocalSummarySnapshot(options, context, state);
+}
+
+function buildLocalSummarySnapshot(options = {}, context = {}, state = {}) {
+  const dataDir = context.dataDir || options.dataDir || path.resolve(resolveRepoRoot(), 'data');
+  const dashboardRuntime = readJsonFileIfPresent(path.join(dataDir, 'runtime', 'dashboard-runtime.json')) || {};
+  const scannerRuntime = readJsonFileIfPresent(path.join(dataDir, 'state', 'scanner-runtime.json')) || {};
+  const memeMonitorState = loadMemeMonitorState({ env: options.runtimeEnv || options.env || process.env, repoRoot: resolveRepoRoot() });
+  const memeMonitorStatus = loadMemeMonitorStatus({ statusPath: resolveMemeMonitorStatusPath(resolveRepoRoot()) });
+  const regularWatchState = loadRegularWatchState({ statePath: resolveRegularWatchStatePath(resolveRepoRoot()) });
+  const regularWatchStatus = loadRegularWatchStatus({ dataDir });
+  const dynamicHotList = loadDynamicHotList({ storePath: resolveDynamicHotListPath(resolveRepoRoot()) });
+  const watch = buildWatchSnapshot({
+    approvedSymbols: scannerRuntime.active_symbols || scannerRuntime.approved_symbols || [],
+    scannerRuntime,
+    memeMonitorState,
+    memeMonitorStatus,
+    regularWatchState,
+    regularWatchStatus,
+    dynamicHotList,
+  });
+  const sourceHealth = buildLocalSourceHealthSummary({
+    scannerRuntime,
+    memeMonitorStatus,
+    regularWatchStatus,
+  });
+  const now = nowIso();
+  return {
+    status: 'ok',
+    generated_at: now,
+    timestamp: now,
+    dashboard: {
+      port: state.dashboardPort || dashboardRuntime.dashboard_port || options.port || DEFAULT_DASHBOARD_PORT,
+      base_url: dashboardRuntime.dashboard_base_url || `http://127.0.0.1:${state.dashboardPort || dashboardRuntime.dashboard_port || options.port || DEFAULT_DASHBOARD_PORT}`,
+      trader_base_url: options.runtimeEnv?.DASHBOARD_TRADER_BASE_URL || options.runtimeEnv?.TRADER_BASE_URL || null,
+      runtime_version: DASHBOARD_RUNTIME_VERSION,
+      frontend_version: DASHBOARD_RUNTIME_VERSION,
+      pid: process.pid,
+      refresh_max_age_ms: options.cacheMaxAgeMs || DEFAULT_REFRESH_MAX_AGE_MS,
+    },
+    summary: {
+      workflow_state: 'running',
+      approved_count: scannerRuntime.approved_count ?? 0,
+      blocked_count: scannerRuntime.rejected_count ?? 0,
+      open_positions_count: scannerRuntime.portfolio?.open_positions_count ?? null,
+      open_positions_count_source: scannerRuntime.portfolio ? 'scanner-runtime' : null,
+      last_trade_at: scannerRuntime.last_order_submitted_at || null,
+    },
+    live: {
+      status: null,
+      report: null,
+      scanner_runtime: scannerRuntime,
+      meme_monitor_state: memeMonitorState,
+      meme_monitor_runtime: buildCompactMemeMonitorSummary({
+        enabled: Boolean(memeMonitorState?.summary?.master_enabled),
+        source: memeMonitorState?.summary?.source || memeMonitorState?.source || 'env + runtime state',
+        redditScanner: memeMonitorStatus?.redditScanner || null,
+        phaseA: memeMonitorStatus?.phaseA || null,
+        phaseB: memeMonitorStatus?.phaseB || null,
+        hotList: memeMonitorStatus?.hotList || null,
+        hotHotScoring: memeMonitorStatus?.hotHotScoring || null,
+        dynamicWatchlist: watch.memeMonitor?.dynamicWatchlist || null,
+        priorityOverride: watch.memeMonitor?.priorityOverride || null,
+        hotSlotRotation: watch.hotSlotRotation || null,
+        hotListPayload: dynamicHotList || null,
+      }),
+      regular_watch_intelligence: watch.regularWatchIntelligence || null,
+      regular_watch_runtime: regularWatchStatus || null,
+    },
+    control: context.controlManager?.getState?.() || null,
+    regime: {},
+    automation: {},
+    alerts: [],
+    watch,
+    memeMonitor: buildCompactMemeMonitorSummary({
+      enabled: Boolean(memeMonitorState?.summary?.master_enabled),
+      source: memeMonitorState?.summary?.source || memeMonitorState?.source || 'env + runtime state',
+      redditScanner: memeMonitorStatus?.redditScanner || null,
+      phaseA: memeMonitorStatus?.phaseA || null,
+      phaseB: memeMonitorStatus?.phaseB || null,
+      hotList: memeMonitorStatus?.hotList || null,
+      hotHotScoring: memeMonitorStatus?.hotHotScoring || null,
+      dynamicWatchlist: watch.memeMonitor?.dynamicWatchlist || null,
+      priorityOverride: watch.memeMonitor?.priorityOverride || null,
+      hotSlotRotation: watch.hotSlotRotation || null,
+      hotListPayload: dynamicHotList || null,
+    }),
+    regularWatchIntelligence: watch.regularWatchIntelligence || null,
+    regularWatchStatus,
+    source_health: sourceHealth,
+  };
+}
+
+function buildLocalSourceHealthSummary({ scannerRuntime = {}, memeMonitorStatus = {}, regularWatchStatus = {} } = {}) {
+  const sources = [];
+  const addSource = (entry) => {
+    if (!entry || !entry.source) return;
+    sources.push(entry);
+  };
+  for (const source of memeMonitorStatus?.redditScanner?.sources || []) {
+    addSource({
+      ...source,
+      group: 'reddit',
+      scope: 'meme',
+      source: source.source,
+      ok: ['active', 'ok'].includes(String(source.status || '').toLowerCase()),
+    });
+  }
+  for (const source of regularWatchStatus?.sources || regularWatchStatus?.regularWatchIntelligence?.sources || []) {
+    addSource({
+      ...source,
+      group: 'regular_watch',
+      scope: 'watch',
+      source: source.source,
+      ok: ['active', 'ok', 'read'].includes(String(source.status || '').toLowerCase()),
+    });
+  }
+  addSource({
+    source: 'scanner-runtime',
+    group: 'scanner',
+    scope: 'runtime',
+    status: scannerRuntime?.updated_at ? 'read' : 'missing',
+    ok: Boolean(scannerRuntime?.updated_at),
+    lastScanAt: scannerRuntime?.last_scan_time || scannerRuntime?.updated_at || null,
+    lastError: scannerRuntime?.last_scan_error || null,
+    symbolsDetected: scannerRuntime?.active_source_count || 0,
+  });
+  return sources;
 }
 
 async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
@@ -2304,18 +2438,36 @@ function buildWatchSnapshot({
 }
 
 function buildHomeSummary(snapshot = {}) {
-  const summary = buildSnapshotProjection(snapshot, ['watch', 'file_snapshots', 'source_health']);
   return {
-    ...summary,
+    status: snapshot.status || 'ok',
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    dashboard: snapshot.dashboard || null,
+    summary: snapshot.summary || {},
+    live: buildCompactLiveSummary(snapshot.live || {}),
+    control: buildCompactControlSummary(snapshot.control || {}),
+    regime: snapshot.regime || {},
+    alerts: Array.isArray(snapshot.alerts) ? snapshot.alerts.slice(0, 20) : [],
     dynamicTopSymbols: buildDynamicTopSymbols(snapshot),
     source_health_summary: buildSourceHealthSummary(snapshot),
   };
 }
 
 function buildControlSummary(snapshot = {}) {
-  const summary = buildSnapshotProjection(snapshot, ['watch', 'file_snapshots', 'source_health']);
   return {
-    ...summary,
+    status: snapshot.status || 'ok',
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    dashboard: snapshot.dashboard || null,
+    summary: snapshot.summary || {},
+    live: buildCompactLiveSummary(snapshot.live || {}),
+    control: buildCompactControlSummary(snapshot.control || {}),
+    regime: snapshot.regime || {},
+    automation: snapshot.automation || {},
+    alerts: Array.isArray(snapshot.alerts) ? snapshot.alerts.slice(0, 20) : [],
+    memeMonitor: buildCompactMemeMonitorSummary(snapshot.memeMonitor || {}),
+    regularWatchIntelligence: buildCompactRegularWatchSummary(snapshot.regularWatchIntelligence || {}),
+    regularWatchStatus: buildCompactRegularWatchStatus(snapshot.regularWatchStatus || {}),
     source_health_summary: buildSourceHealthSummary(snapshot),
   };
 }
@@ -2331,12 +2483,163 @@ function buildWatchSnapshotResponse(snapshot = {}) {
   };
 }
 
-function buildSnapshotProjection(snapshot = {}, omittedKeys = []) {
-  const projected = { ...snapshot };
-  for (const key of omittedKeys) {
-    delete projected[key];
-  }
-  return projected;
+function buildCompactLiveSummary(live = {}) {
+  return {
+    status: live.status || null,
+    report: live.report || null,
+    scanner_runtime: buildCompactScannerRuntime(live.scanner_runtime || {}),
+    exit_management: {
+      ...(live.exit_management || {}),
+      positions: Array.isArray(live.exit_management?.positions) ? live.exit_management.positions.slice(0, 4) : [],
+    },
+    session_guards: live.session_guards || null,
+    setup_fatigue_summary: live.setup_fatigue_summary || null,
+    candidate_lifecycle_summary: compactCandidateLifecycleSummary(live.candidate_lifecycle_summary || live.scanner_runtime?.candidate_lifecycle_summary || null),
+    execution_quality_summary: compactExecutionQualitySummary(live.execution_quality_summary || live.scanner_runtime?.execution_quality_summary || live.execution_quality_state || null),
+    meme_monitor_state: buildCompactMemeFeatureState(live.meme_monitor_state || {}),
+    meme_monitor_runtime: buildCompactMemeMonitorSummary(live.meme_monitor_runtime || {}),
+    regular_watch_intelligence: buildCompactRegularWatchSummary(live.regular_watch_intelligence || {}),
+    regular_watch_runtime: buildCompactRegularWatchStatus(live.regular_watch_runtime || {}),
+  };
+}
+
+function buildCompactScannerRuntime(runtime = {}) {
+  return {
+    updated_at: runtime.updated_at || null,
+    last_scan_time: runtime.last_scan_time || runtime.updated_at || null,
+    last_scan_error: runtime.last_scan_error || null,
+    scanner_symbol_source: runtime.scanner_symbol_source || null,
+    active_source_count: runtime.active_source_count ?? runtime.source_counts?.active_source_count ?? null,
+    approved_source_count: runtime.approved_source_count ?? runtime.source_counts?.approved_source_count ?? null,
+    regular_watch_source_count: runtime.source_counts?.regular_watch_source_count ?? null,
+    regular_watch_movers_source_count: runtime.source_counts?.regular_watch_movers_source_count ?? null,
+    candidate_count: runtime.candidate_count ?? null,
+    approved_count: runtime.approved_count ?? null,
+    rejected_count: runtime.rejected_count ?? null,
+    posted_count: runtime.posted_count ?? null,
+    preview_candidate_count: runtime.preview_candidate_count ?? null,
+    top_preview_candidates: Array.isArray(runtime.top_preview_candidates) ? runtime.top_preview_candidates.slice(0, 10) : [],
+    preview_reason_codes: Array.isArray(runtime.preview_reason_codes) ? runtime.preview_reason_codes.slice(0, 20) : [],
+    market_closed_execution_block: Boolean(runtime.market_closed_execution_block),
+    skip_summary: runtime.skip_summary || null,
+    candidate_lifecycle_summary: compactCandidateLifecycleSummary(runtime.candidate_lifecycle_summary || null),
+    execution_quality_summary: compactExecutionQualitySummary(runtime.execution_quality_summary || null),
+  };
+}
+
+function compactCandidateLifecycleSummary(summary = null) {
+  if (!summary || typeof summary !== 'object') return null;
+  return {
+    eligible_count: summary.eligible_count ?? 0,
+    blocked_count: summary.blocked_count ?? 0,
+    watched_count: summary.watched_count ?? 0,
+    expired_count: summary.expired_count ?? 0,
+    watched_candidates: Array.isArray(summary.watched_candidates) ? summary.watched_candidates.slice(0, 4) : [],
+    eligible_candidates: Array.isArray(summary.eligible_candidates) ? summary.eligible_candidates.slice(0, 4) : [],
+    blocked_candidates: Array.isArray(summary.blocked_candidates) ? summary.blocked_candidates.slice(0, 4) : [],
+    expired_candidates: Array.isArray(summary.expired_candidates) ? summary.expired_candidates.slice(0, 4) : [],
+  };
+}
+
+function compactExecutionQualitySummary(summary = null) {
+  if (!summary || typeof summary !== 'object') return null;
+  return {
+    total_trades: summary.total_trades ?? 0,
+    average_quality_score: summary.average_quality_score ?? null,
+    average_execution_penalty_points: summary.average_execution_penalty_points ?? null,
+    partial_fill_rate: summary.partial_fill_rate ?? null,
+    rejection_rate: summary.rejection_rate ?? null,
+    cancellation_rate: summary.cancellation_rate ?? null,
+    by_symbol: Array.isArray(summary.by_symbol) ? summary.by_symbol.slice(0, 5) : [],
+    by_setup: Array.isArray(summary.by_setup) ? summary.by_setup.slice(0, 5) : [],
+    recent_bad_fills: Array.isArray(summary.recent_bad_fills) ? summary.recent_bad_fills.slice(0, 5) : [],
+  };
+}
+
+function buildCompactControlSummary(control = {}) {
+  return {
+    status: control.status || null,
+    trader: control.trader || null,
+    scanner: control.scanner || null,
+    workflow: control.workflow || null,
+  };
+}
+
+function buildCompactMemeFeatureState(state = {}) {
+  return {
+    source: state.source || null,
+    summary: state.summary || {},
+    features: state.features || {},
+  };
+}
+
+function buildCompactMemeMonitorSummary(memeMonitor = {}) {
+  return {
+    enabled: memeMonitor.enabled,
+    source: memeMonitor.source,
+    redditScanner: memeMonitor.redditScanner ? {
+      enabled: memeMonitor.redditScanner.enabled,
+      status: memeMonitor.redditScanner.status,
+      lastRunAt: memeMonitor.redditScanner.lastRunAt,
+      lastError: memeMonitor.redditScanner.lastError,
+      sources: Array.isArray(memeMonitor.redditScanner.sources) ? memeMonitor.redditScanner.sources.slice(0, 20) : [],
+      symbolsDetected: memeMonitor.redditScanner.symbolsDetected,
+    } : null,
+    phaseA: compactSourceRuntime(memeMonitor.phaseA),
+    phaseB: compactSourceRuntime(memeMonitor.phaseB),
+    hotList: memeMonitor.hotList || null,
+    hotHotScoring: memeMonitor.hotHotScoring || null,
+    dynamicWatchlist: memeMonitor.dynamicWatchlist || null,
+    priorityOverride: memeMonitor.priorityOverride || null,
+    hotSlotRotation: memeMonitor.hotSlotRotation || null,
+    hotListPayload: memeMonitor.hotListPayload ? {
+      generatedAt: memeMonitor.hotListPayload.generatedAt || memeMonitor.hotListPayload.generated_at || null,
+      lastScoredAt: memeMonitor.hotListPayload.lastScoredAt || memeMonitor.hotListPayload.last_scored_at || null,
+      status: memeMonitor.hotListPayload.status || null,
+      stale: Boolean(memeMonitor.hotListPayload.stale),
+      summary: memeMonitor.hotListPayload.summary || null,
+      expired: Array.isArray(memeMonitor.hotListPayload.expired) ? memeMonitor.hotListPayload.expired.slice(0, 10) : [],
+    } : null,
+  };
+}
+
+function compactSourceRuntime(runtime = null) {
+  if (!runtime || typeof runtime !== 'object') return null;
+  return {
+    enabled: runtime.enabled,
+    status: runtime.status,
+    lastRunAt: runtime.lastRunAt,
+    lastError: runtime.lastError,
+    sources: runtime.sources || {},
+    symbols: Array.isArray(runtime.symbols) ? runtime.symbols.slice(0, 20) : [],
+  };
+}
+
+function buildCompactRegularWatchSummary(regularWatch = {}) {
+  return {
+    enabled: regularWatch.enabled,
+    status: regularWatch.status,
+    source: regularWatch.source,
+    lastRunAt: regularWatch.lastRunAt,
+    lastError: regularWatch.lastError,
+    symbolsChecked: regularWatch.symbolsChecked,
+    moversFound: regularWatch.moversFound,
+    blockedSymbols: regularWatch.blockedSymbols,
+    features: regularWatch.features || {},
+    featureState: regularWatch.featureState || regularWatch.feature_state || null,
+    scannerRanking: regularWatch.scannerRanking || null,
+    positionAwareness: regularWatch.positionAwareness || null,
+    sources: Array.isArray(regularWatch.sources) ? regularWatch.sources.slice(0, 20) : [],
+  };
+}
+
+function buildCompactRegularWatchStatus(status = {}) {
+  return {
+    regularWatchIntelligence: status.regularWatchIntelligence || null,
+    scannerRanking: status.scannerRanking || null,
+    positionAwareness: status.positionAwareness || null,
+    sources: Array.isArray(status.sources) ? status.sources.slice(0, 20) : [],
+  };
 }
 
 function buildSourceHealthSummary(snapshot = {}) {
