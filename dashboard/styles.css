@@ -406,6 +406,71 @@ h1 {
   font-size: 0.7rem;
 }
 
+.dynamic-top-panel {
+  min-height: 100%;
+}
+
+.dynamic-top-list {
+  display: grid;
+  gap: 12px;
+}
+
+.top-symbol-card {
+  border-radius: 18px;
+  padding: 16px;
+  background:
+    linear-gradient(180deg, rgba(79, 209, 255, 0.08), rgba(255,255,255,0.02)),
+    rgba(255,255,255,0.02);
+  border: 1px solid rgba(79, 209, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.top-symbol-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.top-symbol-rank {
+  min-width: 3ch;
+  font-family: var(--mono);
+  color: var(--cyan);
+  letter-spacing: 0.12em;
+}
+
+.top-symbol-card-head strong {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 1rem;
+}
+
+.top-symbol-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-top: 12px;
+}
+
+.top-symbol-card-grid span {
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.top-symbol-card-grid b {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.7rem;
+}
+
+.top-symbol-provenance {
+  grid-column: 1 / -1;
+}
+
 .hero-card,
 .panel {
   border-radius: var(--radius-xl);

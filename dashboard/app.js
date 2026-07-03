@@ -21,7 +21,7 @@ const DASHBOARD_FRONTEND_VERSION = '2026-06-21.live-market-simplified.1';
 
 async function refreshSnapshot() {
   try {
-    const response = await fetch('/api/snapshot', { cache: 'no-store' });
+    const response = await fetch('/api/home-summary', { cache: 'no-store' });
     const snapshot = await response.json();
     if (!response.ok) {
       throw new Error(snapshot?.message || snapshot?.error || `HTTP ${response.status}`);
@@ -86,6 +86,7 @@ function render(snapshot) {
   renderGuards(live?.session_guards, live?.setup_fatigue_summary);
   renderCandidateLifecycle(live?.candidate_lifecycle_summary || live?.scanner_runtime?.candidate_lifecycle_summary);
   renderExecutionQuality(live?.execution_quality_summary || live?.scanner_runtime?.execution_quality_summary || live?.execution_quality_state);
+  renderDynamicTopSymbols(snapshot.dynamicTopSymbols || []);
 }
 
 function updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus }) {
@@ -335,6 +336,38 @@ function renderExecutionQuality(summary) {
     `);
   }
   target.innerHTML = cards.join('');
+}
+
+function renderDynamicTopSymbols(items) {
+  const target = $('dynamicTopList');
+  const meta = $('dynamicTopMeta');
+  if (!target || !meta) return;
+  const list = Array.isArray(items) ? items.slice(0, 10) : [];
+  if (!list.length) {
+    meta.textContent = 'No dynamic top symbols yet';
+    target.innerHTML = '<div class="empty-state">No dynamic top symbols are available yet.</div>';
+    return;
+  }
+  meta.textContent = `${formatCount(list.length)} dynamic top symbol${list.length === 1 ? '' : 's'} ranked from the active source system`;
+  target.innerHTML = list.map((item, index) => {
+    const provenance = Array.isArray(item.source_lists) ? item.source_lists : [];
+    const provenanceText = provenance.length ? provenance.join(' · ') : item.source || 'unknown';
+    return `
+      <article class="top-symbol-card">
+        <div class="top-symbol-card-head">
+          <span class="top-symbol-rank">${String(index + 1).padStart(2, '0')}</span>
+          <strong><code>${escapeHtml(item.symbol || missingText)}</code></strong>
+          <span class="tag cyan">${escapeHtml(item.source || 'unknown')}</span>
+        </div>
+        <div class="top-symbol-card-grid">
+          <span><b>Score</b> ${escapeHtml(formatNumber(item.score, 1))}</span>
+          <span><b>Source rank</b> ${escapeHtml(formatCount(item.source_rank))}</span>
+          <span class="top-symbol-provenance"><b>Provenance</b> ${escapeHtml(provenanceText)}</span>
+          <span><b>Reason codes</b> ${escapeHtml(formatReasonList(item.reason_codes))}</span>
+        </div>
+      </article>
+    `;
+  }).join('');
 }
 
 function formatSignedCurrency(value) {

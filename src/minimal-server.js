@@ -27,6 +27,7 @@ function createMinimalTradingServer(options = {}) {
       startupPolicyPatch: options.startupPolicyPatch || null,
       initialPolicySnapshot: options.initialPolicySnapshot || null,
     }),
+    policyPath: options.policyPath || null,
     statusSnapshotPath: options.statusSnapshotPath || null,
   };
   const statusHeartbeatIntervalMs = Math.max(0, Number(options.statusHeartbeatIntervalMs || 0) || 0);
@@ -54,6 +55,13 @@ function createMinimalTradingServer(options = {}) {
     const payload = buildStatusSnapshot(state, data);
     writeStatusSnapshot(state, payload);
     send(res, statusCode, payload);
+  }
+
+  function getActivePolicySnapshot() {
+    if (state.policyPath) {
+      state.performance.loadPolicyFromDisk(state.policyPath);
+    }
+    return state.performance.getPolicySnapshot();
   }
 
   const TRADING_OPTIONS = {
@@ -84,7 +92,7 @@ function createMinimalTradingServer(options = {}) {
     } },
     { method: 'GET', pattern: '/status', handle: () => ({ status: 200, data: { status: 'ok', mode: 'minimal-v1', paper_outcome_count: state.performance.paperOutcomes.length, signal_count: state.performance.signals.length, review_queue_length: 0 } }) },
     { method: 'GET', pattern: '/daily-live-results', handle: ({ url }) => ({ status: 200, data: state.performance.getDailyReport(url.searchParams.get('date') || undefined) }) },
-    { method: 'GET', pattern: '/risk-policy', handle: () => ({ status: 200, data: { accepted: true, policy_snapshot: state.performance.getPolicySnapshot() } }) },
+    { method: 'GET', pattern: '/risk-policy', handle: () => ({ status: 200, data: { accepted: true, policy_snapshot: getActivePolicySnapshot() } }) },
     { method: 'GET', pattern: '/performance/tuning', handle: () => ({ status: 200, data: { accepted: true, tuning: state.performance.suggestTuning() } }) },
     { method: 'GET', pattern: '/overnight-status', handle: ({ url }) => {
       const report = state.performance.getDailyReport(url.searchParams.get('date') || undefined);
@@ -96,15 +104,15 @@ function createMinimalTradingServer(options = {}) {
       return { status: 200, data: { accepted: true, policy_snapshot: snapshot, learning_report: snapshot.learning_report || state.performance.getDailyReport(body.report_date || body.reportDate || undefined) } };
     } },
     { method: 'POST', patterns: ['/signal', '/signal-created', '/webhooks/signal-created'], handle: async ({ body }) => {
-      const result = await processTradingSignal({ ...body, signal: body.signal || body, portfolio: body.portfolio || body.portfolio_context || {}, market_context: body.market_context || body.marketContext || {} }, { ...TRADING_OPTIONS, policySnapshot: state.performance.getPolicySnapshot() });
+      const result = await processTradingSignal({ ...body, signal: body.signal || body, portfolio: body.portfolio || body.portfolio_context || {}, market_context: body.market_context || body.marketContext || {} }, { ...TRADING_OPTIONS, policySnapshot: getActivePolicySnapshot() });
       return { status: result.accepted ? 200 : 400, data: serializeMinimalResult(result) };
     } },
     { method: 'POST', patterns: ['/market-ingest', '/webhooks/market-ingest'], handle: async ({ body }) => {
-      const result = await processMarketInput(body, { ...TRADING_OPTIONS, policySnapshot: state.performance.getPolicySnapshot() });
+      const result = await processMarketInput(body, { ...TRADING_OPTIONS, policySnapshot: getActivePolicySnapshot() });
       return { status: result.accepted ? 200 : 400, data: serializeMinimalResult(result) };
     } },
     { method: 'POST', patterns: ['/paper-order', '/paper-order-request'], handle: async ({ body }) => {
-      const result = await processTradingSignal({ ...body, signal: body.signal || body.order || body, portfolio: body.portfolio || body.portfolio_context || {}, market_context: body.market_context || body.marketContext || {} }, { ...TRADING_OPTIONS, policySnapshot: state.performance.getPolicySnapshot() });
+      const result = await processTradingSignal({ ...body, signal: body.signal || body.order || body, portfolio: body.portfolio || body.portfolio_context || {}, market_context: body.market_context || body.marketContext || {} }, { ...TRADING_OPTIONS, policySnapshot: getActivePolicySnapshot() });
       return { status: result.accepted ? 200 : 400, data: serializeMinimalResult(result) };
     } },
     { method: 'POST', pattern: '/paper-outcomes', handle: ({ body }) => {

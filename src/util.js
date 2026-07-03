@@ -43,7 +43,7 @@ function minutesBetween(a, b) {
 }
 
 function resolveRepoRoot(cwd) {
-  return path.resolve(cwd || process.cwd());
+  return path.resolve(cwd || path.resolve(__dirname, '..'));
 }
 
 function resolveDataPath(...segments) {

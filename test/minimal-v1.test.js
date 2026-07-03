@@ -225,6 +225,76 @@ test('minimal server rejects stale data and legacy admin routes', async () => {
   }
 });
 
+test('minimal cli preserves an existing manual live policy snapshot on startup', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'minimal-policy-preserve-'));
+  const policyPath = path.join(tempDir, 'live-policy.json');
+  const manualSnapshot = {
+    source: 'manual',
+    captured_at: '2026-07-02T15:21:42.1663401-04:00',
+    report_date: '2026-07-02',
+    reason_codes: ['MANUAL_API_UPDATE'],
+    policy: {
+      killSwitch: false,
+      paperAdapterEnabled: true,
+      requireHumanApproval: true,
+      minConfidenceForPaper: 72,
+      minFreshnessScore: 55,
+      minSourceQualityScore: 40,
+      minProviderConfirmationScore: 70,
+      minCryptoProviderConfirmationScore: 35,
+      minSellProviderConfirmationScore: 60,
+      sellMaxProviderPriceDiffPct: 0.75,
+      maxSpreadSlippagePct: 7,
+      minEdgeScore: 60,
+      blockedCalibrationBuckets: [],
+      maxContradictionScore: 50,
+      maxRiskScore: 70,
+      minLiquidityScore: 40,
+      minVolume: 750,
+      maxOpenPositions: 1,
+      positionSizeMultiplier: 1,
+      sellProfitThresholdPct: 5,
+      sellNetProfitFloorDollars: 1,
+      buyNotionalTarget: 1000,
+      approvedSymbols: ['SPCX', 'SMCI', 'FDX'],
+      minBuyNotional: 25,
+      positionStopLossDollars: 0.25,
+      positionStopLossNotionalPct: 0.75,
+      positionStopLossMaxDollars: 2.5,
+      trailingProfitStartDollars: 1.3,
+      trailingProfitGivebackDollars: 0.3,
+      volatilityThresholdPct: null,
+      blockedBuyCalibrationBuckets: [],
+      blockBuys: false,
+    },
+  };
+  fs.writeFileSync(policyPath, `${JSON.stringify(manualSnapshot, null, 2)}\n`, 'utf8');
+
+  const server = startMinimalTradingServer({}, {
+    port: 0,
+    policyPath,
+    performanceHistoryPath: path.join(tempDir, 'performance-history.jsonl'),
+    policyHistoryPath: path.join(tempDir, 'policy-history.jsonl'),
+    statusSnapshotPath: path.join(tempDir, 'overnight-status.json'),
+    statusHeartbeatIntervalMs: 0,
+  });
+  await new Promise((resolve) => server.once('listening', resolve));
+  const { port } = server.address();
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/risk-policy`);
+    const payload = await response.json();
+    const diskSnapshot = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.policy_snapshot.source, 'manual');
+    assert.equal(payload.policy_snapshot.policy.killSwitch, false);
+    assert.equal(diskSnapshot.source, 'manual');
+    assert.equal(diskSnapshot.policy.killSwitch, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('minimal server exposes live report and policy tuning views', async () => {
   const performance = new PerformanceStore();
   performance.setPolicySnapshot({

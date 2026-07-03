@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 
 async function refreshSnapshot() {
   try {
-    const response = await fetch('/api/snapshot', { cache: 'no-store' });
+    const response = await fetch('/api/watch-snapshot', { cache: 'no-store' });
     const snapshot = await response.json();
     if (!response.ok) {
       throw new Error(snapshot?.message || snapshot?.error || `HTTP ${response.status}`);

@@ -156,6 +156,62 @@ function createDashboardServer(options = {}) {
       }
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/home-summary') {
+      try {
+        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildHomeSummary(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'home_summary_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/watch-snapshot') {
+      try {
+        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildWatchSnapshotResponse(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'watch_snapshot_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/control-summary') {
+      try {
+        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildControlSummary(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'control_summary_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/source-health-summary') {
+      try {
+        const snapshot = await getCachedSnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildSourceHealthSummary(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'source_health_summary_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/control/state') {
       try {
         if (controlManager?.refresh) {
@@ -474,9 +530,10 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const currentDate = nowProvider();
   const now = nowIso();
   const dashboardPort = state.dashboardPort || options.port || DEFAULT_DASHBOARD_PORT;
-  const controlState = context.controlManager?.refresh
+  const refreshedControlState = context.controlManager?.refresh
     ? await context.controlManager.refresh()
-    : context.controlManager?.getState?.() || null;
+    : undefined;
+  const controlState = refreshedControlState ?? (context.controlManager?.getState?.() || null);
   const controlTraderBaseUrl = controlState?.trader?.status === 'running'
     ? controlState.trader.base_url
     : null;
@@ -2246,6 +2303,160 @@ function buildWatchSnapshot({
   };
 }
 
+function buildHomeSummary(snapshot = {}) {
+  const summary = buildSnapshotProjection(snapshot, ['watch', 'file_snapshots', 'source_health']);
+  return {
+    ...summary,
+    dynamicTopSymbols: buildDynamicTopSymbols(snapshot),
+    source_health_summary: buildSourceHealthSummary(snapshot),
+  };
+}
+
+function buildControlSummary(snapshot = {}) {
+  const summary = buildSnapshotProjection(snapshot, ['watch', 'file_snapshots', 'source_health']);
+  return {
+    ...summary,
+    source_health_summary: buildSourceHealthSummary(snapshot),
+  };
+}
+
+function buildWatchSnapshotResponse(snapshot = {}) {
+  return {
+    status: snapshot.status || 'ok',
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    dashboard: snapshot.dashboard || null,
+    watch: snapshot.watch || null,
+    source_health_summary: buildSourceHealthSummary(snapshot),
+  };
+}
+
+function buildSnapshotProjection(snapshot = {}, omittedKeys = []) {
+  const projected = { ...snapshot };
+  for (const key of omittedKeys) {
+    delete projected[key];
+  }
+  return projected;
+}
+
+function buildSourceHealthSummary(snapshot = {}) {
+  const sourceHealth = Array.isArray(snapshot?.source_health) ? snapshot.source_health : [];
+  const sources = sourceHealth.map((entry) => summarizeSourceHealthEntry(entry));
+  const counts = sources.reduce((acc, entry) => {
+    acc.total += 1;
+    acc[entry.health_status] += 1;
+    if (!entry.ok) acc.unhealthy += 1;
+    return acc;
+  }, {
+    total: 0,
+    active: 0,
+    inactive: 0,
+    error: 0,
+    unhealthy: 0,
+  });
+  return {
+    status: counts.error > 0 ? 'degraded' : (counts.inactive > 0 ? 'warn' : 'ok'),
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    counts,
+    sources,
+  };
+}
+
+function summarizeSourceHealthEntry(entry = {}) {
+  const rawStatus = String(entry.status || 'inactive').toLowerCase();
+  const healthStatus = normalizeSourceHealthStatus(rawStatus, entry.ok);
+  return {
+    source: entry.source || null,
+    group: entry.group || null,
+    scope: entry.scope || null,
+    tier: entry.tier || null,
+    status: rawStatus,
+    health_status: healthStatus,
+    ok: healthStatus === 'active',
+    blockedReason: entry.blockedReason || null,
+    lastScanAt: entry.lastScanAt || null,
+    lastRunAt: entry.lastRunAt || null,
+    lastError: entry.lastError || entry.error || null,
+    symbolsDetected: Number.isFinite(Number(entry.symbolsDetected)) ? Number(entry.symbolsDetected) : 0,
+  };
+}
+
+function normalizeSourceHealthStatus(status = '', ok = null) {
+  const normalized = String(status || '').toLowerCase();
+  if (ok === true) return 'active';
+  if (['active', 'shadow', 'reused_records', 'ok', 'read'].includes(normalized)) return 'active';
+  if (['off', 'disabled', 'source_disabled', 'inactive', 'missing'].includes(normalized)) return 'inactive';
+  return 'error';
+}
+
+function buildDynamicTopSymbols({ watch = null, scannerRuntime = null, limit = 10 } = {}) {
+  const sourceListsBySymbol = scanSourceListsBySymbol(watch, scannerRuntime);
+  const seen = new Set();
+  const results = [];
+  const groups = [
+    { source: 'Hot Hot List', rank: 1, entries: Array.isArray(watch?.hotHotList?.symbols) ? watch.hotHotList.symbols : [] },
+    { source: 'Dynamic Hot List', rank: 2, entries: Array.isArray(watch?.dynamicHotList?.symbols) ? watch.dynamicHotList.symbols : [] },
+    { source: 'Scanner Preview', rank: 3, entries: Array.isArray(watch?.scannerPreview?.topPreviewCandidates) && watch.scannerPreview.topPreviewCandidates.length ? watch.scannerPreview.topPreviewCandidates : (Array.isArray(watch?.scannerPreview?.previewCandidates) ? watch.scannerPreview.previewCandidates : []) },
+    { source: 'Regular Watch Movers', rank: 4, entries: Array.isArray(watch?.regularWatchMovers) ? watch.regularWatchMovers : [] },
+    { source: 'Regular Watch', rank: 5, entries: Array.isArray(watch?.regularWatchList) ? watch.regularWatchList : [] },
+  ];
+
+  for (const group of groups) {
+    for (const entry of group.entries) {
+      const symbol = normalizeWatchSymbol(entry?.symbol);
+      if (!symbol || seen.has(symbol)) continue;
+      seen.add(symbol);
+      const sourceLists = resolveSourceListsForSymbol(symbol, group.source, sourceListsBySymbol);
+      results.push({
+        symbol,
+        rank: results.length + 1,
+        source: group.source,
+        source_rank: group.rank,
+        score: resolveTopSymbolScore(entry, group.source),
+        source_lists: sourceLists,
+        reason_codes: normalizeReasonList(entry?.reasonCodes || entry?.reason_codes || entry?.riskWarnings || entry?.risk_warnings),
+        status: String(entry?.status || entry?.lastDecision || 'active'),
+      });
+      if (results.length >= limit) return results;
+    }
+  }
+
+  return results;
+}
+
+function scanSourceListsBySymbol(watch = null, scannerRuntime = null) {
+  const scannerSource = watch?.scannerSource || summarizeScannerSource(scannerRuntime);
+  const sourceListsBySymbol = scannerSource?.sourceListsBySymbol && typeof scannerSource.sourceListsBySymbol === 'object'
+    ? scannerSource.sourceListsBySymbol
+    : {};
+  return sourceListsBySymbol;
+}
+
+function resolveSourceListsForSymbol(symbol, sourceLabel, sourceListsBySymbol = {}) {
+  const sourceEntry = sourceListsBySymbol?.[symbol];
+  const sourceLists = Array.isArray(sourceEntry?.source_lists) ? sourceEntry.source_lists.slice() : [];
+  if (!sourceLists.includes(sourceLabel)) sourceLists.unshift(sourceLabel);
+  return [...new Set(sourceLists.filter(Boolean))];
+}
+
+function resolveTopSymbolScore(entry = {}, sourceLabel = '') {
+  const source = String(sourceLabel || '').toLowerCase();
+  if (source.includes('hot hot')) {
+    return safeNumber(entry?.memeHeatScore ?? entry?.finalMemeScore ?? entry?.marketConfirmationScore ?? entry?.rank_score ?? entry?.score, null);
+  }
+  if (source.includes('dynamic hot')) {
+    return safeNumber(entry?.memeHeatScore ?? entry?.finalMemeScore ?? entry?.rank_score ?? entry?.score, null);
+  }
+  if (source.includes('scanner preview')) {
+    return safeNumber(entry?.adjusted_rank_score ?? entry?.rank_score ?? entry?.scannerScore ?? entry?.score, null);
+  }
+  if (source.includes('regular watch movers')) {
+    return safeNumber(entry?.regularWatchScore ?? entry?.scannerScore ?? entry?.score, null);
+  }
+  return safeNumber(entry?.regularWatchScore ?? entry?.scannerScore ?? entry?.score ?? entry?.rank_score, null);
+}
+
 function buildRegularWatchIntelligenceSnapshot({
   regularWatchState = null,
   regularWatchStatus = null,
@@ -2304,9 +2515,27 @@ function buildRegularWatchIntelligenceSnapshot({
 }
 
 function summarizeScannerPreview(runtime = null) {
-  const previewCandidates = Array.isArray(runtime?.preview_candidates) ? runtime.preview_candidates : [];
+  const sourceListsBySymbol = runtime?.source_lists_by_symbol && typeof runtime.source_lists_by_symbol === 'object'
+    ? runtime.source_lists_by_symbol
+    : {};
+  const enrichPreviewCandidate = (candidate = {}) => {
+    const symbol = normalizeWatchSymbol(candidate?.symbol);
+    const sourceLists = symbol && sourceListsBySymbol?.[symbol] && Array.isArray(sourceListsBySymbol[symbol].source_lists)
+      ? sourceListsBySymbol[symbol].source_lists.slice()
+      : [];
+    if (sourceLists.length && !sourceLists.includes('Scanner Preview')) {
+      sourceLists.unshift('Scanner Preview');
+    }
+    return {
+      ...candidate,
+      symbol,
+      source_lists: sourceLists,
+      source_list: sourceLists.join(', '),
+    };
+  };
+  const previewCandidates = Array.isArray(runtime?.preview_candidates) ? runtime.preview_candidates.map(enrichPreviewCandidate) : [];
   const topPreviewCandidates = Array.isArray(runtime?.top_preview_candidates)
-    ? runtime.top_preview_candidates
+    ? runtime.top_preview_candidates.map(enrichPreviewCandidate)
     : previewCandidates.slice(0, 5);
   const previewReasonCodes = Array.isArray(runtime?.preview_reason_codes)
     ? runtime.preview_reason_codes.slice()
@@ -3436,6 +3665,9 @@ async function handleRegularWatchAction(body = {}, context = {}) {
 module.exports = {
   DEFAULT_DASHBOARD_PORT,
   buildDashboardSnapshot,
+  buildControlSummary,
+  buildDynamicTopSymbols,
+  buildHomeSummary,
   createDashboardServer,
   fetchEndpointJson,
   fetchWithTimeout,
@@ -3453,6 +3685,8 @@ module.exports = {
   resolveDashboardDir,
   resolveDashboardSnapshotPath,
   resolveDashboardPort: resolvePreferredDashboardPort,
+  buildSourceHealthSummary,
+  buildWatchSnapshotResponse,
   resolveLossExitThresholdPct,
   resolveProfitExitThresholdPct,
   resolveTraderBaseUrl,

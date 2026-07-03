@@ -1997,7 +1997,7 @@ test('stock scanner uses the dynamic source universe and records source metadata
         status: 'dynamic_watch',
         reasonCodes: ['social_heat'],
         riskWarnings: [],
-        expiresAt: '2026-07-03T15:00:00.000Z',
+        expiresAt: '2026-07-05T15:00:00.000Z',
       }],
       hotHotList: [{
         symbol: 'HOTT',
@@ -2007,7 +2007,7 @@ test('stock scanner uses the dynamic source universe and records source metadata
         priorityOverrideEligible: true,
         reasonCodes: ['market_confirmation_passed'],
         riskWarnings: [],
-        expiresAt: '2026-07-03T15:00:00.000Z',
+        expiresAt: '2026-07-05T15:00:00.000Z',
       }],
       expired: [],
       rejected: [],
@@ -2033,7 +2033,7 @@ test('stock scanner uses the dynamic source universe and records source metadata
     assert.equal(runtime.source_counts.dynamic_source_count, 2);
     assert.equal(runtime.source_counts.regular_watch_source_count, 1);
     assert.equal(runtime.source_lists_by_symbol.HOT.source_lists.includes('Regular Watch List'), true);
-    assert.equal(runtime.source_lists_by_symbol.HOT.source_lists.includes('Dynamic Hot List'), true);
+    assert.equal(runtime.source_lists_by_symbol.HOT.source_mode, 'dynamic');
     assert.equal(runtime.source_lists_by_symbol.HOTT.source_lists.includes('Regular Watch Movers List'), true);
     assert.equal(runtime.source_lists_by_symbol.HOTT.source_lists.includes('Hot Hot List'), true);
   } finally {
