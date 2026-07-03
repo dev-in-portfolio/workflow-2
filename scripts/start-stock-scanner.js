@@ -1,7 +1,7 @@
 const { createStockScanner } = require('../src/stock-scanner');
 const { buildScannerConfig } = require('../src/scanner-config');
 const { loadRuntimeEnv } = require('../src/runtime-env');
-const { nowIso } = require('../src/util');
+const { nowIso, resolveRepoRoot } = require('../src/util');
 const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('../src/volatile-stock-universe');
 const fs = require('fs');
 const path = require('path');
@@ -12,7 +12,7 @@ function resolveLocalBaseUrl(env = process.env) {
 
 function resolvePolicyPath(env = process.env) {
   const configuredPath = String(env.LIVE_POLICY_PATH || '').trim();
-  return configuredPath ? path.resolve(configuredPath) : path.resolve(process.cwd(), 'data', 'live-policy.json');
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'live-policy.json');
 }
 
 function readLivePolicy(policyPath) {

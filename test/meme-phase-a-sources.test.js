@@ -66,8 +66,8 @@ test('phase A adapters surface market, tradability, halt, and SEC signals', asyn
         filings: {
           recent: {
             form: ['8-K', 'S-1'],
-            filingDate: ['2026-06-29', '2026-06-28'],
-            reportDate: ['2026-06-29', '2026-06-28'],
+            filingDate: ['2026-07-02', '2026-07-01'],
+            reportDate: ['2026-07-02', '2026-07-01'],
             accessionNumber: ['0001', '0002'],
           },
         },

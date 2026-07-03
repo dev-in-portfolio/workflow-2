@@ -114,6 +114,7 @@ const DEFAULTS = {
   MEME_PRIORITY_OVERRIDE_ENABLED: false,
   MEME_HOT_SLOT_ROTATION_ENABLED: false,
   MEME_AUTO_ACTION_ENABLED: false,
+  SCANNER_SYMBOL_SOURCE: 'dynamic',
 };
 
 function parseBool(value, fallback) {
@@ -255,6 +256,7 @@ const CONFIG_SCHEMA = [
   ['MEME_PRIORITY_OVERRIDE_ENABLED', 'bool', false],
   ['MEME_HOT_SLOT_ROTATION_ENABLED', 'bool', false],
   ['MEME_AUTO_ACTION_ENABLED', 'bool', false],
+  ['SCANNER_SYMBOL_SOURCE', 'string', 'dynamic', { enum: ['approved', 'dynamic', 'hybrid', 'dynamic_hot'], lower: true }],
   ['LIVE_TRADING_CONFIRMATION_PHRASE', 'string', ''],
 ];
 

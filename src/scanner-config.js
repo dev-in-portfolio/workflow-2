@@ -49,7 +49,7 @@ const SCANNER_CONFIG_KEYS = [
   'hotSlotRotationEnabled', 'hotSlotRotationMinHeatScore', 'hotSlotRotationMinMarketScore',
   'rotationRequireBreakevenOrBetter', 'rotationAllowTinyLoss', 'rotationMaxAllowedLossDollars',
   'rotationProtectStrongRunners', 'rotationRecheckAfterExit', 'rotationExitTimeoutSeconds',
-  'rotationEntryRecheckMaxAgeSeconds',
+  'rotationEntryRecheckMaxAgeSeconds', 'scannerSymbolSource',
 ];
 
 function buildScannerConfig(env = process.env) {
@@ -173,6 +173,7 @@ function buildScannerConfig(env = process.env) {
     rotationRecheckAfterExit: parseBool(env.MEME_ROTATION_RECHECK_AFTER_EXIT, true),
     rotationExitTimeoutSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_EXIT_TIMEOUT_SECONDS, 30))),
     rotationEntryRecheckMaxAgeSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_ENTRY_RECHECK_MAX_AGE_SECONDS, 30))),
+    scannerSymbolSource: String(env.SCANNER_SYMBOL_SOURCE || 'dynamic').trim().toLowerCase(),
   };
 }
 

@@ -12,6 +12,47 @@ test('dashboard watch snapshot keeps the four fixed columns and stable watch pay
   fs.writeFileSync(path.join(dataDir, 'logs', 'overnight-status.json'), JSON.stringify({ status: 'ok', mode: 'minimal-v1', timestamp: '2026-06-30T14:00:00.000Z' }));
   fs.writeFileSync(path.join(dataDir, 'performance-history.jsonl'), '');
   fs.writeFileSync(path.join(dataDir, 'policy-history.jsonl'), '');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), JSON.stringify({
+    updated_at: '2026-07-02T20:20:37.728Z',
+    last_scan_time: '2026-07-02T20:20:37.728Z',
+    candidate_count: 0,
+    approved_count: 0,
+    rejected_count: 0,
+    preview_candidate_count: 2,
+    market_closed_execution_block: true,
+    scanner_symbol_source: 'dynamic',
+    active_source_count: 2,
+    approved_source_count: 1,
+    source_counts: {
+      approved_source_count: 1,
+      regular_watch_source_count: 1,
+      regular_watch_movers_source_count: 1,
+      dynamic_hot_source_count: 1,
+      hot_hot_source_count: 1,
+      dynamic_source_count: 2,
+      active_source_count: 2,
+    },
+    preview_reason_codes: ['MARKET_CLOSED_FOR_STOCKS'],
+    preview_candidates: [
+      {
+        symbol: 'MARA',
+        source: 'scanner',
+        status: 'preview_only',
+        execution_blocked: true,
+        reason_codes: ['MARKET_CLOSED_FOR_STOCKS'],
+      },
+    ],
+    top_preview_candidates: [
+      {
+        symbol: 'MARA',
+        source: 'scanner',
+        status: 'preview_only',
+        execution_blocked: true,
+        reason_codes: ['MARKET_CLOSED_FOR_STOCKS'],
+      },
+    ],
+  }));
 
   const snapshot = await buildDashboardSnapshot({
     dataDir,
@@ -33,5 +74,8 @@ test('dashboard watch snapshot keeps the four fixed columns and stable watch pay
   assert.equal(Array.isArray(snapshot.watch.dynamicHotList.symbols), true);
   assert.equal(Array.isArray(snapshot.watch.hotHotList.symbols), true);
   assert.equal(Object.keys(snapshot.watch).includes('hotSlotRotation'), true);
+  assert.equal(snapshot.watch.scannerSource.mode, 'dynamic');
+  assert.equal(snapshot.watch.scannerSource.activeSymbolCount, 2);
+  assert.equal(snapshot.watch.scannerPreview.previewCandidateCount, 2);
+  assert.equal(snapshot.watch.scannerPreview.marketClosedExecutionBlock, true);
 });
-

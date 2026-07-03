@@ -31,6 +31,7 @@ function render(snapshot) {
   const hotHotList = Array.isArray(watch.hotHotList?.symbols) ? watch.hotHotList.symbols : [];
   const memeMonitor = watch.memeMonitor || {};
   const regularWatchIntelligence = watch.regularWatchIntelligence || snapshot?.regularWatchIntelligence || {};
+  const scannerPreview = watch.scannerPreview || regularWatchIntelligence?.scannerPreview || snapshot?.scannerPreview || {};
   const hotSlotRotation = watch.hotSlotRotation || memeMonitor?.hotSlotRotation || {};
   const featureRows = Array.isArray(watch.actionsState) && watch.actionsState.length
     ? watch.actionsState
@@ -41,7 +42,7 @@ function render(snapshot) {
   $('watchStateValue').textContent = resolveWatchState(watch);
   $('watchPill').textContent = resolveWatchPill(watch, state.error);
   $('watchPill').className = `pill ${resolveWatchPillTone(watch, state.error)}`;
-  $('watchSummary').textContent = buildSummaryLine(snapshot, watch, featureRows, state.error);
+  $('watchSummary').textContent = buildSummaryLine(snapshot, watch, scannerPreview, featureRows, state.error);
   $('watchRegularCount').textContent = formatCount(regularWatchList.length);
   $('watchMoverCount').textContent = formatCount(regularWatchMovers.length);
   $('watchDynamicCount').textContent = formatCount(dynamicHotList.length);
@@ -64,7 +65,7 @@ function render(snapshot) {
   }
 }
 
-function buildSummaryLine(snapshot, watch, featureRows, error) {
+function buildSummaryLine(snapshot, watch, scannerPreview, featureRows, error) {
   if (error) {
     return `Snapshot error: ${error}`;
   }
@@ -78,15 +79,21 @@ function buildSummaryLine(snapshot, watch, featureRows, error) {
     watch.hotHotList?.lastError ? `Hot Hot List: ${watch.hotHotList.lastError}` : null,
   ].filter(Boolean);
   const statusText = `${formatCount(watch.regularWatchList?.length || 0)} approved symbols, ${formatCount(watch.regularWatchMovers?.length || 0)} movers, ${formatCount(watch.dynamicHotList?.symbols?.length || 0)} dynamic alerts, ${formatCount(watch.hotHotList?.symbols?.length || 0)} hot hot symbols.`;
+  const scannerSource = watch.scannerSource || {};
   const featureText = featureRows.map(([label, status]) => `${label}: ${String(status || 'off').toUpperCase()}`).join(' | ');
   const summaryBits = [
     `Regular Watch ${regularWatchStatus}`,
     `Meme Monitor ${memeMonitorStatus}`,
     `Hot Slot Rotation ${hotSlotRotationStatus}`,
+    `Scanner Source ${String(scannerSource.mode || 'approved').toUpperCase()}${scannerSource.dynamicSourceEmpty ? ' (dynamic source empty)' : ''}`,
+    `Scanner Source Counts approved ${formatCount(scannerSource.approvedSourceCount || 0)}, regular watch ${formatCount(scannerSource.regularWatchSourceCount || 0)}, movers ${formatCount(scannerSource.regularWatchMoversSourceCount || 0)}, dynamic hot ${formatCount(scannerSource.dynamicHotSourceCount || 0)}, hot hot ${formatCount(scannerSource.hotHotSourceCount || 0)}`,
     `Last scan ${formatClock(lastScanAt)}`,
     `Source warnings ${sourceWarnings.length ? sourceWarnings.join(' | ') : 'none'}`,
   ];
-  return `${statusText} ${summaryBits.join(' | ')}. Actions tab state: ${featureText}.`;
+  const previewText = scannerPreview?.previewCandidateCount
+    ? `Scanner preview ${formatCount(scannerPreview.previewCandidateCount)} candidate${scannerPreview.previewCandidateCount === 1 ? '' : 's'} while market closed${Array.isArray(scannerPreview.topPreviewCandidates) && scannerPreview.topPreviewCandidates.length ? `; top symbols ${scannerPreview.topPreviewCandidates.slice(0, 3).map((entry) => `${entry?.symbol}${entry?.source_list ? ` (${entry.source_list})` : ''}`).filter(Boolean).join(', ')}` : ''}.`
+    : null;
+  return `${statusText} ${summaryBits.join(' | ')}.${previewText ? ` ${previewText}` : ''} Actions tab state: ${featureText}.`;
 }
 
 function renderRegularWatchList(items) {

@@ -1558,6 +1558,144 @@ test('stock scanner blocks stock buys while the US market is closed', async () =
   assert.equal(result.skip_summary.MARKET_CLOSED_FOR_STOCKS, 2);
 });
 
+test('stock scanner writes an off-hours preview without submitting orders', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stock-scanner-preview-'));
+  const dataDir = path.join(tempRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  const requests = [];
+  const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
+  const originalCwd = process.cwd();
+  process.chdir(tempRoot);
+
+  try {
+    const scanner = createStockScanner({
+      enabled: true,
+      baseUrl: 'https://data.alpaca.markets',
+      localBaseUrl: 'http://127.0.0.1:65535',
+      apiKeyId: 'key',
+      apiSecretKey: 'secret',
+      symbols: ['NVDA'],
+      intervalMs: 60_000,
+      cooldownMs: 60_000,
+      minMovePct: 0.25,
+      maxSpreadPct: 0.8,
+      marketOpen: false,
+      dataDir,
+      repoRoot: tempRoot,
+      runtimeStateEnabled: true,
+      marketFetch: async (url) => {
+        if (url.includes('/v2/positions')) return buildResponse([]);
+        if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+        if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+        if (url.includes('/v2/stocks/snapshots?')) {
+          return buildResponse({
+            snapshots: {
+              NVDA: {
+                latestQuote: { bp: 17.60, ap: 17.66, t: alpacaTimestamp },
+                latestTrade: { p: 17.63, t: alpacaTimestamp },
+                minuteBar: { v: 50, h: 17.72, l: 17.55, t: alpacaTimestamp },
+                prevDailyBar: { c: 17.40, v: 100000 },
+              },
+            },
+          });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      localFetch: async (...args) => {
+        requests.push(args);
+        return buildResponse({ accepted: true, final_decision: 'approved_for_paper' });
+      },
+    });
+
+    const result = await scanner.runOnce({ runId: 'stock-preview-test' });
+    scanner.stop();
+
+    const runtimePath = path.join(dataDir, 'state', 'scanner-runtime.json');
+    const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+
+    assert.equal(result.accepted, true);
+    assert.equal(requests.length, 0);
+    assert.equal(runtime.candidate_count, 0);
+    assert.equal(runtime.preview_candidate_count, 1);
+    assert.equal(runtime.market_closed_execution_block, true);
+    assert.equal(runtime.preview_reason_codes.includes('MARKET_CLOSED_FOR_STOCKS'), true);
+    assert.equal(runtime.top_preview_candidates[0].symbol, 'NVDA');
+    assert.equal(runtime.top_preview_candidates[0].status, 'preview_only');
+    assert.equal(runtime.top_preview_candidates[0].execution_blocked, true);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('stock scanner keeps market-open behavior unchanged', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stock-scanner-open-'));
+  const dataDir = path.join(tempRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  const requests = [];
+  const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
+  const originalCwd = process.cwd();
+  process.chdir(tempRoot);
+
+  try {
+    const scanner = createStockScanner({
+      enabled: true,
+      baseUrl: 'https://data.alpaca.markets',
+      localBaseUrl: 'http://127.0.0.1:65535',
+      apiKeyId: 'key',
+      apiSecretKey: 'secret',
+      symbols: ['NVDA'],
+      intervalMs: 60_000,
+      cooldownMs: 60_000,
+      minMovePct: 0.25,
+      maxSpreadPct: 0.8,
+      marketOpen: true,
+      dataDir,
+      repoRoot: tempRoot,
+      runtimeStateEnabled: true,
+      marketFetch: async (url) => {
+        if (url.includes('/v2/positions')) return buildResponse([]);
+        if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+        if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+        if (url.includes('/v2/stocks/snapshots?')) {
+          return buildResponse({
+            snapshots: {
+              NVDA: {
+                latestQuote: { bp: 17.60, ap: 17.66, t: alpacaTimestamp },
+                latestTrade: { p: 17.63, t: alpacaTimestamp },
+                minuteBar: { v: 50, h: 17.72, l: 17.55, t: alpacaTimestamp },
+                prevDailyBar: { c: 17.40, v: 100000 },
+              },
+            },
+          });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      localFetch: async (...args) => {
+        requests.push(args);
+        return buildResponse({ accepted: true, final_decision: 'approved_for_paper' });
+      },
+    });
+
+    const result = await scanner.runOnce({ runId: 'stock-open-test' });
+    scanner.stop();
+
+    const runtimePath = path.join(dataDir, 'state', 'scanner-runtime.json');
+    const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+
+    assert.equal(result.accepted, true);
+    assert.equal(requests.length, 1);
+    assert.equal(runtime.candidate_count, 1);
+    assert.equal(runtime.preview_candidate_count, 0);
+    assert.equal(Array.isArray(runtime.preview_candidates) && runtime.preview_candidates.length, 0);
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('stock scanner counts all live Alpaca positions against the max-position cap', async () => {
   const requests = [];
   const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
@@ -1734,9 +1872,9 @@ test('stock scanner includes fresh dynamic watchlist symbols and keeps expired s
   try {
     const result = await harness.scanner.runOnce({ runId: 'dynamic-enabled-test' });
     assert.equal(result.accepted, true);
-    assert.deepEqual(harness.requestedSymbols.sort(), ['AAA', 'HOT']);
+    assert.deepEqual(harness.requestedSymbols.sort(), ['HOT']);
     assert.equal(harness.requestedSymbols.includes('OLD'), false);
-    assert.deepEqual(harness.secondaryRequestedSymbols.sort(), ['AAA', 'HOT']);
+    assert.deepEqual(harness.secondaryRequestedSymbols.sort(), ['HOT']);
     assert.equal(harness.secondaryRequestedSymbols.includes('OLD'), false);
     const watchConfig = resolveScannerWatchConfig({
       env: {
@@ -1749,6 +1887,207 @@ test('stock scanner includes fresh dynamic watchlist symbols and keeps expired s
     });
     assert.equal(watchConfig.attentionSymbols.includes('HOT'), true);
     assert.equal(watchConfig.attentionSymbols.includes('OLD'), false);
+    assert.equal(watchConfig.attentionSymbols.includes('AAA'), false);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('resolveScannerWatchConfig selects approved, dynamic, and hybrid scanner source modes', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'stock-scanner-source-modes-'));
+  const dataDir = path.join(tempRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+
+  const regularWatchStatus = {
+    status: 'active',
+    regularWatchList: [{ symbol: 'HOT' }],
+    regularWatchMovers: [{ symbol: 'HOTT' }],
+    sources: [],
+  };
+  const dynamicHotList = {
+    enabled: true,
+    status: 'active',
+    dynamicHotList: [{ symbol: 'HOT', status: 'dynamic_watch' }],
+    hotHotList: [{ symbol: 'HOTT', status: 'hot_hot' }],
+    generatedAt: '2026-07-02T20:00:00.000Z',
+  };
+  fs.writeFileSync(path.join(dataDir, 'runtime', 'dynamic-hot-list.json'), JSON.stringify(dynamicHotList, null, 2));
+
+  const approved = resolveScannerWatchConfig({
+    env: { SCANNER_SYMBOL_SOURCE: 'approved' },
+    dataDir,
+    repoRoot: tempRoot,
+    approvedSymbols: ['AAA'],
+    regularWatchStatus,
+    dynamicHotListPath: path.join(dataDir, 'runtime', 'dynamic-hot-list.json'),
+    attentionSymbols: ['AAA'],
+    scannerSymbolSource: 'approved',
+    currentDate: '2026-07-02T20:00:00.000Z',
+  });
+  const dynamic = resolveScannerWatchConfig({
+    env: { SCANNER_SYMBOL_SOURCE: 'dynamic' },
+    dataDir,
+    repoRoot: tempRoot,
+    approvedSymbols: ['AAA'],
+    regularWatchStatus,
+    dynamicHotListPath: path.join(dataDir, 'runtime', 'dynamic-hot-list.json'),
+    scannerSymbolSource: 'dynamic',
+    currentDate: '2026-07-02T20:00:00.000Z',
+  });
+  const hybrid = resolveScannerWatchConfig({
+    env: { SCANNER_SYMBOL_SOURCE: 'hybrid' },
+    dataDir,
+    repoRoot: tempRoot,
+    approvedSymbols: ['AAA'],
+    regularWatchStatus,
+    dynamicHotListPath: path.join(dataDir, 'runtime', 'dynamic-hot-list.json'),
+    scannerSymbolSource: 'hybrid',
+    currentDate: '2026-07-02T20:00:00.000Z',
+  });
+
+  assert.deepEqual(approved.attentionSymbols, ['AAA']);
+  assert.equal(approved.scannerSymbolSource, 'approved');
+  assert.equal(approved.sourceCounts.approved_source_count, 1);
+  assert.equal(dynamic.scannerSymbolSource, 'dynamic');
+  assert.deepEqual(dynamic.attentionSymbols.sort(), ['HOT', 'HOTT']);
+  assert.equal(dynamic.dynamicSourceEmpty, false);
+  assert.equal(dynamic.sourceCounts.dynamic_source_count, 2);
+  assert.equal(dynamic.sourceCounts.regular_watch_source_count, 1);
+  assert.equal(dynamic.sourceCounts.dynamic_hot_source_count, 2);
+  assert.equal(dynamic.sourceCounts.hot_hot_source_count, 1);
+  assert.equal(dynamic.sourceListsBySymbol.get('HOT').source_lists.includes('Regular Watch List'), true);
+  assert.equal(dynamic.sourceListsBySymbol.get('HOT').source_lists.includes('Dynamic Hot List'), true);
+  assert.equal(dynamic.sourceListsBySymbol.get('HOTT').source_lists.includes('Regular Watch Movers List'), true);
+  assert.equal(dynamic.sourceListsBySymbol.get('HOTT').source_lists.includes('Hot Hot List'), true);
+  assert.deepEqual(hybrid.attentionSymbols.sort(), ['AAA', 'HOT', 'HOTT']);
+
+  fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('stock scanner uses the dynamic source universe and records source metadata', async () => {
+  const harness = createScannerHarness({
+    env: {
+      SCANNER_SYMBOL_SOURCE: 'dynamic',
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      TWELVEDATA_API_KEY: 'td-key',
+    },
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      HOT: rankedSnapshot({ bid: 19.90, ask: 20.10, previousClose: 19.50, volume: 200_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+      HOTT: rankedSnapshot({ bid: 29.90, ask: 30.10, previousClose: 29.50, volume: 250_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    dynamicHotList: {
+      generatedAt: '2026-07-02T20:00:00.000Z',
+      lastScoredAt: '2026-07-02T20:00:00.000Z',
+      mode: 'active',
+      source: 'test',
+      enabled: true,
+      status: 'active',
+      stale: false,
+      dynamicHotList: [{
+        symbol: 'HOT',
+        memeHeatScore: 84,
+        marketConfirmationScore: 82,
+        status: 'dynamic_watch',
+        reasonCodes: ['social_heat'],
+        riskWarnings: [],
+        expiresAt: '2026-07-03T15:00:00.000Z',
+      }],
+      hotHotList: [{
+        symbol: 'HOTT',
+        memeHeatScore: 95,
+        marketConfirmationScore: 91,
+        status: 'hot_hot',
+        priorityOverrideEligible: true,
+        reasonCodes: ['market_confirmation_passed'],
+        riskWarnings: [],
+        expiresAt: '2026-07-03T15:00:00.000Z',
+      }],
+      expired: [],
+      rejected: [],
+    },
+    regularWatchStatus: {
+      status: 'active',
+      regularWatchList: [{ symbol: 'HOT', score: 62 }],
+      regularWatchMovers: [{ symbol: 'HOTT', score: 74 }],
+      sources: [],
+    },
+  });
+
+  try {
+    const result = await harness.scanner.runOnce({ runId: 'dynamic-source-test' });
+    const runtime = JSON.parse(fs.readFileSync(harness.scannerRuntimePath, 'utf8'));
+
+    assert.equal(result.accepted, true);
+    assert.deepEqual(harness.requestedSymbols.sort(), ['HOT', 'HOTT']);
+    assert.equal(harness.requestedSymbols.includes('AAA'), false);
+    assert.equal(runtime.scanner_symbol_source, 'dynamic');
+    assert.equal(runtime.dynamic_source_empty, false);
+    assert.equal(runtime.active_source_count, 2);
+    assert.equal(runtime.source_counts.dynamic_source_count, 2);
+    assert.equal(runtime.source_counts.regular_watch_source_count, 1);
+    assert.equal(runtime.source_lists_by_symbol.HOT.source_lists.includes('Regular Watch List'), true);
+    assert.equal(runtime.source_lists_by_symbol.HOT.source_lists.includes('Dynamic Hot List'), true);
+    assert.equal(runtime.source_lists_by_symbol.HOTT.source_lists.includes('Regular Watch Movers List'), true);
+    assert.equal(runtime.source_lists_by_symbol.HOTT.source_lists.includes('Hot Hot List'), true);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('stock scanner reports an empty dynamic source without falling back to the approved list', async () => {
+  const harness = createScannerHarness({
+    env: {
+      SCANNER_SYMBOL_SOURCE: 'dynamic',
+      MEME_MONITOR_ENABLED: 'true',
+      MEME_REDDIT_SCANNER_ENABLED: 'true',
+      MEME_HOT_LIST_ENABLED: 'true',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      TWELVEDATA_API_KEY: 'td-key',
+    },
+    snapshots: {
+      AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
+    },
+    regularWatchStatus: {
+      status: 'inactive',
+      regularWatchList: [],
+      regularWatchMovers: [],
+      sources: [],
+    },
+    dynamicHotList: {
+      generatedAt: '2026-07-02T20:00:00.000Z',
+      lastScoredAt: '2026-07-02T20:00:00.000Z',
+      mode: 'active',
+      source: 'test',
+      enabled: true,
+      status: 'active',
+      stale: false,
+      dynamicHotList: [],
+      hotHotList: [],
+      expired: [],
+      rejected: [],
+    },
+  });
+
+  try {
+    const result = await harness.scanner.runOnce({ runId: 'dynamic-empty-source-test' });
+    const runtime = JSON.parse(fs.readFileSync(harness.scannerRuntimePath, 'utf8'));
+
+    assert.equal(result.accepted, true);
+    assert.deepEqual(harness.requestedSymbols, []);
+    assert.equal(runtime.scanner_symbol_source, 'dynamic');
+    assert.equal(runtime.dynamic_source_empty, true);
+    assert.equal(runtime.active_source_count, 0);
+    assert.equal(runtime.candidate_count, 0);
+    assert.equal(runtime.preview_candidate_count, 0);
   } finally {
     harness.cleanup();
   }
@@ -2030,10 +2369,13 @@ function createScannerHarness({
   const featureEnv = {
     MEME_MONITOR_ENABLED: 'true',
     MEME_REDDIT_SCANNER_ENABLED: 'true',
-    MEME_HOT_LIST_ENABLED: 'true',
-    MEME_DYNAMIC_WATCHLIST_ENABLED: 'true',
-    MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
+    MEME_HOT_LIST_ENABLED: 'false',
+    MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+    MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
     MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+    SCANNER_SYMBOL_SOURCE: String(env.SCANNER_SYMBOL_SOURCE || env.MEME_DYNAMIC_WATCHLIST_ENABLED || '').toLowerCase() === 'true'
+      ? 'dynamic'
+      : 'approved',
     SCANNER_RUNTIME_STATE_PATH: path.join(dataDir, 'state', 'scanner-runtime.json'),
     ...env,
   };

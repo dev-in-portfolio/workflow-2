@@ -2179,6 +2179,8 @@ function buildWatchSnapshot({
   return {
     regularWatchList,
     regularWatchMovers,
+    scannerSource: summarizeScannerSource(runtime),
+    scannerPreview: summarizeScannerPreview(runtime),
     dynamicHotList: {
       enabled: dynamicEnabled,
       status: dynamicEnabled ? (memeMonitorStatus?.hotList?.status || 'shadow') : 'disabled',
@@ -2282,9 +2284,49 @@ function buildRegularWatchIntelligenceSnapshot({
     regularWatchList: Array.isArray(runtime.regularWatchList) ? runtime.regularWatchList.slice() : [],
     regularWatchMovers: Array.isArray(runtime.regularWatchMovers) ? runtime.regularWatchMovers.slice() : [],
     sources: Array.isArray(runtime.sources) ? runtime.sources.slice() : [],
+    scannerPreview: summarizeScannerPreview(runtime),
     generatedAt: runtime.generatedAt || null,
     stale: Boolean(runtime.stale),
     runtime,
+  };
+}
+
+function summarizeScannerPreview(runtime = null) {
+  const previewCandidates = Array.isArray(runtime?.preview_candidates) ? runtime.preview_candidates : [];
+  const topPreviewCandidates = Array.isArray(runtime?.top_preview_candidates)
+    ? runtime.top_preview_candidates
+    : previewCandidates.slice(0, 5);
+  const previewReasonCodes = Array.isArray(runtime?.preview_reason_codes)
+    ? runtime.preview_reason_codes.slice()
+    : [];
+  return {
+    enabled: Boolean(previewCandidates.length),
+    status: previewCandidates.length ? 'preview_only' : 'off',
+    marketClosedExecutionBlock: Boolean(runtime?.market_closed_execution_block),
+    previewCandidateCount: Number(runtime?.preview_candidate_count ?? previewCandidates.length ?? 0),
+    previewCandidates: previewCandidates.slice(),
+    topPreviewCandidates: topPreviewCandidates.slice(),
+    previewReasonCodes,
+  };
+}
+
+function summarizeScannerSource(runtime = null) {
+  const sourceCounts = runtime?.source_counts || {};
+  const sourceListsBySymbol = runtime?.source_lists_by_symbol && typeof runtime.source_lists_by_symbol === 'object'
+    ? runtime.source_lists_by_symbol
+    : {};
+  return {
+    mode: String(runtime?.scanner_symbol_source || 'approved').toLowerCase(),
+    dynamicSourceEmpty: Boolean(runtime?.dynamic_source_empty),
+    activeSymbolCount: Number(runtime?.active_source_count ?? sourceCounts.active_source_count ?? 0),
+    approvedSourceCount: Number(runtime?.approved_source_count ?? sourceCounts.approved_source_count ?? 0),
+    regularWatchSourceCount: Number(sourceCounts.regular_watch_source_count ?? 0),
+    regularWatchMoversSourceCount: Number(sourceCounts.regular_watch_movers_source_count ?? 0),
+    dynamicHotSourceCount: Number(sourceCounts.dynamic_hot_source_count ?? 0),
+    hotHotSourceCount: Number(sourceCounts.hot_hot_source_count ?? 0),
+    dynamicSourceCount: Number(sourceCounts.dynamic_source_count ?? 0),
+    sourceCounts,
+    sourceListsBySymbol,
   };
 }
 
