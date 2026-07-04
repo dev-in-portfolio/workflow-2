@@ -7,6 +7,40 @@ const { createDashboardServer } = require('../src/dashboard-server');
 const { createLocalProcessController, normalizeOperatorScannerProfile } = require('../src/local-process-controller');
 const { updateMemeMonitorFeatureState } = require('../src/meme-monitor-state');
 
+test('dashboard server auto-starts regular watch loop only when requested', async () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-regular-watch-loop-'));
+  const dataDir = path.join(repoRoot, 'data');
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  let startCount = 0;
+  let stopCount = 0;
+  const regularWatchLoop = {
+    start: async () => {
+      startCount += 1;
+      return { status: 'active' };
+    },
+    stop: async () => {
+      stopCount += 1;
+      return { status: 'stopped' };
+    },
+    isRunning: () => startCount > stopCount,
+  };
+  const server = createDashboardServer({
+    repoRoot,
+    dataDir,
+    env: {},
+    regularWatchAutoStart: true,
+    regularWatchLoop,
+    controlManager: { getState: () => null },
+    memeMonitor: { getStatus: () => null },
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(startCount, 1);
+  await new Promise((resolve) => server.close(resolve));
+  assert.equal(stopCount, 1);
+});
+
 test('dashboard control routes serve the operator tab and route actions locally', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-control-'));
   const dataDir = path.join(repoRoot, 'data');

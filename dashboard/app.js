@@ -17,11 +17,62 @@ const numberFormatter = new Intl.NumberFormat('en-US', {
 });
 
 const missingText = '-';
-const DASHBOARD_FRONTEND_VERSION = '2026-06-21.live-market-simplified.1';
+const DASHBOARD_FRONTEND_VERSION = '2026-07-01.live-market-watch-intelligence.1';
+const dashboardRequest = createDashboardRequest();
+const bootstrapSnapshot = getDashboardSnapshotForPage('home');
+let lastDynamicTopSignature = '';
+let previousDynamicTopRows = loadStoredDynamicTopRows();
+
+if (bootstrapSnapshot) {
+  state.snapshot = bootstrapSnapshot;
+  state.error = null;
+  state.loading = false;
+}
+
+function createDashboardRequest() {
+  if (typeof fetch !== 'function' && typeof XMLHttpRequest === 'undefined') {
+    return null;
+  }
+  return async function request(url, options = {}) {
+    if (typeof fetch === 'function') {
+      return fetch(url, options);
+    }
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(options.method || 'GET', url, true);
+      if (options.headers) {
+        for (const [key, value] of Object.entries(options.headers)) {
+          xhr.setRequestHeader(key, value);
+        }
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) return;
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status || 0,
+          async json() {
+            return JSON.parse(xhr.responseText || 'null');
+          },
+          async text() {
+            return xhr.responseText || '';
+          },
+        });
+      };
+      xhr.onerror = () => reject(new Error(`Request failed for ${url}`));
+      xhr.send(options.body || null);
+    });
+  };
+}
 
 async function refreshSnapshot() {
+  if (!dashboardRequest) {
+    if (state.snapshot) {
+      render(state.snapshot);
+    }
+    return;
+  }
   try {
-    const response = await fetch('/api/home-summary', { cache: 'no-store' });
+    const response = await dashboardRequest('/api/home-summary', { cache: 'no-store' });
     const snapshot = await response.json();
     if (!response.ok) {
       throw new Error(snapshot?.message || snapshot?.error || `HTTP ${response.status}`);
@@ -33,7 +84,7 @@ async function refreshSnapshot() {
   } catch (error) {
     state.error = error.message;
     state.loading = false;
-    render(null);
+    render(state.snapshot || bootstrapSnapshot || {});
   }
 }
 
@@ -46,12 +97,14 @@ function render(snapshot) {
     ? Number(summary.daily_change)
     : Number(summary.paper_pnl);
   const exitPositions = Array.isArray(live?.exit_management?.positions) ? live.exit_management.positions : [];
-  const freshness = evaluateFreshness(snapshot);
+  const snapshotAgeLabel = formatDataAge(snapshot?.generated_at || snapshot?.timestamp || null);
+  const scannerAgeLabel = formatDataAge(live?.scanner_runtime?.last_scan_time || live?.scanner_runtime?.updated_at || null);
+  const freshness = evaluateFreshness(snapshot?.generated_at || snapshot?.timestamp || null);
   const scannerFreshness = evaluateFreshness(live?.scanner_runtime?.last_scan_time || live?.status?.last_request_at || null, { staleSeconds: 30, criticalSeconds: 120 });
-  const workflowState = summary.workflow_state || snapshot?.control?.workflow?.status || 'unknown';
+  const workflowState = snapshot?.control?.workflow?.status || summary.workflow_state || 'unknown';
   const botStatus = resolveBotStatus({ freshness, workflowState, status: live?.status });
   const brokerStatus = resolveBrokerStatus(live);
-  const scannerStatus = resolveScannerStatus(live, scannerFreshness);
+  const scannerStatus = resolveScannerStatus(live, scannerFreshness, snapshot?.control);
 
   const openPositionCount = Number.isFinite(Number(summary.open_positions_count))
     ? summary.open_positions_count
@@ -63,22 +116,28 @@ function render(snapshot) {
     ? 'Live broker count'
     : 'Derived fallback';
   $('lastTradeAge').textContent = lastTradeAge || missingText;
-  $('lastTradeHint').textContent = summary.last_trade_at ? `At ${formatClock(summary.last_trade_at)}` : 'No local fill today';
+  $('lastTradeHint').textContent = summary.last_trade_at
+    ? `At ${formatClock(summary.last_trade_at)}`
+    : `No live fill today. Snapshot ${snapshotAgeLabel}.`;
   $('workflowState').textContent = String(workflowState).toUpperCase();
-  $('workflowHint').textContent = 'Live Market';
-  $('todayPnl').textContent = formatSignedCurrency(dailyChange);
+  $('workflowHint').textContent = buildWorkflowHint(snapshot, snapshotAgeLabel, scannerAgeLabel);
+  renderHotListStatus(snapshot);
+  $('todayPnl').textContent = Number.isFinite(dailyChange) ? formatSignedCurrency(dailyChange) : 'No live data';
   $('todayPnl').className = Number.isFinite(dailyChange) && dailyChange >= 0 ? 'ok-text' : 'loss-text';
-  $('buyingPower').textContent = formatCurrency(summary.account_buying_power ?? summary.account_cash);
-  $('buyingPowerHint').textContent = Number.isFinite(Number(summary.account_cash)) ? `Cash ${formatCurrency(summary.account_cash)}` : 'Alpaca account';
+  $('buyingPower').textContent = formatCurrency(summary.account_buying_power ?? summary.account_cash) || 'No live account';
+  $('buyingPowerHint').textContent = Number.isFinite(Number(summary.account_cash))
+    ? `Cash ${formatCurrency(summary.account_cash)}`
+    : `No live account data. Snapshot ${snapshotAgeLabel}.`;
   $('profitSummary').textContent = buildProfitNote(dailyChange, summary, snapshot);
   $('profitStatusPill').textContent = botStatus.label;
   $('profitStatusPill').className = `pill ${botStatus.pillTone}`;
   const statusCopy = Number.isFinite(dailyChange)
     ? `Daily Change is ${formatSignedCurrency(dailyChange)} from ${summary.daily_change_source || 'snapshot'}. Local history PnL is ${formatSignedCurrency(summary.paper_pnl)}.`
-    : 'Waiting for live performance data.';
+    : `Waiting for live performance data. Snapshot ${snapshotAgeLabel}.`;
   const versionWarning = dashboardVersionWarning(snapshot);
-  $('profitStatusCopy').textContent = versionWarning || `${statusCopy} ${freshness.message} Broker ${brokerStatus.message}. Scanner ${scannerStatus.message}.`;
-  $('profitStatusCopyAlt').textContent = versionWarning || `${statusCopy} ${freshness.message} Broker ${brokerStatus.message}. Scanner ${scannerStatus.message}.`;
+  const scannerCopy = scannerStatus.detail || `Scanner data ${scannerAgeLabel}.`;
+  $('profitStatusCopy').textContent = versionWarning || `${statusCopy} ${scannerCopy} Broker ${brokerStatus.message}.`;
+  $('profitStatusCopyAlt').textContent = versionWarning || `${statusCopy} ${scannerCopy} Broker ${brokerStatus.message}.`;
   $('reportDate').textContent = snapshot?.live?.report?.date || snapshot?.live?.status?.started_at || missingText;
   renderPositionCard($('positionOne'), exitPositions[0], snapshot, { primary: true, slotLabel: 'Primary position' });
   renderPositionCard($('positionTwo'), exitPositions[1], snapshot, { primary: false, slotLabel: 'Secondary position' });
@@ -86,7 +145,7 @@ function render(snapshot) {
   renderGuards(live?.session_guards, live?.setup_fatigue_summary);
   renderCandidateLifecycle(live?.candidate_lifecycle_summary || live?.scanner_runtime?.candidate_lifecycle_summary);
   renderExecutionQuality(live?.execution_quality_summary || live?.scanner_runtime?.execution_quality_summary || live?.execution_quality_state);
-  renderDynamicTopSymbols(snapshot.dynamicTopSymbols || []);
+  renderDynamicTopSymbols(snapshot?.dynamicTopSymbols || [], snapshot);
 }
 
 function updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus }) {
@@ -129,6 +188,12 @@ function formatAge(seconds) {
   return `${Math.round(seconds / 60)}m`;
 }
 
+function formatDataAge(value) {
+  const seconds = ageInSeconds(value);
+  if (!Number.isFinite(seconds)) return 'age unknown';
+  return `${formatAge(seconds)} old`;
+}
+
 function resolveBotStatus({ freshness, workflowState, status }) {
   if (freshness.state === 'critical') {
     return { label: 'CRITICAL', tone: 'red', pillTone: 'critical' };
@@ -154,16 +219,67 @@ function resolveBrokerStatus(live) {
   return { label: 'BROKER DEGRADED', tone: 'amber', message: reason };
 }
 
-function resolveScannerStatus(live, scannerFreshness) {
+function resolveScannerStatus(live, scannerFreshness, control = null) {
+  const controlStatus = String(control?.scanner?.status || '').toLowerCase();
+  if (controlStatus === 'stopped') {
+    return { label: 'SCANNER STOPPED', tone: 'amber', message: 'stopped', detail: 'Scanner is stopped; Home is showing the last saved scanner data.' };
+  }
+  if (controlStatus === 'error') {
+    return { label: 'SCANNER ERROR', tone: 'red', message: 'error', detail: 'Scanner process is reporting an error.' };
+  }
   if (scannerFreshness.state === 'critical') {
-    return { label: 'SCANNER CRITICAL', tone: 'red', message: scannerFreshness.message };
+    return { label: 'SCANNER CRITICAL', tone: 'red', message: scannerFreshness.message, detail: `Scanner ${scannerFreshness.message.toLowerCase()}` };
   }
   if (scannerFreshness.state === 'stale') {
-    return { label: 'SCANNER STALE', tone: 'amber', message: scannerFreshness.message };
+    return { label: 'SCANNER STALE', tone: 'amber', message: scannerFreshness.message, detail: `Scanner ${scannerFreshness.message.toLowerCase()}` };
   }
   const scanTime = live?.scanner_runtime?.last_scan_time;
-  if (!scanTime) return { label: 'WAITING', tone: 'amber', message: 'No scan yet.' };
-  return { label: 'SCANNER OK', tone: 'green', message: scannerFreshness.message };
+  if (!scanTime) return { label: 'WAITING', tone: 'amber', message: 'No scan yet.', detail: 'No scanner scan has been recorded yet.' };
+  return { label: 'SCANNER OK', tone: 'green', message: scannerFreshness.message, detail: `Scanner ${scannerFreshness.message.toLowerCase()}` };
+}
+
+function buildWorkflowHint(snapshot, snapshotAgeLabel, scannerAgeLabel) {
+  const scannerStatus = String(snapshot?.control?.scanner?.status || '').toLowerCase();
+  const traderStatus = String(snapshot?.control?.trader?.status || '').toLowerCase();
+  const parts = [`Snapshot ${snapshotAgeLabel}`];
+  if (traderStatus) parts.push(`Trader ${traderStatus}`);
+  if (scannerStatus) parts.push(`Scanner ${scannerStatus}`);
+  if (!scannerStatus && scannerAgeLabel !== 'age unknown') parts.push(`Scanner data ${scannerAgeLabel}`);
+  return parts.join('. ');
+}
+
+function renderHotListStatus(snapshot = {}) {
+  const stateTarget = $('hotListState');
+  const hintTarget = $('hotListHint');
+  if (!stateTarget || !hintTarget) return;
+  const hotList = resolveHotListStatus(snapshot);
+  stateTarget.textContent = hotList.label;
+  stateTarget.className = hotList.tone;
+  hintTarget.textContent = hotList.hint;
+}
+
+function resolveHotListStatus(snapshot = {}) {
+  const status = snapshot?.hotListStatus || {};
+  const rawStatus = String(status.status || 'off').toLowerCase();
+  const label = rawStatus === 'active' || rawStatus === 'shadow' || rawStatus === 'running'
+    ? 'RUNNING'
+    : rawStatus === 'off' || rawStatus === 'disabled'
+      ? 'OFF'
+      : rawStatus.toUpperCase();
+  const tone = label === 'RUNNING' && !status.stale
+    ? 'ok-text'
+    : label === 'OFF'
+      ? 'warn-text'
+      : 'loss-text';
+  const age = status.lastScoredAt ? formatDataAge(status.lastScoredAt) : 'not scored yet';
+  const counts = `${formatCount(status.dynamicCount || 0)} dynamic, ${formatCount(status.hotHotCount || 0)} hot hot`;
+  const stale = status.stale ? 'Stale. ' : '';
+  const error = status.lastError ? ` Error: ${status.lastError}` : '';
+  return {
+    label,
+    tone,
+    hint: `${stale}${counts}. ${age}.${error}`,
+  };
 }
 
 function dashboardVersionWarning(snapshot) {
@@ -338,7 +454,7 @@ function renderExecutionQuality(summary) {
   target.innerHTML = cards.join('');
 }
 
-function renderDynamicTopSymbols(items) {
+function renderDynamicTopSymbols(items, snapshot = null) {
   const target = $('dynamicTopList');
   const meta = $('dynamicTopMeta');
   if (!target || !meta) return;
@@ -348,26 +464,135 @@ function renderDynamicTopSymbols(items) {
     target.innerHTML = '<div class="empty-state">No dynamic top symbols are available yet.</div>';
     return;
   }
-  meta.textContent = `${formatCount(list.length)} dynamic top symbol${list.length === 1 ? '' : 's'} ranked from the active source system`;
-  target.innerHTML = list.map((item, index) => {
-    const provenance = Array.isArray(item.source_lists) ? item.source_lists : [];
-    const provenanceText = provenance.length ? provenance.join(' · ') : item.source || 'unknown';
-    return `
-      <article class="top-symbol-card">
+  const signature = list.map((item) => `${item.symbol}:${item.score}:${item.source_rank}`).join('|');
+  const changed = signature !== lastDynamicTopSignature;
+  lastDynamicTopSignature = signature;
+  const rowsWithMovement = annotateDynamicTopMovement(list, previousDynamicTopRows);
+  previousDynamicTopRows = rowsWithMovement.map((item, index) => ({
+    symbol: normalizeSymbolKey(item.symbol),
+    rank: index + 1,
+    score: Number(item.score),
+  }));
+  saveStoredDynamicTopRows(previousDynamicTopRows);
+  const freshness = resolveDynamicTopFreshness(snapshot);
+  const dataAgeLabel = formatDataAge(freshness.timestamp);
+  const sourceLabel = freshness.source ? `${freshness.source} data` : 'Dynamic source data';
+  meta.textContent = `${formatCount(list.length)} ranked by score. ${sourceLabel} ${dataAgeLabel}.`;
+  target.classList.toggle('is-updating', changed);
+  if (changed) {
+    window.setTimeout(() => target?.classList?.remove('is-updating'), 300);
+  }
+  target.innerHTML = `
+      ${rowsWithMovement.map((item, index) => `
+      <article class="top-symbol-card ${changed ? 'is-updating' : ''} ${escapeHtml(item.movementClass)}">
         <div class="top-symbol-card-head">
           <span class="top-symbol-rank">${String(index + 1).padStart(2, '0')}</span>
-          <strong><code>${escapeHtml(item.symbol || missingText)}</code></strong>
-          <span class="tag cyan">${escapeHtml(item.source || 'unknown')}</span>
-        </div>
-        <div class="top-symbol-card-grid">
-          <span><b>Score</b> ${escapeHtml(formatNumber(item.score, 1))}</span>
-          <span><b>Source rank</b> ${escapeHtml(formatCount(item.source_rank))}</span>
-          <span class="top-symbol-provenance"><b>Provenance</b> ${escapeHtml(provenanceText)}</span>
-          <span><b>Reason codes</b> ${escapeHtml(formatReasonList(item.reason_codes))}</span>
+          <div class="top-symbol-main">
+            <strong><code>${escapeHtml(item.symbol || missingText)}</code></strong>
+            <span class="top-symbol-move">${escapeHtml(item.rankMoveLabel)}</span>
+          </div>
+          <div class="top-symbol-score-box">
+            <span class="top-symbol-score">${escapeHtml(formatNumber(item.score, 1))}</span>
+            <span class="top-symbol-delta">${escapeHtml(item.scoreDeltaLabel)}</span>
+          </div>
         </div>
       </article>
-    `;
-  }).join('');
+    `).join('')}`;
+}
+
+function annotateDynamicTopMovement(list, previousRows) {
+  const previousBySymbol = new Map((Array.isArray(previousRows) ? previousRows : [])
+    .map((item) => [normalizeSymbolKey(item.symbol), item]));
+  return list.map((item, index) => {
+    const symbol = normalizeSymbolKey(item.symbol);
+    const previous = previousBySymbol.get(symbol);
+    const currentRank = index + 1;
+    const currentScore = Number(item.score);
+    if (!previous) {
+      return {
+        ...item,
+        movementClass: 'movement-new',
+        rankMoveLabel: 'New on list',
+        scoreDeltaLabel: 'new',
+      };
+    }
+    const previousRank = Number(previous.rank);
+    const previousScore = Number(previous.score);
+    const rankDelta = Number.isFinite(previousRank) ? previousRank - currentRank : 0;
+    const scoreDelta = Number.isFinite(currentScore) && Number.isFinite(previousScore)
+      ? currentScore - previousScore
+      : 0;
+    const movementClass = rankDelta > 0
+      ? 'movement-up'
+      : rankDelta < 0
+        ? 'movement-down'
+        : scoreDelta > 0
+          ? 'movement-up'
+          : scoreDelta < 0
+            ? 'movement-down'
+            : 'movement-flat';
+    const rankMoveLabel = rankDelta > 0
+      ? `Rank +${rankDelta}`
+      : rankDelta < 0
+        ? `Rank ${rankDelta}`
+        : 'Rank same';
+    return {
+      ...item,
+      movementClass,
+      rankMoveLabel,
+      scoreDeltaLabel: formatScoreDelta(scoreDelta),
+    };
+  });
+}
+
+function normalizeSymbolKey(symbol) {
+  return String(symbol || '').trim().toUpperCase();
+}
+
+function formatScoreDelta(delta) {
+  if (!Number.isFinite(delta)) return 'score n/a';
+  if (Math.abs(delta) < 0.05) return 'score 0.0';
+  return `score ${delta > 0 ? '+' : ''}${formatNumber(delta, 1)}`;
+}
+
+function loadStoredDynamicTopRows() {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return [];
+    const parsed = JSON.parse(window.localStorage.getItem('workflow2.dynamicTop.previous') || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => ({
+        symbol: normalizeSymbolKey(item?.symbol),
+        rank: Number(item?.rank),
+        score: Number(item?.score),
+      }))
+      .filter((item) => item.symbol);
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveStoredDynamicTopRows(rows) {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem('workflow2.dynamicTop.previous', JSON.stringify(rows));
+  } catch (_) {
+    // Some embedded browsers disable storage; movement still works in memory.
+  }
+}
+
+function resolveDynamicTopFreshness(snapshot = {}) {
+  const freshness = snapshot?.dynamicTopFreshness || {};
+  const runtime = snapshot?.live?.scanner_runtime || {};
+  const timestamp = freshness.source_timestamp
+    || freshness.scanner_timestamp
+    || runtime.last_scan_time
+    || runtime.updated_at
+    || null;
+  return {
+    source: freshness.source || (timestamp ? 'Scanner Runtime' : null),
+    timestamp,
+  };
 }
 
 function formatSignedCurrency(value) {
@@ -544,6 +769,14 @@ function formatCount(value) {
   return numberFormatter.format(Number(value));
 }
 
+function formatReasonList(value) {
+  if (!value) return missingText;
+  const items = Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean)
+    : String(value).split(',').map((item) => item.trim()).filter(Boolean);
+  return items.length ? items.join(', ') : missingText;
+}
+
 function formatNumber(value, decimals = 3) {
   if (!Number.isFinite(Number(value))) return missingText;
   return Number(value).toFixed(decimals);
@@ -574,5 +807,8 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-refreshSnapshot();
-setInterval(refreshSnapshot, 5_000);
+render(state.snapshot || bootstrapSnapshot || {});
+if (dashboardRequest) {
+  refreshSnapshot();
+  setInterval(refreshSnapshot, 5_000);
+}

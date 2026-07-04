@@ -25,6 +25,51 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const dashboardRequest = createDashboardRequest();
+const bootstrapSnapshot = getDashboardSnapshotForPage('control');
+
+if (bootstrapSnapshot) {
+  state.snapshot = bootstrapSnapshot;
+  state.control = bootstrapSnapshot.control || null;
+  state.sourceHealthSummary = bootstrapSnapshot.sourceHealthSummary || bootstrapSnapshot.source_health_summary || null;
+  state.error = null;
+  state.loading = false;
+}
+
+function createDashboardRequest() {
+  if (typeof fetch !== 'function' && typeof XMLHttpRequest === 'undefined') {
+    return null;
+  }
+  return async function request(url, options = {}) {
+    if (typeof fetch === 'function') {
+      return fetch(url, options);
+    }
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(options.method || 'GET', url, true);
+      if (options.headers) {
+        for (const [key, value] of Object.entries(options.headers)) {
+          xhr.setRequestHeader(key, value);
+        }
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) return;
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status || 0,
+          async json() {
+            return JSON.parse(xhr.responseText || 'null');
+          },
+          async text() {
+            return xhr.responseText || '';
+          },
+        });
+      };
+      xhr.onerror = () => reject(new Error(`Request failed for ${url}`));
+      xhr.send(options.body || null);
+    });
+  };
+}
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -47,17 +92,21 @@ function escapeHtml(value) {
 }
 
 async function refreshAll({ eagerDetails = false } = {}) {
+  if (!dashboardRequest) {
+    render();
+    return;
+  }
   state.loading = true;
   state.detailError = null;
   render();
 
   const [controlSummaryResult, sourceHealthResult] = await Promise.allSettled([
-    fetch('/api/control-summary', { cache: 'no-store' }).then(async (response) => {
+    dashboardRequest('/api/control-summary', { cache: 'no-store' }).then(async (response) => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
       return payload;
     }),
-    fetch('/api/source-health-summary', { cache: 'no-store' }).then(async (response) => {
+    dashboardRequest('/api/source-health-summary', { cache: 'no-store' }).then(async (response) => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
       return payload;
@@ -82,35 +131,38 @@ async function refreshAll({ eagerDetails = false } = {}) {
 }
 
 async function loadDetailedState() {
+  if (!dashboardRequest) {
+    return;
+  }
   state.detailLoading = true;
   try {
     const [snapshotResult, controlResult, memeResult, memeStatusResult, regularWatchResult, regularWatchStatusResult] = await Promise.allSettled([
-      fetch('/api/snapshot', { cache: 'no-store' }).then(async (response) => {
+      dashboardRequest('/api/snapshot', { cache: 'no-store' }).then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
         return payload;
       }),
-      fetch('/api/control/state', { cache: 'no-store' }).then(async (response) => {
+      dashboardRequest('/api/control/state', { cache: 'no-store' }).then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
         return payload.control;
       }),
-      fetch('/api/meme/features', { cache: 'no-store' }).then(async (response) => {
+      dashboardRequest('/api/meme/features', { cache: 'no-store' }).then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
         return payload;
       }),
-      fetch('/api/meme/status', { cache: 'no-store' }).then(async (response) => {
+      dashboardRequest('/api/meme/status', { cache: 'no-store' }).then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
         return payload;
       }),
-      fetch('/api/regular-watch/features', { cache: 'no-store' }).then(async (response) => {
+      dashboardRequest('/api/regular-watch/features', { cache: 'no-store' }).then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
         return payload;
       }),
-      fetch('/api/regular-watch/status', { cache: 'no-store' }).then(async (response) => {
+      dashboardRequest('/api/regular-watch/status', { cache: 'no-store' }).then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
         return payload;
@@ -149,7 +201,7 @@ async function runAction(action, profile) {
   state.actionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/control/action', {
+    const response = await dashboardRequest('/api/control/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action, profile }),
@@ -178,7 +230,7 @@ async function runMemeAction(featureKey, enabled) {
   state.memeActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/meme/features', {
+    const response = await dashboardRequest('/api/meme/features', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -211,7 +263,7 @@ async function runMemeRuntimeAction(action) {
   state.memeActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/meme/action', {
+    const response = await dashboardRequest('/api/meme/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -243,7 +295,7 @@ async function runRegularWatchFeatureAction(featureKey, enabled) {
   state.regularWatchActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/regular-watch/features', {
+    const response = await dashboardRequest('/api/regular-watch/features', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -276,7 +328,7 @@ async function runRegularWatchRuntimeAction(action) {
   state.regularWatchActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/regular-watch/action', {
+    const response = await dashboardRequest('/api/regular-watch/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -884,5 +936,8 @@ document.querySelectorAll('[data-regular-watch-action]').forEach((button) => {
   });
 });
 
-refreshAll();
-setInterval(refreshAll, 5000);
+render();
+if (dashboardRequest) {
+  refreshAll();
+  setInterval(refreshAll, 5000);
+}

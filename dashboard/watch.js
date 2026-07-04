@@ -4,10 +4,58 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const dashboardRequest = createDashboardRequest();
+const bootstrapSnapshot = getDashboardSnapshotForPage('watch');
+
+if (bootstrapSnapshot) {
+  state.snapshot = bootstrapSnapshot;
+  state.error = null;
+}
+
+function createDashboardRequest() {
+  if (typeof fetch !== 'function' && typeof XMLHttpRequest === 'undefined') {
+    return null;
+  }
+  return async function request(url, options = {}) {
+    if (typeof fetch === 'function') {
+      return fetch(url, options);
+    }
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(options.method || 'GET', url, true);
+      if (options.headers) {
+        for (const [key, value] of Object.entries(options.headers)) {
+          xhr.setRequestHeader(key, value);
+        }
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) return;
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status || 0,
+          async json() {
+            return JSON.parse(xhr.responseText || 'null');
+          },
+          async text() {
+            return xhr.responseText || '';
+          },
+        });
+      };
+      xhr.onerror = () => reject(new Error(`Request failed for ${url}`));
+      xhr.send(options.body || null);
+    });
+  };
+}
 
 async function refreshSnapshot() {
+  if (!dashboardRequest) {
+    if (state.snapshot) {
+      render(state.snapshot);
+    }
+    return;
+  }
   try {
-    const response = await fetch('/api/watch-snapshot', { cache: 'no-store' });
+    const response = await dashboardRequest('/api/watch-snapshot', { cache: 'no-store' });
     const snapshot = await response.json();
     if (!response.ok) {
       throw new Error(snapshot?.message || snapshot?.error || `HTTP ${response.status}`);
@@ -17,7 +65,7 @@ async function refreshSnapshot() {
     render(snapshot);
   } catch (error) {
     state.error = error.message;
-    render(null);
+    render(state.snapshot || bootstrapSnapshot || {});
   }
 }
 
@@ -505,5 +553,8 @@ function escapeHtml(value) {
   })[char]);
 }
 
-refreshSnapshot();
-setInterval(refreshSnapshot, 5000);
+render(state.snapshot || bootstrapSnapshot || {});
+if (dashboardRequest) {
+  refreshSnapshot();
+  setInterval(refreshSnapshot, 5000);
+}

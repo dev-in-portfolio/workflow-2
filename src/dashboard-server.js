@@ -35,6 +35,7 @@ const {
   saveRegularWatchStatus,
 } = require('./regular-watch/regular-watch-status');
 const { runRegularWatchSources } = require('./regular-watch/regular-watch-source-runner');
+const { createRegularWatchLoop } = require('./regular-watch/regular-watch-loop');
 const { redactSourceMessage } = require('./source-fetch');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
@@ -98,6 +99,13 @@ function createDashboardServer(options = {}) {
     fetchImpl: options.fetchImpl || globalThis.fetch,
     refreshIntervalMs: options.memeRefreshIntervalMs || 5 * 60_000,
   });
+  const regularWatchLoop = options.regularWatchLoop || createRegularWatchLoop({
+    repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+    dataDir,
+    env: options.env || process.env,
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    refreshIntervalMs: options.regularWatchRefreshIntervalMs,
+  });
   const assetIndex = {
     '/': path.join(dashboardDir, 'index.html'),
     '/index.html': path.join(dashboardDir, 'index.html'),
@@ -114,6 +122,7 @@ function createDashboardServer(options = {}) {
     '/control': path.join(dashboardDir, 'control.html'),
     '/control.html': path.join(dashboardDir, 'control.html'),
     '/app.js': path.join(dashboardDir, 'app.js'),
+    '/request.js': path.join(dashboardDir, 'request.js'),
     '/status.js': path.join(dashboardDir, 'status.js'),
     '/policy.js': path.join(dashboardDir, 'policy.js'),
     '/exit-rules.js': path.join(dashboardDir, 'exit-rules.js'),
@@ -492,7 +501,21 @@ function createDashboardServer(options = {}) {
     }
 
     if (req.method === 'GET' && assetIndex[url.pathname]) {
-      return sendFile(res, assetIndex[url.pathname], getContentType(assetIndex[url.pathname]));
+      const filePath = assetIndex[url.pathname];
+      if (filePath.endsWith('.html')) {
+        try {
+          const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+          return sendDashboardPage(res, filePath, getContentType(filePath), buildDashboardBootstrap(url.pathname, snapshot));
+        } catch (error) {
+          return sendJson(res, 500, {
+            status: 'error',
+            error: 'page_bootstrap_failed',
+            message: error.message,
+            timestamp: nowIso(),
+          });
+        }
+      }
+      return sendFile(res, filePath, getContentType(filePath));
     }
 
     return sendJson(res, 404, {
@@ -502,8 +525,40 @@ function createDashboardServer(options = {}) {
     });
   });
   server.dashboardState = state;
+  server.regularWatchLoop = regularWatchLoop;
+
+  let regularWatchLoopStartRequested = false;
+  server.on('listening', () => {
+    if (!shouldAutoStartRegularWatchLoop(options, options.env || process.env) || regularWatchLoopStartRequested) return;
+    regularWatchLoopStartRequested = true;
+    regularWatchLoop.start().catch((error) => {
+      state.regularWatchLoopLastError = error.message || String(error);
+    });
+  });
+
+  server.on('close', () => {
+    if (regularWatchLoop?.isRunning?.()) {
+      regularWatchLoop.stop().catch(() => {});
+    }
+  });
 
   return server;
+}
+
+function shouldAutoStartRegularWatchLoop(options = {}, env = process.env) {
+  if (options.regularWatchAutoStart !== undefined) {
+    return parseDashboardBool(options.regularWatchAutoStart, false);
+  }
+  return parseDashboardBool(env.REGULAR_WATCH_AUTO_START, false);
+}
+
+function parseDashboardBool(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
 }
 
 async function getCachedSnapshot(state, options, context) {
@@ -515,6 +570,19 @@ async function getCachedSnapshot(state, options, context) {
   state.cache = snapshot;
   state.cacheAtMs = nowMs;
   return snapshot;
+}
+
+function buildDashboardBootstrap(page, snapshot = {}) {
+  const normalizedPage = String(page || '/').toLowerCase();
+  return {
+    page: normalizedPage,
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    homeSummary: buildHomeSummary(snapshot),
+    watchSnapshot: buildWatchSnapshotResponse(snapshot),
+    controlSummary: buildControlSummary(snapshot),
+    sourceHealthSummary: buildSourceHealthSummary(snapshot),
+  };
 }
 
 async function getSummarySnapshot(state, options, context) {
@@ -2438,6 +2506,7 @@ function buildWatchSnapshot({
 }
 
 function buildHomeSummary(snapshot = {}) {
+  const dynamicTopSymbols = buildDynamicTopSymbols(snapshot);
   return {
     status: snapshot.status || 'ok',
     generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
@@ -2448,7 +2517,10 @@ function buildHomeSummary(snapshot = {}) {
     control: buildCompactControlSummary(snapshot.control || {}),
     regime: snapshot.regime || {},
     alerts: Array.isArray(snapshot.alerts) ? snapshot.alerts.slice(0, 20) : [],
-    dynamicTopSymbols: buildDynamicTopSymbols(snapshot),
+    memeMonitor: buildCompactMemeMonitorSummary(snapshot.memeMonitor || {}),
+    hotListStatus: buildHomeHotListStatus(snapshot),
+    dynamicTopSymbols,
+    dynamicTopFreshness: buildDynamicTopFreshness(snapshot, dynamicTopSymbols),
     source_health_summary: buildSourceHealthSummary(snapshot),
   };
 }
@@ -2644,7 +2716,7 @@ function buildCompactRegularWatchStatus(status = {}) {
 
 function buildSourceHealthSummary(snapshot = {}) {
   const sourceHealth = Array.isArray(snapshot?.source_health) ? snapshot.source_health : [];
-  const sources = sourceHealth.map((entry) => summarizeSourceHealthEntry(entry));
+  const sources = prioritizeSourceHealthSummary(sourceHealth.map((entry) => summarizeSourceHealthEntry(entry)));
   const counts = sources.reduce((acc, entry) => {
     acc.total += 1;
     acc[entry.health_status] += 1;
@@ -2666,9 +2738,26 @@ function buildSourceHealthSummary(snapshot = {}) {
   };
 }
 
+function prioritizeSourceHealthSummary(sources = []) {
+  const disabledSources = new Set(sources
+    .filter((entry) => entry.health_status === 'inactive' && ['source_disabled', 'disabled', 'off'].includes(String(entry.blockedReason || '').toLowerCase()))
+    .map((entry) => String(entry.source || '').toLowerCase())
+    .filter(Boolean));
+  return sources.map((entry) => {
+    if (!disabledSources.has(String(entry.source || '').toLowerCase())) return entry;
+    return {
+      ...entry,
+      status: entry.status === 'error' ? 'inactive' : entry.status,
+      health_status: 'inactive',
+      ok: false,
+      blockedReason: entry.blockedReason || 'source_disabled',
+    };
+  });
+}
+
 function summarizeSourceHealthEntry(entry = {}) {
   const rawStatus = String(entry.status || 'inactive').toLowerCase();
-  const healthStatus = normalizeSourceHealthStatus(rawStatus, entry.ok);
+  const healthStatus = normalizeSourceHealthStatus(rawStatus, entry.ok, entry.blockedReason);
   return {
     source: entry.source || null,
     group: entry.group || null,
@@ -2685,12 +2774,107 @@ function summarizeSourceHealthEntry(entry = {}) {
   };
 }
 
-function normalizeSourceHealthStatus(status = '', ok = null) {
+function normalizeSourceHealthStatus(status = '', ok = null, blockedReason = null) {
   const normalized = String(status || '').toLowerCase();
-  if (ok === true) return 'active';
-  if (['active', 'shadow', 'reused_records', 'ok', 'read'].includes(normalized)) return 'active';
+  const normalizedBlockedReason = String(blockedReason || '').toLowerCase();
+  if (['source_disabled', 'disabled', 'off'].includes(normalizedBlockedReason)) return 'inactive';
   if (['off', 'disabled', 'source_disabled', 'inactive', 'missing'].includes(normalized)) return 'inactive';
+  if (['active', 'shadow', 'reused_records', 'ok', 'read'].includes(normalized)) return 'active';
+  if (ok === true) return 'active';
   return 'error';
+}
+
+function buildDynamicTopFreshness(snapshot = {}, dynamicTopSymbols = []) {
+  const runtime = snapshot?.live?.scanner_runtime || snapshot?.scannerRuntime || {};
+  const watch = snapshot?.watch || {};
+  const dynamicHotAt = watch?.dynamicHotList?.lastScoredAt || watch?.dynamicHotList?.generatedAt || null;
+  const hotHotAt = watch?.hotHotList?.lastScoredAt || watch?.hotHotList?.generatedAt || null;
+  const scannerAt = runtime?.last_scan_time || runtime?.updated_at || null;
+  const regularWatchAt = snapshot?.regularWatchStatus?.regularWatchIntelligence?.lastRunAt
+    || snapshot?.regularWatchStatus?.lastRunAt
+    || snapshot?.live?.regular_watch_runtime?.regularWatchIntelligence?.lastRunAt
+    || null;
+  const contributors = new Set((Array.isArray(dynamicTopSymbols) ? dynamicTopSymbols : [])
+    .map((item) => String(item?.source || '').toLowerCase()));
+  const candidates = [];
+  const addCandidate = (source, timestamp) => {
+    if (!timestamp) return;
+    candidates.push({ source, timestamp });
+  };
+
+  if (contributors.has('hot hot list')) addCandidate('Hot Hot List', hotHotAt || dynamicHotAt);
+  if (contributors.has('dynamic hot list')) addCandidate('Dynamic Hot List', dynamicHotAt);
+  if (contributors.has('scanner preview')) addCandidate('Scanner Preview', scannerAt);
+  if (contributors.has('regular watch movers')) addCandidate('Regular Watch Movers', scannerAt || regularWatchAt);
+  if (contributors.has('regular watch')) addCandidate('Regular Watch', regularWatchAt || scannerAt);
+  if (!candidates.length) {
+    addCandidate('Scanner Runtime', scannerAt);
+    addCandidate('Regular Watch', regularWatchAt);
+    addCandidate('Dynamic Hot List', dynamicHotAt);
+  }
+
+  const valid = candidates
+    .map((entry) => ({ ...entry, ms: Date.parse(entry.timestamp) }))
+    .filter((entry) => Number.isFinite(entry.ms))
+    .sort((a, b) => b.ms - a.ms);
+  const newest = valid[0] || null;
+  return {
+    source: newest?.source || null,
+    source_timestamp: newest?.timestamp || null,
+    scanner_timestamp: scannerAt,
+    regular_watch_timestamp: regularWatchAt,
+    dynamic_hot_timestamp: dynamicHotAt,
+    hot_hot_timestamp: hotHotAt,
+    item_count: Array.isArray(dynamicTopSymbols) ? dynamicTopSymbols.length : 0,
+  };
+}
+
+function buildHomeHotListStatus(snapshot = {}) {
+  const summary = snapshot.summary || {};
+  const memeMonitor = snapshot.memeMonitor || {};
+  const watch = snapshot.watch || {};
+  const hotList = memeMonitor.hotList || watch.dynamicHotList || {};
+  const hotHotScoring = memeMonitor.hotHotScoring || watch.hotHotList || {};
+  const payload = memeMonitor.hotListPayload || {};
+  const dynamicCount = safeNumber(
+    hotList.dynamicCount
+      ?? hotList.dynamic_count
+      ?? payload.summary?.dynamicCount
+      ?? payload.dynamicHotList?.length
+      ?? summary.meme_monitor_hot_list_dynamic_count,
+    0,
+  );
+  const hotHotCount = safeNumber(
+    hotList.hotHotCount
+      ?? hotList.hot_hot_count
+      ?? payload.summary?.hotHotCount
+      ?? payload.hotHotList?.length
+      ?? summary.meme_monitor_hot_list_hot_hot_count,
+    0,
+  );
+  const lastScoredAt = hotList.lastScoredAt
+    || hotList.last_scored_at
+    || hotHotScoring.lastScoredAt
+    || payload.lastScoredAt
+    || payload.generatedAt
+    || null;
+  const enabled = Boolean(hotList.enabled ?? watch.dynamicHotList?.enabled ?? memeMonitor.enabled);
+  const rawStatus = String(hotList.status || summary.meme_monitor_hot_list_status || '').toLowerCase();
+  const watchStatus = String(watch.dynamicHotList?.status || '').toLowerCase();
+  const status = rawStatus && rawStatus !== 'off' && rawStatus !== 'disabled'
+    ? rawStatus
+    : (watchStatus || rawStatus || (enabled ? 'unknown' : 'off'));
+  const stale = Boolean(hotList.stale ?? hotHotScoring.stale ?? payload.stale ?? summary.meme_monitor_hot_list_stale);
+
+  return {
+    enabled,
+    status,
+    stale,
+    dynamicCount,
+    hotHotCount,
+    lastScoredAt,
+    lastError: hotList.lastError || hotHotScoring.lastError || null,
+  };
 }
 
 function buildDynamicTopSymbols({ watch = null, scannerRuntime = null, limit = 10 } = {}) {
@@ -3304,6 +3488,11 @@ function normalizeReasonList(value) {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [String(value)].filter(Boolean);
 }
 
+function formatReasonList(value) {
+  const items = normalizeReasonList(value);
+  return items.length ? items.join(', ') : '—';
+}
+
 function normalizeWatchReason(reason) {
   const value = String(reason || '').toUpperCase();
   if (!value) return 'stale';
@@ -3625,6 +3814,25 @@ function sendJson(res, statusCode, payload) {
   res.end(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
+function sendDashboardPage(res, filePath, contentType, bootstrap = null) {
+  try {
+    let body = fs.readFileSync(filePath, 'utf8');
+    if (bootstrap) {
+      try {
+        body = injectDashboardBootstrap(body, bootstrap);
+      } catch (error) {
+        process.stderr.write(`Dashboard bootstrap injection failed: ${error.message || String(error)}\n`);
+      }
+    }
+    res.statusCode = 200;
+    res.setHeader('content-type', contentType);
+    res.setHeader('cache-control', 'no-store');
+    res.end(body);
+  } catch {
+    sendJson(res, 404, { status: 'error', error: 'asset_not_found', filePath });
+  }
+}
+
 function sendFile(res, filePath, contentType) {
   try {
     const body = fs.readFileSync(filePath);
@@ -3635,6 +3843,90 @@ function sendFile(res, filePath, contentType) {
   } catch {
     sendJson(res, 404, { status: 'error', error: 'asset_not_found', filePath });
   }
+}
+
+function injectDashboardBootstrap(html, bootstrap = null) {
+  if (!bootstrap || typeof html !== 'string') return html;
+  const script = `<script>window.__DASHBOARD_BOOTSTRAP__=${serializeInlineJson(bootstrap)};</script>`;
+  if (html.includes('</head>')) {
+    return html.replace('</head>', `${script}\n  </head>`);
+  }
+  if (html.includes('</body>')) {
+    return html.replace('</body>', `${script}\n  </body>`);
+  }
+  return `${script}\n${html}`;
+}
+
+function injectBootstrapHomePreviewMarkup(html, bootstrap = null) {
+  if (!bootstrap || typeof html !== 'string') return html;
+  const dynamicTopSymbols = Array.isArray(bootstrap?.homeSummary?.dynamicTopSymbols)
+    ? bootstrap.homeSummary.dynamicTopSymbols
+    : [];
+  if (!dynamicTopSymbols.length) return html;
+  const previewMarkup = renderCompactDynamicTopSymbolsMarkup(dynamicTopSymbols);
+  const metaOpen = '<span class="subtle" id="dynamicTopMeta">';
+  const listOpen = '<div id="dynamicTopList" class="dynamic-top-list">';
+  const metaStart = html.indexOf(metaOpen);
+  const metaClose = metaStart >= 0 ? html.indexOf('</span>', metaStart) : -1;
+  const listStart = html.indexOf(listOpen);
+  const listClose = listStart >= 0 ? html.indexOf('</div>', listStart) : -1;
+  let nextHtml = html;
+  if (metaStart >= 0 && metaClose > metaStart) {
+    const freshness = bootstrap?.homeSummary?.dynamicTopFreshness || {};
+    const sourceCopy = freshness.source ? `${freshness.source} data` : 'Dynamic data';
+    const timestampCopy = freshness.source_timestamp ? ` from ${freshness.source_timestamp}` : ' ready';
+    nextHtml = `${nextHtml.slice(0, metaStart + metaOpen.length)}${escapeHtml(`${sourceCopy}${timestampCopy}`)}${nextHtml.slice(metaClose)}`;
+  }
+  if (listStart >= 0 && listClose > listStart) {
+    const insertAt = listStart + listOpen.length;
+    nextHtml = `${nextHtml.slice(0, insertAt)}\n${previewMarkup}\n          ${nextHtml.slice(listClose)}`;
+  }
+  return nextHtml;
+}
+
+function renderDynamicTopSymbolsMarkup(items = []) {
+  return items.slice(0, 10).map((item, index) => {
+    const provenance = Array.isArray(item?.source_lists) ? item.source_lists : [];
+    const provenanceText = provenance.length ? provenance.join(' · ') : (item?.source || 'unknown');
+    return `          <article class="top-symbol-card">
+            <div class="top-symbol-card-head">
+              <span class="top-symbol-rank">${String(index + 1).padStart(2, '0')}</span>
+              <strong><code>${escapeHtml(item?.symbol || '-')}</code></strong>
+              <span class="tag cyan">${escapeHtml(item?.source || 'unknown')}</span>
+            </div>
+            <div class="top-symbol-card-grid">
+              <span><b>Score</b> ${escapeHtml(formatNumber(item?.score, 1))}</span>
+              <span><b>Source rank</b> ${escapeHtml(formatCount(item?.source_rank))}</span>
+              <span class="top-symbol-provenance"><b>Provenance</b> ${escapeHtml(provenanceText)}</span>
+              <span><b>Reason codes</b> ${escapeHtml(formatReasonList(item?.reason_codes))}</span>
+            </div>
+          </article>`;
+  }).join('\n');
+}
+
+function renderCompactDynamicTopSymbolsMarkup(items = []) {
+  const rows = items.slice(0, 10).map((item, index) => `          <article class="top-symbol-card">
+            <div class="top-symbol-card-head">
+              <span class="top-symbol-rank">${String(index + 1).padStart(2, '0')}</span>
+              <strong><code>${escapeHtml(item?.symbol || '-')}</code></strong>
+              <span class="top-symbol-score">${escapeHtml(formatNumber(item?.score, 1))}</span>
+            </div>
+          </article>`).join('\n');
+  return `          <div class="top-symbol-header" aria-hidden="true">
+            <span>Rank</span>
+            <span>Symbol</span>
+            <span>Score</span>
+          </div>
+${rows}`;
+}
+
+function serializeInlineJson(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 function getContentType(filePath) {
@@ -3659,6 +3951,20 @@ function formatSignedNumber(value, decimals = 2) {
   if (!Number.isFinite(Number(value))) return '—';
   const formatted = formatNumber(Math.abs(Number(value)), decimals);
   return Number(value) >= 0 ? `+${formatted}` : `-${formatted}`;
+}
+
+function formatCount(value) {
+  if (!Number.isFinite(Number(value))) return '—';
+  return Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function resolveTraderBaseUrlFromEnv(env = process.env) {

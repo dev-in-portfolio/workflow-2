@@ -4,7 +4,12 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { buildDynamicTopSymbols, createDashboardServer } = require('../src/dashboard-server');
+const {
+  buildDynamicTopSymbols,
+  buildHomeSummary,
+  buildSourceHealthSummary,
+  createDashboardServer,
+} = require('../src/dashboard-server');
 
 function writeJson(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -59,6 +64,8 @@ function createFixture(tempRoot) {
   writeJson(path.join(dataDir, 'state', 'scanner-runtime.json'), {
     scanner: 'stock-scanner',
     mode: 'live-market',
+    updated_at: '2026-07-03T13:04:00.000Z',
+    last_scan_time: '2026-07-03T13:03:30.000Z',
     scanner_symbol_source: 'dynamic',
     active_source_count: 7,
     approved_source_count: 7,
@@ -151,6 +158,22 @@ function createFixture(tempRoot) {
       },
       symbols: [],
     },
+    hotList: {
+      enabled: true,
+      status: 'active',
+      dynamicCount: 3,
+      hotHotCount: 2,
+      lastScoredAt: '2026-07-03T13:00:00.000Z',
+      stale: false,
+      lastError: null,
+    },
+    hotHotScoring: {
+      enabled: true,
+      status: 'active',
+      lastScoredAt: '2026-07-03T13:00:00.000Z',
+      stale: false,
+      lastError: null,
+    },
   });
   writeJson(path.join(dataDir, 'runtime', 'regular-watch-status.json'), {
     version: '2026-07-03.regular-watch-status.1',
@@ -225,6 +248,70 @@ test('buildDynamicTopSymbols keeps source precedence and dedupes by symbol', () 
   assert.equal(top[2].source_lists.includes('Regular Watch Movers'), true);
 });
 
+test('home summary reports dynamic top freshness from source data, not dashboard generation time', () => {
+  const homeSummary = buildHomeSummary({
+    generated_at: '2026-07-03T14:00:00.000Z',
+    timestamp: '2026-07-03T14:00:00.000Z',
+    live: {
+      scanner_runtime: {
+        last_scan_time: '2026-07-03T13:03:30.000Z',
+        updated_at: '2026-07-03T13:04:00.000Z',
+      },
+    },
+    watch: {
+      scannerPreview: {
+        topPreviewCandidates: [
+          { symbol: 'P1', adjusted_rank_score: 88 },
+        ],
+      },
+      regularWatchMovers: [
+        { symbol: 'M1', regularWatchScore: 74 },
+      ],
+    },
+    memeMonitor: {
+      enabled: true,
+      hotList: {
+        enabled: true,
+        status: 'active',
+        dynamicCount: 2,
+        hotHotCount: 1,
+        lastScoredAt: '2026-07-03T13:02:00.000Z',
+        stale: false,
+      },
+    },
+  });
+
+  assert.equal(homeSummary.dynamicTopSymbols[0].symbol, 'P1');
+  assert.equal(homeSummary.dynamicTopFreshness.source, 'Scanner Preview');
+  assert.equal(homeSummary.dynamicTopFreshness.source_timestamp, '2026-07-03T13:03:30.000Z');
+  assert.notEqual(homeSummary.dynamicTopFreshness.source_timestamp, homeSummary.generated_at);
+  assert.equal(homeSummary.hotListStatus.status, 'active');
+  assert.equal(homeSummary.hotListStatus.dynamicCount, 2);
+  assert.equal(homeSummary.hotListStatus.hotHotCount, 1);
+});
+
+test('source health summary treats explicit disabled sources as inactive even with legacy ok flag', () => {
+  const summary = buildSourceHealthSummary({
+    generated_at: '2026-07-03T14:00:00.000Z',
+    source_health: [
+      { source: 'polygon', kind: 'source', status: 'inactive', ok: true, blockedReason: 'source_disabled' },
+      { source: 'socialContext', kind: 'source', status: 'off', ok: true, blockedReason: 'source_disabled' },
+      { source: 'alpacaMarket', kind: 'source', status: 'active', ok: true },
+    ],
+  });
+
+  const polygon = summary.sources.find((entry) => entry.source === 'polygon');
+  const social = summary.sources.find((entry) => entry.source === 'socialContext');
+  const alpaca = summary.sources.find((entry) => entry.source === 'alpacaMarket');
+  assert.equal(polygon.health_status, 'inactive');
+  assert.equal(polygon.ok, false);
+  assert.equal(social.health_status, 'inactive');
+  assert.equal(social.ok, false);
+  assert.equal(alpaca.health_status, 'active');
+  assert.equal(summary.counts.inactive, 2);
+  assert.equal(summary.counts.active, 1);
+});
+
 test('dashboard summary endpoints and page shells expose the lightweight views', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-summary-'));
   const { dataDir } = createFixture(tempRoot);
@@ -289,7 +376,10 @@ test('dashboard summary endpoints and page shells expose the lightweight views',
     assert.equal(homeSummary.status, 'ok');
     assert.equal(Array.isArray(homeSummary.dynamicTopSymbols), true);
     assert.equal(homeSummary.dynamicTopSymbols.length > 0, true);
+    assert.equal(homeSummary.dynamicTopSymbols.length <= 10, true);
     assert.equal(homeSummary.dynamicTopSymbols.some((item) => item.symbol === 'P1'), true);
+    assert.equal(homeSummary.dynamicTopFreshness.source_timestamp, '2026-07-03T13:03:30.000Z');
+    assert.equal(typeof homeSummary.hotListStatus.status, 'string');
     assert.equal(homeSummary.source_health_summary.counts.total > 0, true);
 
     const watchSnapshot = await fetch(`http://127.0.0.1:${dashboardPort}/api/watch-snapshot`).then((response) => response.json());
@@ -311,11 +401,15 @@ test('dashboard summary endpoints and page shells expose the lightweight views',
     assert.equal(['ok', 'warn', 'degraded'].includes(sourceHealthSummary.status), true);
     assert.equal(Array.isArray(sourceHealthSummary.sources), true);
     assert.equal(sourceHealthSummary.sources.every((entry) => ['active', 'inactive', 'error'].includes(entry.health_status)), true);
+    const disabledOptions = sourceHealthSummary.sources.find((entry) => entry.source === 'options');
+    assert.equal(disabledOptions.health_status, 'inactive');
 
     const homeHtml = await fetch(`http://127.0.0.1:${dashboardPort}/`).then((response) => response.text());
     const watchHtml = await fetch(`http://127.0.0.1:${dashboardPort}/watch`).then((response) => response.text());
     assert.equal(homeHtml.includes('Dynamic Top 10'), true);
     assert.equal(homeHtml.includes('dynamicTopList'), true);
+    assert.equal(homeHtml.includes('Hot List'), true);
+    assert.equal((homeHtml.match(/top-symbol-card/g) || []).length, 0);
     assert.equal(watchHtml.includes('Regular Watch List'), true);
     assert.equal(watchHtml.includes('Regular Watch Movers List'), true);
     assert.equal(watchHtml.includes('Dynamic Hot List From Alerts'), true);

@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Live Market Cockpit</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260703m" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   </head>
@@ -66,10 +66,17 @@
               <strong id="lastTradeAge">-</strong>
               <small id="lastTradeHint">Recent local fill</small>
             </div>
-            <div class="focus-card">
-              <span>Workflow</span>
-              <strong id="workflowState">-</strong>
-              <small id="workflowHint">Local process state</small>
+            <div class="focus-card focus-card-split">
+              <div class="split-metric">
+                <span>Workflow</span>
+                <strong id="workflowState">-</strong>
+                <small id="workflowHint">Local process state</small>
+              </div>
+              <div class="split-metric hot-list-mini">
+                <span>Hot List</span>
+                <strong id="hotListState">-</strong>
+                <small id="hotListHint">Meme monitor state</small>
+              </div>
             </div>
           </div>
           <div class="profit-status-row">
@@ -144,7 +151,8 @@
         </article>
       </section>
     </main>
-    <script src="/app.js"></script>
-    <script src="/mobile.js"></script>
+    <script src="/request.js?v=20260703k"></script>
+    <script src="/app.js?v=20260703m"></script>
+    <script src="/mobile.js?v=20260703i"></script>
   </body>
 </html>
