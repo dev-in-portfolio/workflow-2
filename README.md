@@ -25,11 +25,44 @@ Treat the dashboard, local HTTP APIs, scanner activation, feature toggles, polic
 
 ---
 
+## Execution Mode Integrity
+
+Workflow 2 supports paper execution and live execution. The selected execution mode is an operator decision and must be treated as runtime intent, not as a suggestion.
+
+Paper mode is for explicit testing and validation. It is not an automatic fallback for a session that was configured for a different execution mode.
+
+If the selected mode is not safe, complete, or internally consistent, the correct behavior is to **fail closed with a clear blocking reason**. The system must not silently rewrite the execution mode to paper as a safety substitute.
+
+Required behavior:
+
+```text
+selected mode + valid configuration = proceed through the selected-mode path
+selected mode + invalid configuration = hard stop with blocking reason
+selected mode + configuration mismatch = hard stop with blocking reason
+uncertain operator intent = do not mutate mode automatically
+```
+
+Forbidden behavior:
+
+```text
+silently changing the selected execution mode
+silently replacing operator-reviewed local config with example defaults
+using paper mode to hide a failed live-mode preflight
+making tests pass by changing runtime intent from one mode to another
+assuming example defaults are runtime authority over local operator config
+```
+
+Safety controls should block unsafe operation. They should not disguise one execution mode as another.
+
+This rule applies to humans, Codex, automated agents, docs, tests, scripts, and generated patches.
+
+---
+
 ## Current Verdict
 
 Workflow 2 is a strong local trading-control-plane foundation with real deterministic safety controls already present.
 
-It should still be treated as **local/paper-first** unless all live-mode, dashboard, endpoint, and mobile/Tailscale exposure risks are understood and controlled.
+It should be treated as **local and operator-controlled**. Live operation requires explicit local configuration and green live preflight. Paper operation is explicit testing mode and must not be used as an automatic fallback when a different execution mode was selected.
 
 Before meaningful live-money use, the control plane needs explicit hardening around:
 
@@ -78,7 +111,7 @@ This repo is not:
 - a dashboard-only viewer
 - a safe-to-expose public web app
 
-It is closer to a local mini trading control plane: signal/scanner input, broker-aware checks, deterministic risk gating, paper/live adapter paths, dashboard/operator controls, policy state, source health, and audit/history files.
+It is closer to a local mini trading control plane: signal/scanner input, broker-aware checks, deterministic risk gating, explicit paper/live adapter paths, dashboard/operator controls, policy state, source health, and audit/history files.
 
 ---
 
@@ -94,11 +127,13 @@ HTTP route or scanner candidate
   -> order build
   -> pending partial-fill conflict check
   -> open-order conflict check
-  -> paper or Alpaca execution adapter
+  -> selected execution adapter
   -> broker/paper confirmation
   -> partial-fill state update
   -> outcome/audit/event recording
 ```
+
+The selected execution adapter must follow the operator-selected mode. If the selected mode cannot pass its required checks, the session should stop with a blocking reason instead of being silently converted to another mode.
 
 This path is substantially safer than a raw “webhook to broker” design, but it still depends on protecting the local endpoints that can enter or influence the path.
 
@@ -120,7 +155,7 @@ The codebase includes meaningful safety controls, including:
 - provider confirmation requirements
 - stop-loss / take-profit / reward-risk requirements
 - human approval controls for live operation
-- paper/live safety gates
+- explicit paper/live mode gates
 - broker reconciliation before risk evaluation
 - broker fail-closed behavior for strict buy paths
 - open-order conflict checks
@@ -145,7 +180,7 @@ The codebase includes meaningful safety controls, including:
 - candidate lifecycle state
 - market-hours guards
 
-These controls should be preserved. New work should harden the control plane around them, not assume they are absent.
+These controls should be preserved. New work should harden the control plane around them, not assume they are absent. Safety hardening must preserve operator-selected execution mode and must never silently downgrade one mode into another.
 
 ---
 
@@ -157,7 +192,7 @@ The system exposes local endpoints and dashboard APIs that can:
 
 - ingest signals
 - ingest market data
-- accept paper-order compatibility requests
+- accept legacy paper-order compatibility requests
 - refresh policy
 - store new policy snapshots
 - roll back policy
@@ -279,7 +314,7 @@ It uses or coordinates:
 - risk-budget sizing options
 - structure-aware stops
 
-The scanner can post built candidates into the local trader endpoint, usually through the `/paper-order` compatibility path. This is intended architecture, but it makes scanner activation and local endpoint protection execution-adjacent safety controls.
+The scanner can post built candidates into the local trader endpoint, usually through the legacy compatibility route currently named `/paper-order`. That route name is a compatibility artifact and must not be interpreted as permission to downgrade the selected execution mode.
 
 ---
 
@@ -392,7 +427,7 @@ Policy/performance routes include:
 - `POST /policy-capacity-rebalance`
 - `POST /walk-forward-comparison`
 
-These routes are useful locally, but they must be protected before any network exposure.
+These routes are useful locally, but they must be protected before any network exposure. Route names containing `paper` may exist for compatibility; they must not override the operator-selected runtime mode.
 
 ---
 
@@ -496,9 +531,11 @@ This is suitable for a one-machine local operator model. It is not a distributed
 
 ---
 
-## Live / Paper Safety Defaults
+## Live / Paper Mode Contract
 
-Safe defaults include:
+Example defaults in `.env.example` are intentionally conservative for first-run setup and public documentation. They are not runtime authority over the operator's local configuration.
+
+Paper-mode example defaults include:
 
 - `TRADING_MODE=paper`
 - `LIVE_TRADING_ENABLED=false`
@@ -510,13 +547,15 @@ Safe defaults include:
 - `BUY_NOTIONAL_TARGET=150`
 - `MIN_BUY_NOTIONAL=25`
 
-Live mode should require explicit local configuration, human approval, confirmation phrase, audit logging, adapter requirements, and Alpaca credentials/base URL when Alpaca execution is enabled.
+For local live operation, `.env.local` should be reviewed before every market session.
+
+Live mode should require explicit local configuration, human approval where configured, confirmation phrase where configured, audit logging, adapter requirements, and broker credentials/base URL when broker execution is enabled.
+
+Critical rule: when an execution mode has been selected, invalid configuration must produce a hard stop with a clear blocking reason. It must not produce a different-mode session.
 
 See:
 
 - [`.env.example`](./.env.example)
-
-For local live operation, `.env.local` should be reviewed before every market session.
 
 ---
 
@@ -525,6 +564,7 @@ For local live operation, `.env.local` should be reviewed before every market se
 Before any live-market session:
 
 - Confirm Alpaca cash, positions, and open orders.
+- Confirm `.env.local` is the reviewed local runtime config and was not overwritten from `.env.example`.
 - Confirm the dashboard says `Live Market` and shows expected limits.
 - Confirm the workflow is stopped before activation.
 - Confirm only one trader and one stock scanner are running.
@@ -549,6 +589,9 @@ Before any live-market session:
 - Do not assume a single source is enough when source health is degraded.
 - Do not treat tier 3 or ticker-specific chatter as Hot Hot by itself.
 - Do not use live mode unless preflight is green and exposure is controlled.
+- Do not silently downgrade the selected execution mode.
+- Do not overwrite reviewed local runtime config with example defaults.
+- Do not use paper mode as a safety substitute for a failed different-mode configuration.
 
 ---
 
@@ -568,7 +611,7 @@ Remove them later:
 powershell -ExecutionPolicy Bypass -File scripts\uninstall-live-market-automation.ps1
 ```
 
-The automation skips US market holidays when the holiday helper is available and does not manually trade. However, because it uses dashboard/control APIs, those APIs must be treated as privileged automation surfaces.
+The automation skips US market holidays when the holiday helper is available and does not manually trade. However, because it uses dashboard/control APIs, those APIs must be treated as privileged automation surfaces. Automated start/stop scripts must preserve operator-selected runtime mode and must never convert one selected mode into another.
 
 ---
 
@@ -591,6 +634,7 @@ Highest-priority documentation and implementation work:
 10. Add dashboard control-mode banner.
 11. Keep Hot Slot Rotation locked/off until a paper-validation branch proves it.
 12. Add operator runbooks for broker outage, partial fills, hot-slot rotation, dashboard exposure, and policy rollback.
+13. Add explicit tests that selected-mode configuration hard-stops on invalid settings instead of downgrading into another execution mode.
 
 ---
 
@@ -599,3 +643,5 @@ Highest-priority documentation and implementation work:
 Future audits and implementation work must be source-code-first.
 
 Do not infer a generic project structure. Do not invent files, middleware, databases, auth systems, or missing protections. Verify against the actual code, tests, package scripts, and runtime paths.
+
+Do not treat paper mode as the safe replacement for another selected mode. Preserve operator intent and fail closed on invalid configuration rather than changing runtime mode.
