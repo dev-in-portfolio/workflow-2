@@ -10,9 +10,9 @@ const {
   buildBoundedPriorityOverrideBonus,
   buildBoundedRegularWatchBonus,
 } = require('../src/scanner-selection-v2');
-const { recordScannerSelectionShadow } = require('../src/scanner-outcome-shadow');
-const { recordScannerDecisionCycle } = require('../src/scanner-outcome-shadow');
+const { recordScannerDecisionCycle, recordScannerSelectionShadow } = require('../src/scanner-outcome-shadow');
 const { summarizeScannerSelectionValidation } = require('../src/scanner-selection-validation');
+const { updateScannerCandidateOutcomes } = require('../src/scanner-selection-outcomes');
 
 function snapshot({ price = 11, previousClose = 10, open = 10.1, high = 11.1, low = 9.95, minuteOpen = 10.8, minuteLow = 10.75, minuteHigh = 11.1, minuteVolume = 50_000, volume = 1_000_000, averageVolume = 2_000_000 } = {}) {
   return {
@@ -181,12 +181,48 @@ test('decision recorder preserves old and v2 candidate leaderboards', () => {
   const record = JSON.parse(fs.readFileSync(filePath, 'utf8').trim());
 
   assert.equal(result.recorded, 1);
+  assert.match(record.decision_id, /^scanner_/);
   assert.equal(record.candidate_count, 3);
+  assert(record.candidates.every((entry) => entry.candidate_id && entry.candidate_key));
   assert.equal(record.old_model_top.symbol, 'OLD');
   assert.equal(record.new_model_top.symbol, 'NEW');
+  assert.equal(record.new_model_top_any.symbol, 'NEW');
+  assert.equal(record.new_model_top_qualified.symbol, 'NEW');
   assert.deepEqual(record.old_model_top_three.map((entry) => entry.symbol), ['OLD', 'NEW', 'MID']);
   assert.deepEqual(record.new_model_top_three.map((entry) => entry.symbol), ['NEW', 'MID', 'OLD']);
+  assert.deepEqual(record.new_model_top_three_qualified.map((entry) => entry.symbol), ['NEW', 'MID']);
   assert.equal(record.candidates.find((entry) => entry.symbol === 'OLD').selected_for_submission, true);
+});
+
+test('decision recorder excludes unqualified v2 candidates from qualified leaderboard', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-qualified-'));
+  const filePath = path.join(tempDir, 'decisions.jsonl');
+  recordScannerDecisionCycle({
+    filePath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [
+      decisionCandidate('HIGH', 50, 99, false, 4),
+      decisionCandidate('QUAL', 49, 70, true, 2),
+    ],
+  });
+  const record = JSON.parse(fs.readFileSync(filePath, 'utf8').trim());
+
+  assert.equal(record.new_model_top_any.symbol, 'HIGH');
+  assert.equal(record.new_model_top_qualified.symbol, 'QUAL');
+});
+
+test('decision recorder returns null qualified leaderboard when no v2 candidate qualifies', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-no-qualified-'));
+  const filePath = path.join(tempDir, 'decisions.jsonl');
+  recordScannerDecisionCycle({
+    filePath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [decisionCandidate('HIGH', 50, 99, false, 4)],
+  });
+  const record = JSON.parse(fs.readFileSync(filePath, 'utf8').trim());
+
+  assert.equal(record.new_model_top_qualified, null);
+  assert.equal(record.new_model_no_qualified_reason, 'NO_V2_QUALIFIED_CANDIDATE');
 });
 
 test('selection validation summarizes recorded decision data', () => {
@@ -209,6 +245,172 @@ test('selection validation summarizes recorded decision data', () => {
   assert.equal(summary.old_model.positive_score_negative_move_count, 1);
   assert.equal(summary.new_model.qualified_count, 1);
   assert.equal(summary.recommendation, 'CONTINUE_SHADOW_TEST_COLLECT_MORE_DATA');
+});
+
+test('selection v2 missing volume baseline does not fabricate neutral relative volume', () => {
+  const scored = buildSelectionV2Score({
+    symbol: 'NOVOL',
+    snapshot: {
+      latestQuote: { bp: 10, ap: 10.05, t: '2026-07-07T14:30:00.000Z' },
+      minuteBar: { o: 10, h: 10.1, l: 9.95, c: 10.05, v: 1000, t: '2026-07-07T14:30:00.000Z' },
+      dailyBar: { o: 10, h: 10.1, l: 9.95, c: 10.05, v: 2000 },
+    },
+    currentPrice: 10.05,
+    previousClose: 10,
+    spreadPct: 0.2,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+  });
+
+  assert.equal(scored.features.relative_volume, null);
+  assert.equal(scored.features.relative_volume_available, false);
+  assert.equal(scored.features.relative_volume_method, 'unavailable');
+  assert(scored.reason_codes.includes('RELATIVE_VOLUME_BASELINE_UNAVAILABLE'));
+  assert.equal(scored.components.relative_volume_score, 0);
+});
+
+test('selection v2 labels previous-day volume as time-adjusted approximation', () => {
+  const approxSnapshot = snapshot();
+  delete approxSnapshot.averageVolume;
+  const scored = buildSelectionV2Score({
+    symbol: 'APPROX',
+    snapshot: approxSnapshot,
+    currentPrice: 11,
+    previousClose: 10,
+    spreadPct: 0.2,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+  });
+
+  assert.equal(scored.features.baseline_volume_source, 'previous_day_full_volume');
+  assert.equal(scored.features.relative_volume_method, 'previous_day_time_adjusted_approximation');
+  assert.equal(scored.features.relative_volume_approximation, true);
+});
+
+test('selection v2 exposes momentum heuristic instead of measured acceleration', () => {
+  const scored = buildSelectionV2Score({
+    symbol: 'MOMO',
+    snapshot: snapshot(),
+    currentPrice: 11,
+    previousClose: 10,
+    spreadPct: 0.2,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+  });
+
+  assert.equal(scored.features.momentum_acceleration_pct, null);
+  assert.equal(scored.features.momentum_data_quality, 'single_bar_heuristic');
+  assert.equal(scored.features.momentum_bar_count, 1);
+  assert.equal(typeof scored.features.momentum_vs_daily_move_heuristic, 'number');
+});
+
+test('outcome updater writes separate idempotent records and preserves decisions', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-outcome-'));
+  const decisionPath = path.join(tempDir, 'decisions.jsonl');
+  const outcomePath = path.join(tempDir, 'outcomes.jsonl');
+  recordScannerDecisionCycle({
+    filePath: decisionPath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [decisionCandidate('AAA', 50, 80, true, 2)],
+  });
+  const before = fs.readFileSync(decisionPath, 'utf8');
+  const barProvider = async () => [
+    { t: '2026-07-07T14:30:00.000Z', o: 10, h: 10.1, l: 9.9, c: 10 },
+    { t: '2026-07-07T14:31:00.000Z', o: 10, h: 10.4, l: 9.8, c: 10.3 },
+    { t: '2026-07-07T14:35:00.000Z', o: 10.3, h: 10.6, l: 10.1, c: 10.5 },
+  ];
+
+  const first = await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-07T14:40:00.000Z',
+    barProvider,
+  });
+  const second = await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-07T14:40:00.000Z',
+    barProvider,
+  });
+  const outcomes = fs.readFileSync(outcomePath, 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+
+  assert.equal(fs.readFileSync(decisionPath, 'utf8'), before);
+  assert.equal(first.written_outcomes, 2);
+  assert.equal(second.written_outcomes, 0);
+  assert.equal(outcomes[0].status, 'complete');
+  assert.equal(outcomes[0].window, '1m');
+  assert.equal(outcomes[0].observed_price, 10.3);
+  assert.equal(outcomes[0].maximum_favorable_price, 10.4);
+  assert.equal(outcomes[0].maximum_adverse_price, 9.8);
+});
+
+test('outcome updater does not use a pre-decision bar for a future window', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-no-lookahead-'));
+  const decisionPath = path.join(tempDir, 'decisions.jsonl');
+  const outcomePath = path.join(tempDir, 'outcomes.jsonl');
+  recordScannerDecisionCycle({
+    filePath: decisionPath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [decisionCandidate('AAA', 50, 80, true, 2)],
+  });
+
+  await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-07T14:40:00.000Z',
+    barProvider: async () => [{ t: '2026-07-07T14:29:00.000Z', h: 99, l: 1, c: 50 }],
+  });
+  const outcomes = fs.readFileSync(outcomePath, 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+
+  assert.equal(outcomes[0].status, 'unavailable');
+  assert(outcomes[0].reason_codes.includes('OUTCOME_BAR_UNAVAILABLE'));
+});
+
+test('outcome updater reports same-bar stop and target as ambiguous', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-ambiguous-'));
+  const decisionPath = path.join(tempDir, 'decisions.jsonl');
+  const outcomePath = path.join(tempDir, 'outcomes.jsonl');
+  const candidate = decisionCandidate('AAA', 50, 80, true, 2);
+  candidate.payload.market_context.scanner.structure_stop = { stop_price: 9.5, target_price: 10.5 };
+  recordScannerDecisionCycle({
+    filePath: decisionPath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [candidate],
+  });
+  await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-07T14:32:00.000Z',
+    barProvider: async () => [{ t: '2026-07-07T14:31:00.000Z', h: 10.6, l: 9.4, c: 10.1 }],
+  });
+  const outcome = JSON.parse(fs.readFileSync(outcomePath, 'utf8').trim());
+
+  assert.equal(outcome.first_threshold_touched, 'AMBIGUOUS_SAME_BAR');
+  assert.equal(outcome.simulated_trade_result, 'AMBIGUOUS_SAME_BAR');
+});
+
+test('selection validation calculates regret from completed outcome windows', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-regret-'));
+  const decisionPath = path.join(tempDir, 'decisions.jsonl');
+  const outcomePath = path.join(tempDir, 'outcomes.jsonl');
+  recordScannerDecisionCycle({
+    filePath: decisionPath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [
+      decisionCandidate('OLD', 90, 35, false, -4),
+      decisionCandidate('NEW', 70, 82, true, 3),
+    ],
+  });
+  await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-07T14:40:00.000Z',
+    barProvider: async ({ symbol }) => [
+      { t: '2026-07-07T14:31:00.000Z', h: symbol === 'NEW' ? 10.5 : 10.1, l: 9.9, c: symbol === 'NEW' ? 10.5 : 10.1 },
+    ],
+  });
+  const summary = summarizeScannerSelectionValidation({ filePath: decisionPath, outcomeFilePath: outcomePath });
+
+  assert.equal(summary.selection_regret.measurable, true);
+  assert.equal(summary.selection_regret.by_window['1m'].measurable_cycles, 1);
+  assert(summary.selection_regret.by_window['1m'].old_model_average_regret > summary.selection_regret.by_window['1m'].new_model_average_regret);
 });
 
 function decisionCandidate(symbol, legacyScore, v2Score, qualified, movePct) {

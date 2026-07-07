@@ -1251,6 +1251,7 @@ function createStockScanner(options = {}) {
       state.lastRejectedCount = results.length - state.lastApprovedCount;
       writeRuntimeSnapshot({
         receivedAt,
+        runId: runOptions.runId || `stock_${hashObject({ receivedAt, symbols: activeSymbols, baseUrl }).slice(0, 10)}`,
         durationMs: state.lastScanDurationMs,
         portfolio,
         allocation,
@@ -1265,6 +1266,7 @@ function createStockScanner(options = {}) {
         partialFillSummary,
         skipSummary: skipTracker.summary(),
         recentSkips: skipTracker.recent(),
+        decisionTraces: skipTracker.traces(),
         candidates,
         previewCandidates,
         allBuyCandidates,
@@ -1439,7 +1441,7 @@ function createStockScanner(options = {}) {
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, hotSlotRotation = null, skipSummary = null, recentSkips = [], candidates = [], previewCandidates = [], allBuyCandidates = [], allPreviewBuyCandidates = [], marketClosedExecutionBlock = false, results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, runId = null, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, hotSlotRotation = null, skipSummary = null, recentSkips = [], decisionTraces = [], candidates = [], previewCandidates = [], allBuyCandidates = [], allPreviewBuyCandidates = [], marketClosedExecutionBlock = false, results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     let scannerSelectionShadowOutcome = null;
     if (scannerSelectionV2ShadowEnabled && scannerSelectionV2OutcomeTrackingEnabled) {
@@ -1452,6 +1454,7 @@ function createStockScanner(options = {}) {
     }
     const decisionRecord = recordScannerDecisionCycle({
       receivedAt,
+      runId,
       mode: 'live-market',
       marketRegime: intradayRegime,
       symbolUniverse: latestSourceUniverse?.regularWatch?.universe || null,
@@ -1461,6 +1464,7 @@ function createStockScanner(options = {}) {
       previewCandidates: allPreviewBuyCandidates.length ? allPreviewBuyCandidates : previewCandidates,
       skipSummary,
       recentSkips,
+      decisionTraces,
       candidateLifecycle: {
         state: candidateLifecycleState,
         summary: candidateLifecycleSummary,
@@ -1742,10 +1746,31 @@ function createStockScanner(options = {}) {
 function createSkipTracker(limit = 12) {
   const counts = {};
   const examples = [];
+  const traces = new Map();
   return {
     record(reason, details = {}) {
       const key = String(reason || 'UNKNOWN_SKIP');
       counts[key] = (counts[key] || 0) + 1;
+      const traceSymbol = String(details.symbol || '').trim().toUpperCase();
+      if (traceSymbol && traceSymbol !== '*') {
+        const existing = traces.get(traceSymbol) || {
+          symbol: traceSymbol,
+          fetched: true,
+          snapshot_valid: true,
+          candidate_built: false,
+          ranked: false,
+          lifecycle_eligible: false,
+          selected: false,
+          submitted: false,
+          risk_approved: false,
+          order_accepted: false,
+          terminal_stage: 'CANDIDATE_CONSTRUCTION',
+          reason_codes: [],
+        };
+        existing.reason_codes = [...new Set([...(existing.reason_codes || []), key])];
+        existing.terminal_stage = resolveTraceStageForSkip(key);
+        traces.set(traceSymbol, existing);
+      }
       if (key === 'EXIT_TARGET_NOT_MET') {
         examples.unshift({ reason: key, ...details });
         if (examples.length > limit) examples.length = limit;
@@ -1759,7 +1784,21 @@ function createSkipTracker(limit = 12) {
     recent() {
       return examples;
     },
+    traces() {
+      return [...traces.values()];
+    },
   };
+}
+
+function resolveTraceStageForSkip(reason) {
+  const key = String(reason || '');
+  if (key.includes('MARKET') || key.includes('DATA')) return 'MARKET_DATA';
+  if (key.includes('RANK') || key.includes('SCORE') || key.includes('MOMENTUM')) return 'QUALIFICATION';
+  if (key.includes('LIFECYCLE') || key.includes('QUEUE') || key.includes('CONFIRMATION')) return 'LIFECYCLE';
+  if (key.includes('POSITION') || key.includes('ALLOCATION') || key.includes('BUYING_POWER')) return 'ALLOCATION';
+  if (key.includes('RISK') || key.includes('STOP')) return 'RISK_GATE';
+  if (key.includes('ORDER')) return 'ORDER_SUBMISSION';
+  return 'CANDIDATE_CONSTRUCTION';
 }
 
 async function fetchStockBundle({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, symbols }) {
@@ -2163,7 +2202,7 @@ function buildCandidates(bundle, options = {}) {
       scannerContext.regular_watch_comparison = regularWatchComparison;
       scannerContext.selection_v2 = selectionV2;
       scannerContext.selection_v2_shadow_only = Boolean(selectionV2);
-      scannerContext.selection_v2_authoritative = Boolean(options.scannerSelectionV2AuthorityEnabled);
+      scannerContext.selection_v2_authoritative = false;
       candidate.dynamicWatchlistMember = isDynamicWatchSymbol;
       candidate.priorityOverrideEligible = isPriorityOverrideSymbol;
       candidate.priorityOverrideApplied = isPriorityOverrideApplied;
@@ -2191,11 +2230,6 @@ function buildCandidates(bundle, options = {}) {
     }
   }
   buyEntries.sort((a, b) => {
-    if (options.scannerSelectionV2AuthorityEnabled) {
-      const aV2 = Number.isFinite(Number(a.selectionV2SortScore)) ? Number(a.selectionV2SortScore) : Number.NEGATIVE_INFINITY;
-      const bV2 = Number.isFinite(Number(b.selectionV2SortScore)) ? Number(b.selectionV2SortScore) : Number.NEGATIVE_INFINITY;
-      if (bV2 !== aV2) return bV2 - aV2;
-    }
     const aScore = Number.isFinite(Number(a.regularWatchSortScore))
       ? Number(a.regularWatchSortScore)
       : (Number.isFinite(Number(a.priorityOverrideSortScore)) ? Number(a.priorityOverrideSortScore) : Number(a.rankScore || 0));

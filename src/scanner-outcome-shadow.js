@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { nowIso, resolveRepoRoot } = require('./util');
+const { hashObject, nowIso, resolveRepoRoot } = require('./util');
 
 function resolveScannerOutcomeShadowPath({ env = process.env, repoRoot = resolveRepoRoot() } = {}) {
   return path.resolve(env.SCANNER_OUTCOME_SHADOW_PATH || path.join(repoRoot, 'data', 'runtime', 'scanner-selection-shadow-outcomes.jsonl'));
@@ -52,6 +52,7 @@ function resolveScannerDecisionRecordsPath({ env = process.env, repoRoot = resol
 
 function recordScannerDecisionCycle({
   receivedAt = nowIso(),
+  runId = null,
   mode = 'live-market',
   marketRegime = null,
   symbolUniverse = null,
@@ -61,6 +62,7 @@ function recordScannerDecisionCycle({
   previewCandidates = [],
   skipSummary = {},
   recentSkips = [],
+  decisionTraces = [],
   candidateLifecycle = null,
   results = [],
   brokerState = null,
@@ -69,19 +71,24 @@ function recordScannerDecisionCycle({
   repoRoot = resolveRepoRoot(),
 } = {}) {
   const targetPath = filePath || resolveScannerDecisionRecordsPath({ env, repoRoot });
-  const fullCandidates = summarizeCandidates(candidates);
+  const decisionId = buildDecisionId({ receivedAt, runId, candidates, mode });
+  const fullCandidates = summarizeCandidates(candidates, { decisionId });
   const selectedSymbols = new Set((Array.isArray(selectedCandidates) ? selectedCandidates : []).map((candidate) => String(candidate?.symbol || '').toUpperCase()).filter(Boolean));
   const previewSymbols = new Set((Array.isArray(previewCandidates) ? previewCandidates : []).map((candidate) => String(candidate?.symbol || '').toUpperCase()).filter(Boolean));
   const oldRanked = fullCandidates
     .map((candidate) => ({ ...candidate }))
     .sort((a, b) => Number(b.legacy_sort_score || b.rank_score || 0) - Number(a.legacy_sort_score || a.rank_score || 0));
-  const v2Ranked = fullCandidates
+  const v2RankedAny = fullCandidates
     .map((candidate) => ({ ...candidate }))
     .sort((a, b) => Number(b.selection_v2_score ?? -Infinity) - Number(a.selection_v2_score ?? -Infinity));
+  const v2RankedQualified = v2RankedAny.filter((candidate) => candidate.selection_v2_qualified === true);
+  const normalizedTraces = normalizeDecisionTraces({ decisionId, traces: decisionTraces, candidates: fullCandidates, selectedSymbols, results });
   const record = {
-    schema_version: '2026-07-07.scanner-decision-record.1',
+    schema_version: '2026-07-07.scanner-decision-record.2',
+    decision_id: decisionId,
     recorded_at: nowIso(),
     decision_at: receivedAt,
+    run_id: runId,
     mode,
     market_regime: marketRegime,
     approved_symbol_count: Array.isArray(approvedSymbols) ? approvedSymbols.length : 0,
@@ -93,8 +100,13 @@ function recordScannerDecisionCycle({
     preview_symbols: [...previewSymbols],
     old_model_top: oldRanked[0] || null,
     old_model_top_three: oldRanked.slice(0, 3),
-    new_model_top: v2Ranked[0] || null,
-    new_model_top_three: v2Ranked.slice(0, 3),
+    new_model_top: v2RankedAny[0] || null,
+    new_model_top_three: v2RankedAny.slice(0, 3),
+    new_model_top_any: v2RankedAny[0] || null,
+    new_model_top_qualified: v2RankedQualified[0] || null,
+    new_model_top_three_any: v2RankedAny.slice(0, 3),
+    new_model_top_three_qualified: v2RankedQualified.slice(0, 3),
+    new_model_no_qualified_reason: v2RankedQualified.length ? null : 'NO_V2_QUALIFIED_CANDIDATE',
     candidates: fullCandidates.map((candidate) => ({
       ...candidate,
       selected_for_submission: selectedSymbols.has(candidate.symbol),
@@ -102,6 +114,8 @@ function recordScannerDecisionCycle({
     })),
     skip_summary: skipSummary || {},
     recent_skips: Array.isArray(recentSkips) ? recentSkips.slice(0, 50) : [],
+    decision_trace_count: normalizedTraces.length,
+    decision_traces: normalizedTraces.slice(0, 2000),
     candidate_lifecycle_summary: candidateLifecycle?.summary || null,
     post_results: (Array.isArray(results) ? results : []).map(summarizePostResult),
     broker_state: brokerState ? {
@@ -119,13 +133,17 @@ function recordScannerDecisionCycle({
   return { recorded: 1, path: targetPath, candidate_count: fullCandidates.length };
 }
 
-function summarizeCandidates(candidates = []) {
+function summarizeCandidates(candidates = [], { decisionId = null } = {}) {
   return (Array.isArray(candidates) ? candidates : [])
     .filter((candidate) => candidate?.payload?.side === 'buy')
     .map((candidate, index) => {
       const scanner = candidate.payload?.market_context?.scanner || {};
       const selectionV2 = scanner.selection_v2 || candidate.selectionV2 || null;
+      const candidateKey = normalizeCandidateKey(candidate.symbol, candidate.setupKey || scanner.setup_key || null);
+      const candidateId = buildCandidateId({ decisionId, symbol: candidate.symbol, setupKey: candidate.setupKey || scanner.setup_key || null });
       return {
+        candidate_id: candidateId,
+        candidate_key: candidateKey,
         legacy_rank: index + 1,
         symbol: String(candidate.symbol || '').toUpperCase(),
         setup_key: candidate.setupKey || scanner.setup_key || null,
@@ -144,6 +162,7 @@ function summarizeCandidates(candidates = []) {
         priority_override_bonus: scanner.priority_override_bonus ?? 0,
         regular_watch_comparison: scanner.regular_watch_comparison || null,
         selection_v2_score: selectionV2?.final_opportunity_score ?? null,
+        selection_v2_shadow_only: selectionV2?.shadow_only === true,
         selection_v2_qualified: selectionV2?.qualified ?? null,
         setup_classification: selectionV2?.setup_classification ?? null,
         selection_v2_components: selectionV2?.components || null,
@@ -153,6 +172,85 @@ function summarizeCandidates(candidates = []) {
         structure_stop: scanner.structure_stop || candidate.payload?.structure_stop || null,
       };
     });
+}
+
+function buildDecisionId({ receivedAt = nowIso(), runId = null, candidates = [], mode = 'scanner' } = {}) {
+  const timestamp = normalizeIdPart(String(receivedAt || nowIso()).replace(/[:.]/g, '-'));
+  const runPart = normalizeIdPart(runId || hashObject({
+    receivedAt,
+    mode,
+    symbols: (Array.isArray(candidates) ? candidates : []).map((candidate) => candidate?.symbol).filter(Boolean).sort(),
+  }).slice(0, 12));
+  return `scanner_${timestamp}_${runPart}`;
+}
+
+function buildCandidateId({ decisionId, symbol, setupKey = null } = {}) {
+  const candidateKey = normalizeCandidateKey(symbol, setupKey);
+  return `${normalizeIdPart(decisionId || 'scanner_unknown')}_${normalizeIdPart(candidateKey)}`;
+}
+
+function normalizeCandidateKey(symbol, setupKey = null) {
+  const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+  const normalizedSetup = String(setupKey || '').trim().toLowerCase();
+  return normalizedSetup ? `${normalizedSymbol}::${normalizedSetup}` : normalizedSymbol;
+}
+
+function normalizeIdPart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120) || 'unknown';
+}
+
+function normalizeDecisionTraces({ decisionId, traces = [], candidates = [], selectedSymbols = new Set(), results = [] } = {}) {
+  const bySymbol = new Map();
+  for (const trace of Array.isArray(traces) ? traces : []) {
+    const symbol = String(trace?.symbol || '').trim().toUpperCase();
+    if (!symbol) continue;
+    bySymbol.set(symbol, {
+      decision_id: decisionId,
+      symbol,
+      fetched: Boolean(trace.fetched),
+      snapshot_valid: Boolean(trace.snapshot_valid),
+      candidate_built: Boolean(trace.candidate_built),
+      ranked: Boolean(trace.ranked),
+      lifecycle_eligible: Boolean(trace.lifecycle_eligible),
+      selected: Boolean(trace.selected),
+      submitted: Boolean(trace.submitted),
+      risk_approved: Boolean(trace.risk_approved),
+      order_accepted: Boolean(trace.order_accepted),
+      terminal_stage: trace.terminal_stage || 'UNIVERSE',
+      reason_codes: Array.isArray(trace.reason_codes) ? [...new Set(trace.reason_codes)] : [],
+    });
+  }
+  const acceptedSymbols = new Set((Array.isArray(results) ? results : []).filter((result) => result?.accepted !== false).map((result) => String(result.symbol || result.response?.signal?.symbol || '').toUpperCase()).filter(Boolean));
+  for (const candidate of candidates) {
+    const symbol = String(candidate.symbol || '').toUpperCase();
+    const existing = bySymbol.get(symbol) || { decision_id: decisionId, symbol, reason_codes: [] };
+    bySymbol.set(symbol, {
+      ...existing,
+      fetched: true,
+      snapshot_valid: true,
+      candidate_built: true,
+      ranked: true,
+      lifecycle_eligible: candidate.lifecycle_status === 'eligible' || candidate.lifecycle_status === 'selected' || candidate.lifecycle_selected,
+      selected: selectedSymbols.has(symbol) || Boolean(candidate.selected_for_submission),
+      submitted: selectedSymbols.has(symbol),
+      risk_approved: acceptedSymbols.has(symbol),
+      order_accepted: acceptedSymbols.has(symbol),
+      terminal_stage: acceptedSymbols.has(symbol)
+        ? 'BROKER_ACCEPTANCE'
+        : selectedSymbols.has(symbol)
+          ? 'ORDER_SUBMISSION'
+          : candidate.lifecycle_status && !['eligible', 'selected'].includes(candidate.lifecycle_status)
+            ? 'LIFECYCLE'
+            : 'RANKING',
+      reason_codes: [...new Set([...(existing.reason_codes || []), ...(candidate.lifecycle_reason_codes || []), ...(candidate.selection_v2_reason_codes || [])])],
+    });
+  }
+  return [...bySymbol.values()].sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
 }
 
 function summarizePostResult(result = {}) {
@@ -193,4 +291,7 @@ module.exports = {
   resolveScannerDecisionRecordsPath,
   recordScannerSelectionShadow,
   recordScannerDecisionCycle,
+  buildDecisionId,
+  buildCandidateId,
+  normalizeCandidateKey,
 };

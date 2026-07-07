@@ -17,6 +17,10 @@ const ReasonCode = {
   INSUFFICIENT_REWARD_REMAINING: 'INSUFFICIENT_REWARD_REMAINING',
   RELATIVE_VOLUME_TOO_LOW: 'RELATIVE_VOLUME_TOO_LOW',
   SPREAD_TOO_WIDE_FOR_EXPECTED_GAIN: 'SPREAD_TOO_WIDE_FOR_EXPECTED_GAIN',
+  RELATIVE_VOLUME_BASELINE_UNAVAILABLE: 'RELATIVE_VOLUME_BASELINE_UNAVAILABLE',
+  RELATIVE_VOLUME_SOURCE_MISMATCH: 'RELATIVE_VOLUME_SOURCE_MISMATCH',
+  RELATIVE_VOLUME_OUTLIER: 'RELATIVE_VOLUME_OUTLIER',
+  SESSION_FRACTION_UNAVAILABLE: 'SESSION_FRACTION_UNAVAILABLE',
 };
 
 function buildSelectionV2Score({
@@ -86,7 +90,7 @@ function buildSelectionV2Score({
     && Number.isFinite(features.previous_close)
     && features.previous_close > 0
     && features.spread_pct <= safeNumber(options.selectionV2MaxSpreadPct, 2.5)
-    && features.relative_volume >= safeNumber(options.selectionV2MinRelativeVolume, 0.25)
+    && (features.relative_volume_available === false || features.relative_volume >= safeNumber(options.selectionV2MinRelativeVolume, 0.25))
     && features.freshness_score >= safeNumber(options.selectionV2MinFreshnessScore, 35)
     && !penalties.hard_block,
   );
@@ -151,15 +155,35 @@ function buildMarketFeatures({
   const minuteClose = safeNumber(minuteBar.c ?? minuteBar.close ?? price, price);
   const vwap = safeNumber(minuteBar.vw ?? minuteBar.vwap ?? dailyBar.vw ?? dailyBar.vwap ?? snapshot.vwap ?? null, null);
   const currentVolume = safeNumber(dailyBar.v ?? dailyBar.volume ?? snapshot.volume ?? minuteBar.v ?? 0, 0);
+  const currentVolumeSource = Number.isFinite(safeNumber(dailyBar.v ?? dailyBar.volume ?? null, null))
+    ? 'current_day_cumulative_volume'
+    : Number.isFinite(safeNumber(snapshot.volume ?? null, null))
+      ? 'snapshot_volume'
+      : Number.isFinite(safeNumber(minuteBar.v ?? minuteBar.volume ?? null, null))
+        ? 'one_minute_bar_volume'
+        : 'unavailable';
   const minuteVolume = safeNumber(minuteBar.v ?? minuteBar.volume ?? 0, 0);
-  const averageVolume = safeNumber(snapshot.averageVolume ?? snapshot.average_volume ?? prevDailyBar.v ?? prevDailyBar.volume ?? null, null);
+  const explicitAverageVolume = safeNumber(snapshot.averageVolume ?? snapshot.average_volume ?? null, null);
+  const previousDayVolume = safeNumber(prevDailyBar.v ?? prevDailyBar.volume ?? null, null);
+  const averageVolume = Number.isFinite(explicitAverageVolume) ? explicitAverageVolume : previousDayVolume;
+  const baselineVolumeSource = Number.isFinite(explicitAverageVolume)
+    ? 'average_daily_volume'
+    : Number.isFinite(previousDayVolume)
+      ? 'previous_day_full_volume'
+      : 'unavailable';
   const elapsedFraction = estimateSessionElapsedFraction(receivedAt);
   const normalComparableVolume = Number.isFinite(averageVolume) && averageVolume > 0
     ? Math.max(averageVolume * elapsedFraction, averageVolume * 0.03)
     : null;
   const relativeVolume = Number.isFinite(normalComparableVolume) && normalComparableVolume > 0
     ? currentVolume / normalComparableVolume
-    : 1;
+    : null;
+  const relativeVolumeAvailable = Number.isFinite(relativeVolume);
+  const relativeVolumeMethod = relativeVolumeAvailable
+    ? baselineVolumeSource === 'average_daily_volume'
+      ? 'average_daily_volume_time_adjusted'
+      : 'previous_day_time_adjusted_approximation'
+    : 'unavailable';
   const signedMovePct = Number.isFinite(price) && Number.isFinite(prevClose) && prevClose > 0
     ? ((price - prevClose) / prevClose) * 100
     : null;
@@ -206,18 +230,26 @@ function buildMarketFeatures({
     distance_from_intraday_low_pct: roundScore(distanceFromLowPct),
     position_within_daily_range_pct: roundScore(positionWithinRangePct),
     one_minute_return_pct: Number.isFinite(oneMinuteReturnPct) ? roundScore(oneMinuteReturnPct) : null,
-    momentum_acceleration_pct: Number.isFinite(oneMinuteReturnPct) && Number.isFinite(signedMovePct)
+    momentum_vs_daily_move_heuristic: Number.isFinite(oneMinuteReturnPct) && Number.isFinite(signedMovePct)
       ? roundScore(oneMinuteReturnPct - (signedMovePct / 20))
       : null,
+    momentum_acceleration_pct: null,
+    momentum_data_quality: 'single_bar_heuristic',
+    momentum_bar_count: Number.isFinite(oneMinuteReturnPct) ? 1 : 0,
     reversal_from_peak_pct: roundScore(distanceFromHighPct),
     pullback_depth_pct: Number.isFinite(distanceFromHighPct) ? roundScore(distanceFromHighPct) : null,
     trend_consistency_score: roundScore(clamp((positionWithinRangePct - 40) * 1.25 + safeNumber(oneMinuteReturnPct, 0) * 10, 0, 100)),
     current_volume: currentVolume,
+    current_volume_source: currentVolumeSource,
     minute_volume: minuteVolume,
     average_volume: Number.isFinite(averageVolume) ? averageVolume : null,
+    baseline_volume_source: baselineVolumeSource,
+    elapsed_session_fraction: roundScore(elapsedFraction),
     normal_comparable_volume: Number.isFinite(normalComparableVolume) ? roundScore(normalComparableVolume) : null,
-    relative_volume: roundScore(relativeVolume),
-    relative_volume_approximation: true,
+    relative_volume: relativeVolumeAvailable ? roundScore(relativeVolume) : null,
+    relative_volume_available: relativeVolumeAvailable,
+    relative_volume_method: relativeVolumeMethod,
+    relative_volume_approximation: baselineVolumeSource === 'previous_day_full_volume',
     dollar_volume: Number.isFinite(price) ? roundScore(currentVolume * price) : null,
     spread_pct: roundScore(spreadPct),
     estimated_slippage_pct: roundScore(Math.max(0, safeNumber(spreadPct, 0)) / 2),
@@ -283,7 +315,12 @@ function buildPenalties(features = {}, options = {}) {
   const stalenessPenalty = Math.max(0, 70 - safeNumber(features.freshness_score, 100)) * 0.5;
   const rewardRiskPenalty = Number.isFinite(rewardRisk) && rewardRisk < 1.4 ? (1.4 - rewardRisk) * 15 : 0;
   if (Number.isFinite(rewardRisk) && rewardRisk < 1.4) reasonCodes.push(ReasonCode.INSUFFICIENT_REWARD_REMAINING);
-  if (relativeVolume < safeNumber(options.selectionV2MinRelativeVolume, 0.25)) reasonCodes.push(ReasonCode.RELATIVE_VOLUME_TOO_LOW);
+  if (features.relative_volume_available === false) {
+    reasonCodes.push(ReasonCode.RELATIVE_VOLUME_BASELINE_UNAVAILABLE);
+  } else if (relativeVolume < safeNumber(options.selectionV2MinRelativeVolume, 0.25)) {
+    reasonCodes.push(ReasonCode.RELATIVE_VOLUME_TOO_LOW);
+  }
+  if (Number.isFinite(relativeVolume) && relativeVolume > 50) reasonCodes.push(ReasonCode.RELATIVE_VOLUME_OUTLIER);
 
   return {
     overextension_penalty: overextensionPenalty,
@@ -307,13 +344,15 @@ function scoreTrendQuality(features, setupClassification) {
 
 function scoreMomentum(features, setupClassification) {
   const oneMinute = safeNumber(features.one_minute_return_pct, 0);
-  const acceleration = safeNumber(features.momentum_acceleration_pct, 0);
+  const heuristic = safeNumber(features.momentum_vs_daily_move_heuristic, 0);
   const base = setupClassification === SetupClassification.UNCLASSIFIED ? 2 : 6;
-  return clamp(base + Math.max(0, oneMinute) * 12 + Math.max(0, acceleration) * 6, 0, 18);
+  return clamp(base + Math.max(0, oneMinute) * 12 + Math.max(0, heuristic) * 2, 0, 18);
 }
 
 function scoreRelativeVolume(features) {
-  const relativeVolume = safeNumber(features.relative_volume, 1);
+  if (features.relative_volume_available === false) return 0;
+  const relativeVolume = safeNumber(features.relative_volume, null);
+  if (!Number.isFinite(relativeVolume)) return 0;
   return clamp(4 + Math.log10(Math.max(0.1, relativeVolume)) * 12, 0, 16);
 }
 
@@ -373,6 +412,7 @@ function buildBoundedPriorityOverrideBonus({ priorityOverride = null, features =
     setup?.setup_classification
     && setup.setup_classification !== SetupClassification.UNCLASSIFIED
     && safeNumber(features.spread_pct, 99) <= safeNumber(options.selectionV2MaxSpreadPct, 2.5)
+    && features.relative_volume_available !== false
     && safeNumber(features.relative_volume, 0) >= safeNumber(options.selectionV2MinRelativeVolume, 0.25),
   );
   const bonus = eligible && marketConfirmed ? maxBonus : 0;
