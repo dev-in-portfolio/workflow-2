@@ -24,6 +24,7 @@
     "regular-stock:automation:uninstall": "powershell -ExecutionPolicy Bypass -File scripts/uninstall-regular-stock-automation.ps1",
     "preflight:live": "node scripts/live-preflight.js",
     "reconcile:broker": "node scripts/reconcile-broker-local.js",
+    "scanner:validate-selection": "node src/scanner-selection-validation.js",
     "smoke:live": "node scripts/live-minimal-paper-smoke.js",
     "status:overnight": "node scripts/overnight-status.js",
     "tune:policy": "node src/policy-cli.js"

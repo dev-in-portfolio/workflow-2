@@ -9,7 +9,7 @@ const { loadRegularWatchStatus, resolveRegularWatchStatusPath } = require('./reg
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
 const { buildSelectionV2Score } = require('./scanner-selection-v2');
-const { recordScannerSelectionShadow } = require('./scanner-outcome-shadow');
+const { recordScannerDecisionCycle, recordScannerSelectionShadow } = require('./scanner-outcome-shadow');
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
 const { assertSignalCandidate } = require('./module-contracts');
@@ -625,7 +625,7 @@ function createStockScanner(options = {}) {
         huntToMonitorLatchEnabled,
         manageOnlyBlocksBuys,
       });
-      const { candidates, candidateLifecycleResult: computedCandidateLifecycleResult } = buildCandidates(bundle, {
+      const { candidates, allBuyCandidates, candidateLifecycleResult: computedCandidateLifecycleResult } = buildCandidates(bundle, {
         receivedAt,
         maxCandidatesPerRun,
         maxBuyCandidates: hotSlotRotationEnabled && Number(safeNumber(portfolio.remaining_position_slots, 0)) <= 0
@@ -763,7 +763,7 @@ function createStockScanner(options = {}) {
         saveCandidateLifecycleState(candidateLifecycleResult.state, { env, repoRoot: resolveRepoRoot() });
       }
 
-      const { candidates: previewCandidates = [] } = !marketOpen
+      const { candidates: previewCandidates = [], allBuyCandidates: allPreviewBuyCandidates = [] } = !marketOpen
         ? buildCandidates(bundle, {
           receivedAt,
           maxCandidatesPerRun,
@@ -1267,6 +1267,8 @@ function createStockScanner(options = {}) {
         recentSkips: skipTracker.recent(),
         candidates,
         previewCandidates,
+        allBuyCandidates,
+        allPreviewBuyCandidates,
         marketClosedExecutionBlock: !marketOpen,
         results,
         recentTradePenalties,
@@ -1437,17 +1439,37 @@ function createStockScanner(options = {}) {
 
   return controller;
 
-  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, hotSlotRotation = null, skipSummary = null, recentSkips = [], candidates = [], previewCandidates = [], marketClosedExecutionBlock = false, results = [], recentTradePenalties = new Map(), error = null }) {
+  function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, hotSlotRotation = null, skipSummary = null, recentSkips = [], candidates = [], previewCandidates = [], allBuyCandidates = [], allPreviewBuyCandidates = [], marketClosedExecutionBlock = false, results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
     let scannerSelectionShadowOutcome = null;
     if (scannerSelectionV2ShadowEnabled && scannerSelectionV2OutcomeTrackingEnabled) {
       scannerSelectionShadowOutcome = recordScannerSelectionShadow({
-        candidates: candidates.length ? candidates : previewCandidates,
+        candidates: allBuyCandidates.length ? allBuyCandidates : (allPreviewBuyCandidates.length ? allPreviewBuyCandidates : (candidates.length ? candidates : previewCandidates)),
         receivedAt,
         env,
         repoRoot,
       });
     }
+    const decisionRecord = recordScannerDecisionCycle({
+      receivedAt,
+      mode: 'live-market',
+      marketRegime: intradayRegime,
+      symbolUniverse: latestSourceUniverse?.regularWatch?.universe || null,
+      approvedSymbols: latestApprovedReferenceSymbols,
+      candidates: allBuyCandidates.length ? allBuyCandidates : candidates,
+      selectedCandidates: candidates,
+      previewCandidates: allPreviewBuyCandidates.length ? allPreviewBuyCandidates : previewCandidates,
+      skipSummary,
+      recentSkips,
+      candidateLifecycle: {
+        state: candidateLifecycleState,
+        summary: candidateLifecycleSummary,
+      },
+      results,
+      brokerState,
+      env,
+      repoRoot,
+    });
     const previewDetails = summarizePreviewCandidates(previewCandidates);
     const waitingForBuy = summarizeWaitingForBuy({
       candidates,
@@ -1614,6 +1636,7 @@ function createStockScanner(options = {}) {
         authority_enabled: Boolean(scannerSelectionV2AuthorityEnabled),
         outcome_tracking_enabled: Boolean(scannerSelectionV2OutcomeTrackingEnabled),
         outcome_record: scannerSelectionShadowOutcome,
+        decision_record: decisionRecord,
         config: scannerSelectionV2Config,
       },
       position_sizing: {
@@ -2242,6 +2265,8 @@ function buildCandidates(bundle, options = {}) {
       ...sellEntries,
       ...limitedBuys,
     ],
+    allBuyCandidates: buyEntries,
+    selectedBuyCandidates: selectedBuyEntries,
     candidateLifecycleResult,
   };
 }

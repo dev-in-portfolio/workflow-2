@@ -11,6 +11,8 @@ const {
   buildBoundedRegularWatchBonus,
 } = require('../src/scanner-selection-v2');
 const { recordScannerSelectionShadow } = require('../src/scanner-outcome-shadow');
+const { recordScannerDecisionCycle } = require('../src/scanner-outcome-shadow');
+const { summarizeScannerSelectionValidation } = require('../src/scanner-selection-validation');
 
 function snapshot({ price = 11, previousClose = 10, open = 10.1, high = 11.1, low = 9.95, minuteOpen = 10.8, minuteLow = 10.75, minuteHigh = 11.1, minuteVolume = 50_000, volume = 1_000_000, averageVolume = 2_000_000 } = {}) {
   return {
@@ -158,3 +160,82 @@ test('shadow outcome tracker records candidates without order side effects', () 
   assert.equal(record.observed, false);
   assert.equal(record.horizons.length, 6);
 });
+
+test('decision recorder preserves old and v2 candidate leaderboards', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-decision-'));
+  const filePath = path.join(tempDir, 'decisions.jsonl');
+  const candidates = [
+    decisionCandidate('OLD', 90, 35, false, -4),
+    decisionCandidate('NEW', 70, 82, true, 3),
+    decisionCandidate('MID', 65, 55, true, 1),
+  ];
+
+  const result = recordScannerDecisionCycle({
+    filePath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    approvedSymbols: ['OLD', 'NEW', 'MID'],
+    candidates,
+    selectedCandidates: [candidates[0]],
+    skipSummary: { TEST_SKIP: 1 },
+  });
+  const record = JSON.parse(fs.readFileSync(filePath, 'utf8').trim());
+
+  assert.equal(result.recorded, 1);
+  assert.equal(record.candidate_count, 3);
+  assert.equal(record.old_model_top.symbol, 'OLD');
+  assert.equal(record.new_model_top.symbol, 'NEW');
+  assert.deepEqual(record.old_model_top_three.map((entry) => entry.symbol), ['OLD', 'NEW', 'MID']);
+  assert.deepEqual(record.new_model_top_three.map((entry) => entry.symbol), ['NEW', 'MID', 'OLD']);
+  assert.equal(record.candidates.find((entry) => entry.symbol === 'OLD').selected_for_submission, true);
+});
+
+test('selection validation summarizes recorded decision data', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-validation-'));
+  const filePath = path.join(tempDir, 'decisions.jsonl');
+  recordScannerDecisionCycle({
+    filePath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [
+      decisionCandidate('OLD', 90, 35, false, -4),
+      decisionCandidate('NEW', 70, 82, true, 3),
+    ],
+  });
+  const summary = summarizeScannerSelectionValidation({ filePath });
+
+  assert.equal(summary.scanner_cycles, 1);
+  assert.equal(summary.candidates, 2);
+  assert.equal(summary.cycles_with_multiple_candidates, 1);
+  assert.equal(summary.old_new_top_pick_disagreements, 1);
+  assert.equal(summary.old_model.positive_score_negative_move_count, 1);
+  assert.equal(summary.new_model.qualified_count, 1);
+  assert.equal(summary.recommendation, 'CONTINUE_SHADOW_TEST_COLLECT_MORE_DATA');
+});
+
+function decisionCandidate(symbol, legacyScore, v2Score, qualified, movePct) {
+  return {
+    symbol,
+    rankScore: legacyScore,
+    regularWatchSortScore: legacyScore,
+    payload: {
+      side: 'buy',
+      entry_price: 10,
+      volume: 100000,
+      market_context: {
+        scanner: {
+          current_price: 10,
+          previous_close: 9.7,
+          move_pct: movePct,
+          spread_pct: 0.2,
+          selection_v2: {
+            final_opportunity_score: v2Score,
+            qualified,
+            setup_classification: qualified ? 'MOMENTUM_CONTINUATION' : 'UNCLASSIFIED',
+            components: { momentum_score: v2Score },
+            penalties: {},
+            reason_codes: qualified ? ['MOMENTUM_CONTINUATION_CONFIRMED'] : ['SETUP_UNCLASSIFIED'],
+          },
+        },
+      },
+    },
+  };
+}
