@@ -715,6 +715,26 @@ h1 {
   font-size: 0.82rem;
 }
 
+.broker-sync-control {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.broker-sync-control .control-button {
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+}
+
+.broker-sync-control small.sync-ok {
+  color: var(--green);
+}
+
+.broker-sync-control small.sync-error {
+  color: var(--red);
+}
+
 .card-head {
   display: flex;
   align-items: center;

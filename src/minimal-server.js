@@ -9,12 +9,25 @@ const { resolveExecutionQualityStatePath } = require('./execution-quality-state'
 const { PaperTradeAdapter } = require('./paper-adapter');
 const { processMarketInput, processTradingSignal } = require('./trading-loop');
 const { nowIso, resolveRepoRoot } = require('./util');
+const { isLiveModeSelected } = require('./execution-mode');
+
+function resolveExecutionAdapter(options = {}) {
+  if (options.executionAdapter) return options.executionAdapter;
+  const intentConfig = options.config || options.env || process.env;
+  if (isLiveModeSelected(intentConfig)) {
+    const error = new Error('Live minimal server requires an explicit broker-backed execution adapter; refusing paper fallback.');
+    error.code = 'LIVE_EXECUTION_ADAPTER_REQUIRED';
+    error.reason_codes = ['LIVE_MODE_REQUIRES_BROKER_EXECUTION_ADAPTER'];
+    throw error;
+  }
+  return options.paperAdapter || new PaperTradeAdapter({ dryRun: true });
+}
 
 function createMinimalTradingServer(options = {}) {
   const log = options.logger || createLogger();
   const state = {
     audit: options.audit || new InMemoryAuditStore(),
-    executionAdapter: options.executionAdapter || options.paperAdapter || new PaperTradeAdapter({ dryRun: true }),
+    executionAdapter: resolveExecutionAdapter(options),
     startedAt: options.startedAt || nowIso(),
     requestCount: 0,
     heartbeatCount: 0,

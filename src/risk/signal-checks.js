@@ -56,7 +56,8 @@ function performSignalChecks(
     reasonCodes.push('LOW_SOURCE_QUALITY');
   }
 
-  if (signal.provider_confirmation_score !== undefined && signal.provider_confirmation_score < minProviderConfirmationScore) {
+  const singleSourceMomentumOverride = Boolean(signal.single_source_momentum_override || marketContext.single_source_momentum_override);
+  if (!isScannerExitSell && !singleSourceMomentumOverride && signal.provider_confirmation_score !== undefined && signal.provider_confirmation_score < minProviderConfirmationScore) {
     reasonCodes.push('LOW_PROVIDER_CONFIRMATION');
   }
 
@@ -68,8 +69,8 @@ function performSignalChecks(
     reasonCodes.push('SIGNAL_RISK_TOO_HIGH');
   }
 
-  if (signal.stop_loss === undefined || signal.stop_loss === null) reasonCodes.push(RiskReason.MISSING_STOP_LOSS);
-  if (config.requireTakeProfit && (signal.take_profit === undefined || signal.take_profit === null)) reasonCodes.push(RiskReason.MISSING_TAKE_PROFIT);
+  if (!isScannerExitSell && (signal.stop_loss === undefined || signal.stop_loss === null)) reasonCodes.push(RiskReason.MISSING_STOP_LOSS);
+  if (!isScannerExitSell && config.requireTakeProfit && (signal.take_profit === undefined || signal.take_profit === null)) reasonCodes.push(RiskReason.MISSING_TAKE_PROFIT);
 
   if (Number.isFinite(entryPrice) && Number.isFinite(stopLoss) && entryPrice > 0) {
     const stopDistancePct = Math.abs((entryPrice - stopLoss) / entryPrice) * 100;
@@ -80,7 +81,7 @@ function performSignalChecks(
     reasonCodes.push(RiskReason.INVALID_REWARD_RISK);
   }
 
-  if (!signal.stop_loss && config.requireStopLoss) reasonCodes.push(RiskReason.MISSING_RISK_PLAN);
+  if (!isScannerExitSell && !signal.stop_loss && config.requireStopLoss) reasonCodes.push(RiskReason.MISSING_RISK_PLAN);
 
   return { reasonCodes, warnings };
 }

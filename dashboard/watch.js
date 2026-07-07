@@ -141,7 +141,13 @@ function buildSummaryLine(snapshot, watch, scannerPreview, featureRows, error) {
   const previewText = scannerPreview?.previewCandidateCount
     ? `Scanner preview ${formatCount(scannerPreview.previewCandidateCount)} candidate${scannerPreview.previewCandidateCount === 1 ? '' : 's'} while market closed${Array.isArray(scannerPreview.topPreviewCandidates) && scannerPreview.topPreviewCandidates.length ? `; top symbols ${scannerPreview.topPreviewCandidates.slice(0, 3).map((entry) => `${entry?.symbol}${entry?.source_list ? ` (${entry.source_list})` : ''}`).filter(Boolean).join(', ')}` : ''}.`
     : null;
-  return `${statusText} ${summaryBits.join(' | ')}.${previewText ? ` ${previewText}` : ''} Actions tab state: ${featureText}.`;
+  const waitingText = scannerPreview?.waitingForBuy?.message
+    ? ` Waiting on: ${scannerPreview.waitingForBuy.message}${scannerPreview.waitingForBuy.candidate_symbol ? ` Top symbol ${scannerPreview.waitingForBuy.candidate_symbol}.` : ''}`
+    : '';
+  const brokerTruthText = scannerPreview?.brokerTruth?.freshness
+    ? ` Broker truth ${String(scannerPreview.brokerTruth.freshness).replace(/_/g, ' ')}.`
+    : '';
+  return `${statusText} ${summaryBits.join(' | ')}.${previewText ? ` ${previewText}` : ''}${waitingText}${brokerTruthText} Actions tab state: ${featureText}.`;
 }
 
 function renderRegularWatchList(items) {
@@ -159,13 +165,15 @@ function renderRegularWatchList(items) {
         <span><b>Tradable</b> ${escapeHtml(item.tradableStatus || 'unknown')}</span>
         <span><b>Halt status</b> ${escapeHtml(item.haltStatus || 'unknown')}</span>
         <span><b>Market data</b> ${escapeHtml(item.marketDataState || 'unknown')}</span>
-        <span><b>Scanner score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Displayed rank</b> ${escapeHtml(formatNumber(item.displayedRankScore ?? item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Execution score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
         <span><b>Regular score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
+        <span><b>Execution status</b> ${escapeHtml(item.executionStatus || 'watching')}</span>
         <span><b>Comparison</b> ${escapeHtml(formatCandidateComparison(item.candidateComparison))}</span>
         <span><b>Sources</b> ${escapeHtml(formatSources(item.sourceStatus || item.sourceDetails || item.sourceContributors || item.sources))}</span>
         <span><b>Position</b> ${escapeHtml(item.positionStatus || formatTagList(item.positionTags))}</span>
         <span><b>Position tags</b> ${escapeHtml(formatTagList(item.positionTags))}</span>
-        <span><b>Reason</b> ${escapeHtml(item.reason || (Array.isArray(item.reasonCodes) ? item.reasonCodes.join(', ') : 'none'))}</span>
+        <span><b>Waiting on</b> ${escapeHtml(item.waitingReason || item.reason || (Array.isArray(item.reasonCodes) ? item.reasonCodes.join(', ') : 'none'))}</span>
         <span><b>Risk</b> ${escapeHtml(formatReasonList(item.riskWarnings || item.reasonCodes))}</span>
       </div>
     </article>
@@ -186,13 +194,15 @@ function renderMovers(items, snapshot) {
         <span><b>Move</b> ${escapeHtml(formatSignedPercent(item.dailyMovePct ?? item.movePct))}</span>
         <span><b>Volume multiple</b> ${escapeHtml(formatNumber(item.volumeMultiple))}</span>
         <span><b>Spread</b> ${escapeHtml(formatPercent(item.spread ?? item.spreadPct))}</span>
-        <span><b>Scanner score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Displayed rank</b> ${escapeHtml(formatNumber(item.displayedRankScore ?? item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Execution score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
         <span><b>Regular score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
+        <span><b>Execution status</b> ${escapeHtml(item.executionStatus || 'watching')}</span>
         <span><b>Comparison</b> ${escapeHtml(formatCandidateComparison(item.candidateComparison))}</span>
         <span><b>Sources</b> ${escapeHtml(formatSources(item.sourceStatus || item.sourceDetails || item.sourceContributors || item.sources))}</span>
         <span><b>Position</b> ${escapeHtml(item.positionStatus || formatTagList(item.positionTags))}</span>
         <span><b>Position tags</b> ${escapeHtml(formatTagList(item.positionTags))}</span>
-        <span><b>Status</b> ${escapeHtml(item.status || 'moving')}</span>
+        <span><b>Waiting on</b> ${escapeHtml(item.waitingReason || item.status || 'moving')}</span>
         <span><b>Reason codes</b> ${escapeHtml(formatReasonList(item.reasonCodes))}</span>
         <span><b>Risk</b> ${escapeHtml(formatReasonList(item.riskWarnings || item.reasonCodes))}</span>
       </div>

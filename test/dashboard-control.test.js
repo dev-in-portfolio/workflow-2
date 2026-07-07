@@ -185,6 +185,8 @@ test('dashboard control routes serve the operator tab and route actions locally'
     assert(['off', 'warn', 'active'].includes(regularWatchStatus.regularWatchIntelligence.status), true);
     assert.equal(regularWatchStatus.scannerRanking.status, 'off');
     assert.equal(regularWatchStatus.positionAwareness.status, 'off');
+    assert(calls.every((call) => call[0] === 'refresh'));
+    calls.length = 0;
 
     const actionResponse = await fetch(`http://127.0.0.1:${port}/api/control/action`, {
       method: 'POST',

@@ -290,6 +290,30 @@ test('home summary reports dynamic top freshness from source data, not dashboard
   assert.equal(homeSummary.hotListStatus.hotHotCount, 1);
 });
 
+test('home summary displays the score used for regular watch ranking', () => {
+  const homeSummary = buildHomeSummary({
+    generated_at: '2026-07-06T15:05:00.000Z',
+    timestamp: '2026-07-06T15:05:00.000Z',
+    live: {
+      scanner_runtime: {
+        last_scan_time: '2026-07-06T15:04:35.000Z',
+        updated_at: '2026-07-06T15:04:37.000Z',
+      },
+    },
+    watch: {
+      regularWatchMovers: [
+        { symbol: 'VRM', regularWatchScore: 0, scannerScore: 1135.536 },
+        { symbol: 'RGNX', regularWatchScore: 44 },
+      ],
+    },
+  });
+
+  assert.equal(homeSummary.dynamicTopSymbols[0].symbol, 'VRM');
+  assert.equal(homeSummary.dynamicTopSymbols[0].score, 1135.536);
+  assert.equal(homeSummary.dynamicTopSymbols[1].symbol, 'RGNX');
+  assert.equal(homeSummary.dynamicTopSymbols[1].score, 44);
+});
+
 test('source health summary treats explicit disabled sources as inactive even with legacy ok flag', () => {
   const summary = buildSourceHealthSummary({
     generated_at: '2026-07-03T14:00:00.000Z',

@@ -31,6 +31,11 @@ function writeRuntimeSnapshot(state, closureVars) {
     maxStopDistanceDollars,
     allowRiskBudgetFractionalShares,
     riskBudgetRequireBrokerEquity,
+    positionSizingMode,
+    maxBuyingPowerDeploymentPct,
+    buyingPowerMarketOrderBufferPct,
+    buyingPowerCashReserve,
+    allowBuyingPowerFractionalShares,
     executionQualityDecayPerHour,
     minAdjustedRankScore,
     env,
@@ -90,6 +95,8 @@ function writeRuntimeSnapshot(state, closureVars) {
         min_adjusted_rank_score: roundScore(minAdjustedRankScore),
         recent_trade_at: candidate.recentTradePenalty?.last_traded_at || null,
         sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+        sizing_explanation: candidate.payload?.sizing_explanation || null,
+        buying_power_sizing: candidate.payload?.buying_power_sizing || null,
         risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
         structure_stop: candidate.payload?.structure_stop || null,
         execution_quality: candidate.payload?.execution_quality || null,
@@ -145,6 +152,23 @@ function writeRuntimeSnapshot(state, closureVars) {
       execution_quality_size_multiplier_enabled: Boolean(executionQualitySizeMultiplierEnabled),
       execution_quality_cooldown_enabled: Boolean(executionQualityCooldownEnabled),
       risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
+      position_sizing_mode: positionSizingMode || (riskBudgetSizingEnabled ? 'risk_budget' : 'fixed_notional'),
+    },
+    position_sizing: {
+      mode: positionSizingMode || (riskBudgetSizingEnabled ? 'risk_budget' : 'fixed_notional'),
+      max_buying_power_deployment_pct: maxBuyingPowerDeploymentPct ?? null,
+      buying_power_market_order_buffer_pct: buyingPowerMarketOrderBufferPct ?? null,
+      buying_power_cash_reserve: buyingPowerCashReserve ?? null,
+      allow_buying_power_fractional_shares: Boolean(allowBuyingPowerFractionalShares),
+      latest_candidates: candidates
+        .filter((candidate) => candidate.payload?.side === 'buy')
+        .map((candidate) => ({
+          symbol: candidate.symbol,
+          sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+          sizing_explanation: candidate.payload?.sizing_explanation || null,
+          buying_power_sizing: candidate.payload?.buying_power_sizing || null,
+          risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
+        })),
     },
     risk_budget_sizing: {
       enabled: Boolean(riskBudgetSizingEnabled),
@@ -165,6 +189,8 @@ function writeRuntimeSnapshot(state, closureVars) {
         .map((candidate) => ({
           symbol: candidate.symbol,
           sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+          sizing_explanation: candidate.payload?.sizing_explanation || null,
+          buying_power_sizing: candidate.payload?.buying_power_sizing || null,
           risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
           structure_stop: candidate.payload?.structure_stop || null,
           execution_quality: candidate.payload?.execution_quality || null,

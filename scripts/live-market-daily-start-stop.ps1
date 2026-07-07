@@ -34,8 +34,8 @@ function Import-EnvFile {
   }
 }
 
-Import-EnvFile (Join-Path $repoRoot '.env.local')
 Import-EnvFile (Join-Path $repoRoot '.env')
+Import-EnvFile (Join-Path $repoRoot '.env.local')
 
 $action = 'start'
 for ($index = 0; $index -lt $args.Length; $index++) {

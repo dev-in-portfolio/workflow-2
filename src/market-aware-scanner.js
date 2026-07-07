@@ -4,7 +4,7 @@ const { buildScannerConfig } = require('./scanner-config');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { nowIso } = require('./util');
 const { resolveMarketRegime } = require('./market-hours');
-const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
+const { parseSymbolList } = require('./volatile-stock-universe');
 const { createLogger } = require('./logger');
 const { fail } = require('./result');
 const { ScannerError } = require('./errors');
@@ -38,7 +38,7 @@ function createMarketAwareScanner(options = {}) {
     5.0,
   );
   const stockSymbols = options.stockSymbols
-    || parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS);
+    || parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS, []);
   const overnightSymbols = options.overnightSymbols || runtimeEnv.OVERNIGHT_SCANNER_SYMBOLS || env.OVERNIGHT_SCANNER_SYMBOLS;
 
   const stockScannerConfig = buildScannerConfig({ ...runtimeEnv, ...env });

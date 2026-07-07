@@ -123,7 +123,7 @@ function createFetchStub({ snapshots = {}, assets = [], haltedSymbols = [] } = {
   return stub;
 }
 
-test('regular watch runner only scans approved symbols and keeps scanner config unchanged', async () => {
+test('regular watch runner scans configured symbols and keeps scanner config unchanged', async () => {
   const { repoRoot, dataDir } = tempWorkspace();
   const env = {
     ...process.env,
@@ -145,9 +145,9 @@ test('regular watch runner only scans approved symbols and keeps scanner config 
   const after = buildScannerConfig(env);
   const requestedSymbols = [...new Set(fetchImpl.requested.flatMap((url) => parseRequestedSymbols(url)))];
   assert.deepEqual(after.symbols, before.symbols);
-  assert.deepEqual(status.regularWatchList.map((entry) => entry.symbol), ['SMCI', 'SPCX']);
-  assert.equal(requestedSymbols.includes('AAPL'), false);
-  assert.equal(requestedSymbols.includes('MSFT'), false);
+  assert.deepEqual(status.regularWatchList.map((entry) => entry.symbol), ['AAPL', 'MSFT', 'SMCI', 'SPCX']);
+  assert.equal(requestedSymbols.includes('AAPL'), true);
+  assert.equal(requestedSymbols.includes('MSFT'), true);
   assert.ok(fs.existsSync(resolveRegularWatchStatusPath({ dataDir })));
 });
 
@@ -170,6 +170,97 @@ test('regular watch runner handles missing credentials without crashing', async 
   assert.ok(Array.isArray(status.sources));
   assert.match(JSON.stringify(status.sources), /missing_credentials|inactive/);
   assert.ok(fs.existsSync(resolveRegularWatchStatusPath({ dataDir })));
+});
+
+test('regular watch loads broad Alpaca universe and rotates scan batches', async () => {
+  const { repoRoot, dataDir } = tempWorkspace();
+  const symbols = Array.from({ length: 125 }, (_, index) => `T${String(index + 1).padStart(3, '0')}`);
+  const assets = symbols.map((symbol) => ({
+    symbol,
+    tradable: true,
+    status: 'active',
+    asset_class: 'us_equity',
+  }));
+  const env = {
+    ...process.env,
+    STOCK_SCANNER_SYMBOLS: '',
+    ALPACA_API_KEY_ID: 'key',
+    ALPACA_API_SECRET_KEY: 'secret',
+    REGULAR_WATCH_UNIVERSE_SOURCE: 'alpaca_assets',
+    REGULAR_WATCH_MAX_SYMBOLS_PER_RUN: '50',
+    REGULAR_WATCH_MARKET_DATA_BATCH_SIZE: '25',
+    REGULAR_WATCH_DISPLAY_LIMIT: '10',
+    REGULAR_WATCH_FAST_LANE_ENABLED: 'false',
+  };
+  writeEnabledState({ dataDir, env });
+  const fetchImpl = createFetchStub({ assets });
+
+  const first = await runRegularWatchSources({
+    env,
+    fetchImpl,
+    repoRoot,
+    dataDir,
+  });
+  const second = await runRegularWatchSources({
+    env,
+    fetchImpl,
+    repoRoot,
+    dataDir,
+  });
+
+  assert.equal(first.universe.full_eligible_count, 125);
+  assert.equal(first.universe.current_batch_size, 50);
+  assert.equal(first.universe.displayed_top_limit, 10);
+  assert.equal(first.regularWatchList.length, 50);
+  assert.equal(first.universe.rotation.next_offset, 50);
+  assert.equal(second.universe.full_eligible_count, 125);
+  assert.equal(second.universe.current_batch_size, 50);
+  assert.equal(second.universe.rotation.offset, 50);
+  assert.equal(second.universe.scanned_today_count, 100);
+  assert.notDeepEqual(
+    first.regularWatchList.map((entry) => entry.symbol),
+    second.regularWatchList.map((entry) => entry.symbol),
+  );
+  const snapshotRequests = fetchImpl.requested.filter((url) => String(url).includes('/v2/stocks/snapshots'));
+  assert(snapshotRequests.length >= 4);
+  assert(snapshotRequests.every((url) => parseRequestedSymbols(url).length <= 25));
+});
+
+test('regular watch fast lane rescans prior movers while rotation continues', async () => {
+  const { repoRoot, dataDir } = tempWorkspace();
+  const symbols = Array.from({ length: 125 }, (_, index) => `F${String(index + 1).padStart(3, '0')}`);
+  const assets = symbols.map((symbol) => ({
+    symbol,
+    tradable: true,
+    status: 'active',
+    asset_class: 'us_equity',
+  }));
+  const env = {
+    ...process.env,
+    STOCK_SCANNER_SYMBOLS: '',
+    ALPACA_API_KEY_ID: 'key',
+    ALPACA_API_SECRET_KEY: 'secret',
+    REGULAR_WATCH_UNIVERSE_SOURCE: 'alpaca_assets',
+    REGULAR_WATCH_MAX_SYMBOLS_PER_RUN: '60',
+    REGULAR_WATCH_MARKET_DATA_BATCH_SIZE: '30',
+    REGULAR_WATCH_FAST_LANE_ENABLED: 'true',
+    REGULAR_WATCH_FAST_LANE_LIMIT: '10',
+  };
+  writeEnabledState({ dataDir, env });
+  const fetchImpl = createFetchStub({ assets });
+
+  const first = await runRegularWatchSources({ env, fetchImpl, repoRoot, dataDir });
+  const firstSymbols = first.regularWatchList.map((entry) => entry.symbol);
+  const second = await runRegularWatchSources({ env, fetchImpl, repoRoot, dataDir });
+  const secondSymbols = second.regularWatchList.map((entry) => entry.symbol);
+
+  assert.equal(first.universe.fast_lane_candidate_count, 0);
+  assert.equal(second.universe.fast_lane_candidate_count, 10);
+  assert.equal(second.universe.rotation_batch_size, 50);
+  assert.equal(second.universe.merged_scan_size, 60);
+  assert.equal(second.universe.scanned_today_count, 110);
+  assert(firstSymbols.slice(0, 10).some((symbol) => secondSymbols.includes(symbol)));
+  assert(secondSymbols.some((symbol) => !firstSymbols.includes(symbol)));
 });
 
 test('regular watch blocks halted and not-tradable symbols', async () => {

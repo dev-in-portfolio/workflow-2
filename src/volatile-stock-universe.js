@@ -101,12 +101,12 @@ const VOLATILE_STOCK_SYMBOLS = [
   'NXTS',
 ];
 
-const APPROVED_LIVE_MARKET_SYMBOLS = ['SPCX', 'SMCI', 'FDX', 'MU', 'APGE', 'NVDA', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'VIX', 'AMO', 'SNDK', 'VTAK'];
+const APPROVED_LIVE_MARKET_SYMBOLS = [];
 
 function parseSymbolList(value, fallback = VOLATILE_STOCK_SYMBOLS) {
   if (!value) return fallback.slice();
-  const parsed = String(value)
-    .split(',')
+  const rawValues = Array.isArray(value) ? value : String(value).split(',');
+  const parsed = rawValues
     .map((symbol) => symbol.trim().toUpperCase())
     .filter(Boolean)
     .map((symbol) => {

@@ -333,7 +333,7 @@ If you need an emergency retreat, `POST /policy-rollback` will restore the best 
 
 - Confirm Alpaca shows the expected cash and zero or known open positions.
 - Confirm the dashboard Home page says `Live Market`, max positions `2`, buy cap `$150`, and workflow `stopped`.
-- Start the workflow only during regular US market hours.
+- Start the workflow only through the approved automation or during regular US market hours.
 - Watch that only one trader and one stock scanner run.
 - Confirm the approved symbol list comes from `STOCK_SCANNER_SYMBOLS` and the live policy snapshot in `data/live-policy.json`.
 
@@ -362,3 +362,23 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall-live-market-automatio
 ```
 
 The automation skips US market holidays when the holiday calendar helper is available, and it never trades manually or changes strategy settings.
+If `TRADING_MODE=live` is selected but live execution prerequisites are not satisfied, startup now fails closed with explicit reason codes instead of silently using paper behavior.
+
+## Regular Stock Workflow Automation
+
+This repo also includes a repo-local weekday automation for the regular stock workflow. It starts the trader plus stock scanner at `5:00 AM America/New_York` and stops them at `5:00 PM America/New_York`.
+
+To register the Windows scheduled tasks:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-regular-stock-automation.ps1
+```
+
+To remove them later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-regular-stock-automation.ps1
+```
+
+The morning start skips US market holidays, but the stop task still runs so an already-active workflow can be shut down safely.
+This regular-stock workflow automation is separate from the meme-monitor hot list. The watch UI now distinguishes displayed rank from execution score and shows the current live "waiting on" reason when no buy is placed.

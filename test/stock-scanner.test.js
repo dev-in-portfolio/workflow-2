@@ -59,6 +59,74 @@ test('stock scanner builds real buy candidates from fresh bullish Alpaca data', 
   assert.equal(candidate.payload.supports_fractional_shares, true);
 });
 
+test('stock scanner requires fresh upward pressure when recent momentum gate is enabled', () => {
+  const skips = [];
+  const flat = buildStockCandidateForSymbol('FLAT', {
+    latestQuote: { bp: 10.00, ap: 10.02, t: '2026-06-16T20:00:00.000Z' },
+    latestTrade: { p: 10.01, t: '2026-06-16T20:00:00.000Z' },
+    minuteBar: { o: 10.01, c: 10.01, h: 10.02, l: 10.00, v: 42, t: '2026-06-16T20:00:00.000Z' },
+    prevDailyBar: { c: 9.50, v: 200000 },
+  }, { bp: 10.00, ap: 10.02, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    requireMultiSourceConfirmation: false,
+    requireRecentMomentum: true,
+    minMovePct: 0.2,
+    minRecentMovePct: 0.03,
+    minRecentRangePct: 0.05,
+    minRecentCloseLocationPct: 60,
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  });
+  const rising = buildStockCandidateForSymbol('RISE', {
+    latestQuote: { bp: 10.04, ap: 10.06, t: '2026-06-16T20:00:00.000Z' },
+    latestTrade: { p: 10.05, t: '2026-06-16T20:00:00.000Z' },
+    minuteBar: { o: 9.95, c: 10.05, h: 10.05, l: 9.94, v: 420, t: '2026-06-16T20:00:00.000Z' },
+    prevDailyBar: { c: 9.50, v: 200000 },
+  }, { bp: 10.04, ap: 10.06, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    requireMultiSourceConfirmation: false,
+    requireRecentMomentum: true,
+    minMovePct: 0.2,
+    minRecentMovePct: 0.03,
+    minRecentRangePct: 0.05,
+    minRecentCloseLocationPct: 60,
+  });
+
+  assert.equal(flat, null);
+  assert.equal(skips[0].reason, 'RECENT_UPWARD_MOMENTUM_WEAK');
+  assert(rising);
+  assert.equal(rising.payload.symbol, 'RISE');
+});
+
+test('stock scanner can allow high-score single-source momentum buys when explicitly enabled', () => {
+  const candidate = buildStockCandidateForSymbol('VRM', rankedSnapshot({
+    bid: 4.04,
+    ask: 4.05,
+    previousClose: 8.66,
+    volume: 2_000,
+    timestamp: '2026-07-06T15:05:00.000Z',
+  }), {
+    bp: 4.04,
+    ap: 4.05,
+    t: '2026-07-06T15:05:00.000Z',
+  }, {
+    receivedAt: '2026-07-06T15:05:01.000Z',
+    requireMultiSourceConfirmation: true,
+    twelveDataQuote: { price: 8.50, timestamp: '2026-07-06T15:05:00.000Z' },
+    singleSourceMomentumEnabled: true,
+    singleSourceMomentumMinRankScore: 500,
+    allowContrarianEntries: true,
+    maxBuyRiskScore: 100,
+    notional: 35,
+  });
+
+  assert(candidate);
+  assert.equal(candidate.payload.single_source_momentum_override, true);
+  assert.equal(candidate.payload.market_context.single_source_momentum_override.reason_code, 'SINGLE_SOURCE_MOMENTUM_OVERRIDE');
+  assert.equal(candidate.payload.action_candidate, 'paper_buy');
+});
+
 test('stock scanner still builds candidates when the move is tiny and the spread is wide', () => {
   const candidate = buildStockCandidateForSymbol('NVDA', {
     latestQuote: {
@@ -157,6 +225,43 @@ test('stock scanner writes risk-budget sizing and structure stop details when en
   assert.equal(candidate.payload.market_context.scanner.sizing_method, 'risk_budget');
 });
 
+test('stock scanner writes buying-power sizing when selected explicitly', () => {
+  const candidate = buildStockCandidateForSymbol('MTAL', rankedSnapshot({
+    bid: 5.07,
+    ask: 5.09,
+    previousClose: 5,
+    volume: 100000,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), {
+    bp: 5.07,
+    ap: 5.09,
+    t: '2026-06-16T20:00:00.000Z',
+  }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 1000,
+    allowContrarianEntries: true,
+    positionSizingMode: 'buying_power',
+    maxBuyingPowerDeploymentPct: 100,
+    buyingPowerCashReserve: 0,
+    allowBuyingPowerFractionalShares: false,
+    minStopDistanceDollars: 0.25,
+    maxStopDistanceDollars: 2,
+    portfolio: {
+      account: { equity: '194.68', cash: '194.68', buying_power: '194.68' },
+      cash: 194.68,
+      buying_power: 194.68,
+    },
+  });
+
+  assert(candidate);
+  assert.equal(candidate.payload.sizing_method, 'buying_power');
+  assert.equal(candidate.payload.buying_power_sizing.accepted, true);
+  assert.equal(candidate.payload.quantity, 38);
+  assert.equal(candidate.payload.notional, 193.04);
+  assert.equal(candidate.payload.market_context.scanner.buying_power_sizing.quantity, 38);
+  assert.equal(candidate.payload.market_context.scanner.sizing_method, 'buying_power');
+});
+
 test('stock scanner applies a 20 point rank penalty to a recent sell symbol', () => {
   const plain = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
@@ -247,7 +352,7 @@ test('stock scanner applies execution quality penalties to buy candidates and le
   });
   const sellCandidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
-    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-2.25' },
     stopLossDollars: 1,
     trailingProfitStartDollars: 0.5,
     trailingProfitGivebackDollars: 0.3,
@@ -564,7 +669,7 @@ test('stock scanner skips excluded buy symbols without affecting exit handling',
   });
   const sellCandidate = buildStockCandidateForSymbol('ABSI', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
-    position: { symbol: 'ABSI', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    position: { symbol: 'ABSI', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-2.25' },
     excludedBuySymbols: ['ABSI'],
     stopLossDollars: 1,
     trailingProfitStartDollars: 0.5,
@@ -743,7 +848,7 @@ test('stock scanner creates a full-position sell at the dollar stop', () => {
   const candidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
     maxSpreadPct: 0.8,
-    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-2.25' },
     stopLossDollars: 1,
     trailingProfitStartDollars: 0.5,
     trailingProfitGivebackDollars: 0.3,
@@ -773,6 +878,20 @@ test('stock scanner widens the hard stop by position notional with a cap', () =>
     stopLossMaxDollars: 2.5,
     positionMarketValue: 1000,
   }), 2.5);
+  assert.equal(calculateEffectiveStopLossDollars({
+    baseStopLossDollars: 1,
+    stopLossNotionalPct: 0.75,
+    stopLossMaxDollars: 2.5,
+    positionMarketValue: 260,
+    positionQuantity: 2,
+  }), 2);
+  assert.equal(calculateEffectiveStopLossDollars({
+    baseStopLossDollars: 0.25,
+    stopLossNotionalPct: 0.75,
+    stopLossMaxDollars: 2.5,
+    positionMarketValue: 192.5,
+    positionQuantity: 25,
+  }), 6.25);
 
   const normalWiggle = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
@@ -801,9 +920,11 @@ test('stock scanner widens the hard stop by position notional with a cap', () =>
   assert(breach);
   assert.equal(breach.payload.side, 'sell');
   assert.equal(breach.exitState.exit_reason, 'STOP_LOSS_DOLLARS');
-  assert.equal(breach.exitState.stop_loss_dollars, 1.95);
+  assert.equal(breach.exitState.stop_loss_dollars, 2);
+  assert.equal(breach.exitState.stop_loss_per_share, 1);
+  assert.equal(breach.exitState.hard_stop_price, 79.75);
   assert.equal(breach.exitState.base_stop_loss_dollars, 1);
-  assert.equal(breach.exitState.distance_to_stop_dollars, -0.1);
+  assert.equal(breach.exitState.distance_to_stop_dollars, -0.05);
 });
 
 test('stock scanner run applies the widened hard stop to live positions', async () => {
@@ -870,6 +991,7 @@ test('stock scanner trails winners after peak profit and sell on giveback', () =
   });
   assert.equal(beforeStart, null);
 
+  const risingWinnerSkips = [];
   const risingWinner = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
     maxSpreadPct: 0.8,
@@ -878,8 +1000,12 @@ test('stock scanner trails winners after peak profit and sell on giveback', () =
     trailingProfitStartDollars: 0.5,
     trailingProfitGivebackDollars: 0.3,
     trailingState: { positions: { NVDA: { peak_unrealized_pl: 0.8 } } },
+    skipTracker: { record: (reason, detail) => risingWinnerSkips.push({ reason, detail }) },
   });
   assert.equal(risingWinner, null);
+  assert.equal(risingWinnerSkips[0]?.reason, 'EXIT_TARGET_NOT_MET');
+  assert.equal(risingWinnerSkips[0]?.detail?.exit_mode, 'profit_protection_active');
+  assert.equal(risingWinnerSkips[0]?.detail?.profit_protection_active, true);
 
   const giveback = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
@@ -892,11 +1018,86 @@ test('stock scanner trails winners after peak profit and sell on giveback', () =
   });
   assert(giveback);
   assert.equal(giveback.payload.side, 'sell');
+  assert.equal(giveback.exitState.exit_mode, 'trailing_profit_giveback_triggered');
+  assert.equal(giveback.exitState.profit_protection_active, true);
   assert.equal(giveback.exitState.exit_reason, 'TRAILING_PROFIT_GIVEBACK');
   assert.equal(giveback.exitState.gross_pnl, 0.3);
   assert.equal(giveback.exitState.execution_drag, 0.06);
   assert.equal(giveback.exitState.net_pnl, 0.24);
   assert.equal(giveback.exitState.real_gain, true);
+});
+
+test('stock scanner exits stale positions that never become runners', () => {
+  const stale = buildStockCandidateForSymbol('SVC', {
+    latestQuote: { bp: 8.61, ap: 8.63, t: '2026-07-07T15:36:00.000Z' },
+    latestTrade: { p: 8.62, t: '2026-07-07T15:36:00.000Z' },
+    minuteBar: { o: 8.62, c: 8.62, h: 8.63, l: 8.61, v: 500, t: '2026-07-07T15:36:00.000Z' },
+    prevDailyBar: { c: 8.50, v: 100000 },
+  }, { bp: 8.61, ap: 8.63, t: '2026-07-07T15:36:00.000Z' }, {
+    receivedAt: '2026-07-07T15:36:00.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'SVC', qty: '20', qty_available: '20', avg_entry_price: '8.66', unrealized_pl: '-0.80' },
+    stopLossDollars: 0.25,
+    stopLossNotionalPct: 0.75,
+    stopLossMaxDollars: 2.5,
+    trailingProfitStartDollars: 1.3,
+    trailingProfitGivebackDollars: 0.3,
+    stalePositionExitEnabled: true,
+    stalePositionMaxHoldMinutes: 12,
+    stalePositionMinPeakProfitDollars: 0.25,
+    stalePositionMaxExitPnlDollars: 0,
+    trailingState: {
+      positions: {
+        SVC: {
+          opened_at: '2026-07-07T15:13:19.397Z',
+          peak_unrealized_pl: -0.1,
+        },
+      },
+    },
+  });
+
+  assert(stale);
+  assert.equal(stale.payload.side, 'sell');
+  assert.equal(stale.exitState.exit_reason, 'STALE_POSITION_TIMEOUT');
+  assert.equal(stale.exitState.exit_mode, 'stale_position_recycle');
+  assert.equal(stale.exitState.held_seconds >= 12 * 60, true);
+});
+
+test('stock scanner exits stalled protected winners so capital can recycle', () => {
+  const stalledWinner = buildStockCandidateForSymbol('GOGL', {
+    latestQuote: { bp: 29.14, ap: 29.16, t: '2026-07-07T16:18:00.000Z' },
+    latestTrade: { p: 29.15, t: '2026-07-07T16:18:00.000Z' },
+    minuteBar: { o: 29.15, c: 29.15, h: 29.16, l: 29.14, v: 1000, t: '2026-07-07T16:18:00.000Z' },
+    prevDailyBar: { c: 28.7, v: 100000 },
+  }, { bp: 29.14, ap: 29.16, t: '2026-07-07T16:18:00.000Z' }, {
+    receivedAt: '2026-07-07T16:18:00.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'GOGL', qty: '6', qty_available: '6', avg_entry_price: '28.72', unrealized_pl: '2.58' },
+    stopLossDollars: 0.25,
+    trailingProfitStartDollars: 1.3,
+    trailingProfitGivebackDollars: 0.3,
+    stalledWinnerExitEnabled: true,
+    stalledWinnerMaxHoldMinutes: 18,
+    stalledWinnerMaxMinutesSincePeak: 8,
+    stalledWinnerMinProfitDollars: 1,
+    trailingState: {
+      positions: {
+        GOGL: {
+          opened_at: '2026-07-07T15:57:42.077Z',
+          peak_updated_at: '2026-07-07T15:58:36.518Z',
+          peak_unrealized_pl: 2.58,
+          trailing_active: true,
+        },
+      },
+    },
+  });
+
+  assert(stalledWinner);
+  assert.equal(stalledWinner.payload.side, 'sell');
+  assert.equal(stalledWinner.exitState.exit_reason, 'STALLED_WINNER_TIMEOUT');
+  assert.equal(stalledWinner.exitState.exit_mode, 'stalled_winner_recycle');
+  assert.equal(stalledWinner.exitState.held_seconds >= 18 * 60, true);
+  assert.equal(stalledWinner.exitState.seconds_since_peak >= 8 * 60, true);
 });
 
 test('stock scanner does not harvest trailing wins below the net profit floor', () => {
@@ -931,7 +1132,7 @@ test('stock scanner does not harvest trailing wins below the net profit floor', 
 test('stock scanner does not apply recent-symbol rank penalties to sell exits', () => {
   const candidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
-    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-2.25' },
     stopLossDollars: 1,
     trailingProfitStartDollars: 0.5,
     trailingProfitGivebackDollars: 0.3,
@@ -946,6 +1147,7 @@ test('stock scanner does not apply recent-symbol rank penalties to sell exits', 
   assert(candidate);
   assert.equal(candidate.payload.side, 'sell');
   assert.equal(candidate.payload.market_context.scanner.recent_trade_rank_penalty, 0);
+  assert.equal(candidate.exitState.exit_mode, 'hard_stop_triggered');
   assert.equal(candidate.exitState.exit_reason, 'STOP_LOSS_DOLLARS');
 });
 
@@ -1249,7 +1451,7 @@ test('stock scanner blocks buy churn but still allows sell exits', () => {
   });
   const sellCandidate = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-25T14:00:01.000Z',
-    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-1.25' },
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80.75', unrealized_pl: '-2.25' },
     antiChurnState,
     stopLossDollars: 1,
     trailingProfitStartDollars: 0.5,
@@ -1619,6 +1821,7 @@ test('stock scanner writes an off-hours preview without submitting orders', asyn
     assert.equal(runtime.candidate_count, 0);
     assert.equal(runtime.preview_candidate_count, 1);
     assert.equal(runtime.market_closed_execution_block, true);
+    assert.equal(runtime.waiting_for_buy.reason_code, 'SCANNER_PREVIEW_ONLY_MARKET_CLOSED');
     assert.equal(runtime.preview_reason_codes.includes('MARKET_CLOSED_FOR_STOCKS'), true);
     assert.equal(runtime.top_preview_candidates[0].symbol, 'NVDA');
     assert.equal(runtime.top_preview_candidates[0].status, 'preview_only');
@@ -1689,6 +1892,11 @@ test('stock scanner keeps market-open behavior unchanged', async () => {
     assert.equal(requests.length, 1);
     assert.equal(runtime.candidate_count, 1);
     assert.equal(runtime.preview_candidate_count, 0);
+    assert.equal(runtime.broker_truth.source_of_truth, 'alpaca');
+    assert(runtime.broker_truth.freshness === 'fresh' || runtime.broker_truth.freshness === 'unknown');
+    assert.equal(runtime.waiting_for_buy.reason_code, 'LIVE_BUY_CANDIDATE_READY');
+    assert.equal(runtime.candidate_rank_details[0].execution_status, 'eligible_for_risk_check');
+    assert.equal(typeof runtime.candidate_rank_details[0].sizing_explanation, 'object');
     assert.equal(Array.isArray(runtime.preview_candidates) && runtime.preview_candidates.length, 0);
   } finally {
     process.chdir(originalCwd);
@@ -1983,8 +2191,8 @@ test('stock scanner uses the dynamic source universe and records source metadata
       HOTT: rankedSnapshot({ bid: 29.90, ask: 30.10, previousClose: 29.50, volume: 250_000, timestamp: '2026-06-19T15:00:00.000Z' }),
     },
     dynamicHotList: {
-      generatedAt: '2026-07-02T20:00:00.000Z',
-      lastScoredAt: '2026-07-02T20:00:00.000Z',
+      generatedAt: '2099-07-02T20:00:00.000Z',
+      lastScoredAt: '2099-07-02T20:00:00.000Z',
       mode: 'active',
       source: 'test',
       enabled: true,
@@ -1997,7 +2205,7 @@ test('stock scanner uses the dynamic source universe and records source metadata
         status: 'dynamic_watch',
         reasonCodes: ['social_heat'],
         riskWarnings: [],
-        expiresAt: '2026-07-05T15:00:00.000Z',
+        expiresAt: '2099-07-05T15:00:00.000Z',
       }],
       hotHotList: [{
         symbol: 'HOTT',
@@ -2007,7 +2215,7 @@ test('stock scanner uses the dynamic source universe and records source metadata
         priorityOverrideEligible: true,
         reasonCodes: ['market_confirmation_passed'],
         riskWarnings: [],
-        expiresAt: '2026-07-05T15:00:00.000Z',
+        expiresAt: '2099-07-05T15:00:00.000Z',
       }],
       expired: [],
       rejected: [],
@@ -2016,6 +2224,18 @@ test('stock scanner uses the dynamic source universe and records source metadata
       status: 'active',
       regularWatchList: [{ symbol: 'HOT', score: 62 }],
       regularWatchMovers: [{ symbol: 'HOTT', score: 74 }],
+      universe: {
+        source: 'alpaca_assets',
+        full_eligible_count: 1250,
+        current_batch_size: 500,
+        rotation_batch_size: 450,
+        fast_lane_candidate_count: 50,
+        fast_lane_limit: 250,
+        merged_scan_size: 500,
+        displayed_top_limit: 100,
+        scanned_today_count: 500,
+        fresh_data_count: 480,
+      },
       sources: [],
     },
   });
@@ -2032,6 +2252,14 @@ test('stock scanner uses the dynamic source universe and records source metadata
     assert.equal(runtime.active_source_count, 2);
     assert.equal(runtime.source_counts.dynamic_source_count, 2);
     assert.equal(runtime.source_counts.regular_watch_source_count, 1);
+    assert.equal(runtime.source_counts.regular_watch_full_universe_count, 1250);
+    assert.equal(runtime.source_counts.regular_watch_current_batch_count, 500);
+    assert.equal(runtime.source_counts.regular_watch_rotation_batch_count, 450);
+    assert.equal(runtime.source_counts.regular_watch_fast_lane_count, 50);
+    assert.equal(runtime.source_counts.regular_watch_merged_scan_size, 500);
+    assert.equal(runtime.source_counts.regular_watch_scanned_today_count, 500);
+    assert.equal(runtime.source_counts.regular_watch_fresh_data_count, 480);
+    assert.equal(runtime.symbol_universe.full_eligible_count, 1250);
     assert.equal(runtime.source_lists_by_symbol.HOT.source_lists.includes('Regular Watch List'), true);
     assert.equal(runtime.source_lists_by_symbol.HOT.source_mode, 'dynamic');
     assert.equal(runtime.source_lists_by_symbol.HOTT.source_lists.includes('Regular Watch Movers List'), true);
@@ -2344,6 +2572,80 @@ test('stock scanner keeps regular watch ranking off by default and only boosts a
     assert.ok(Number(onDetails.find((entry) => entry.symbol === 'AAA')?.regular_watch_comparison?.sortScore) > Number(onDetails.find((entry) => entry.symbol === 'BBB')?.regular_watch_comparison?.sortScore));
   } finally {
     onHarness.cleanup();
+  }
+});
+
+test('stock scanner passes buying-power sizing mode through the full scanner path', async () => {
+  const harness = createScannerHarness({
+    env: {
+      POSITION_SIZING_MODE: 'buying_power',
+      RISK_BUDGET_SIZING_ENABLED: 'true',
+      MAX_BUYING_POWER_DEPLOYMENT_PCT: '100',
+      BUYING_POWER_CASH_RESERVE: '0',
+      ALLOW_BUYING_POWER_FRACTIONAL_SHARES: 'false',
+      MIN_STOP_DISTANCE_DOLLARS: '0.25',
+      MAX_STOP_DISTANCE_DOLLARS: '2',
+      MIN_BUY_NOTIONAL: '25',
+    },
+    symbols: ['MTAL'],
+    snapshots: {
+      MTAL: rankedSnapshot({
+        bid: 5.07,
+        ask: 5.09,
+        previousClose: 5,
+        volume: 100000,
+        timestamp: '2026-06-16T20:00:00.000Z',
+      }),
+    },
+    buyingPower: '194.68',
+    cash: '194.68',
+    maxOpenPositions: 1,
+  });
+
+  try {
+    await harness.scanner.runOnce({ runId: 'buying-power-pass-through-test' });
+    const runtime = JSON.parse(fs.readFileSync(harness.scannerRuntimePath, 'utf8'));
+    const detail = runtime.candidate_rank_details.find((entry) => entry.symbol === 'MTAL');
+    const sizingDetail = runtime.position_sizing.latest_candidates.find((entry) => entry.symbol === 'MTAL');
+
+    assert.equal(runtime.position_sizing.mode, 'buying_power');
+    assert(detail);
+    assert.equal(detail.sizing_method, 'buying_power');
+    assert(sizingDetail);
+    assert.equal(sizingDetail.buying_power_sizing.accepted, true);
+    assert.equal(sizingDetail.buying_power_sizing.quantity, 38);
+    assert.equal(detail.risk_budget_sizing, null);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('stock scanner reports occupied slot as the no-buy reason even when candidates exist', async () => {
+  const harness = createScannerHarness({
+    symbols: ['MTAL'],
+    snapshots: {
+      MTAL: rankedSnapshot({
+        bid: 5.07,
+        ask: 5.09,
+        previousClose: 5,
+        volume: 100000,
+        timestamp: '2026-06-16T20:00:00.000Z',
+      }),
+    },
+    positions: [{ symbol: 'YHNAU', qty: '7' }],
+    maxOpenPositions: 1,
+  });
+
+  try {
+    await harness.scanner.runOnce({ runId: 'occupied-slot-waiting-reason-test' });
+    const runtime = JSON.parse(fs.readFileSync(harness.scannerRuntimePath, 'utf8'));
+
+    assert.equal(runtime.portfolio.open_positions_count, 1);
+    assert.equal(runtime.portfolio.remaining_position_slots, 0);
+    assert.equal(runtime.waiting_for_buy.reason_code, 'MAX_POSITION_SLOTS_FILLED');
+    assert.match(runtime.waiting_for_buy.message, /slot is occupied/);
+  } finally {
+    harness.cleanup();
   }
 });
 

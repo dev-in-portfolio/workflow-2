@@ -7,6 +7,7 @@ const { loadConfig } = require('./config');
 const { loadRuntimeEnv } = require('./runtime-env');
 const { listProcessLocks } = require('./process-lock');
 const { evaluatePolicyHealth } = require('./policy-health');
+const { analyzeExecutionIntent } = require('./execution-mode');
 const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
 
 const execFileAsync = (file, args, options = {}) => {
@@ -63,6 +64,9 @@ async function runLivePreflight(options = {}) {
 
   const config = buildConfigState({ repoRoot, runtimeEnv, options, warnings, recommendedActions });
   const liveCapable = isLiveCapable(runtimeEnv, config.loaded_config);
+  if (config.execution_intent?.live_mode_selected && config.execution_intent.issues.length) {
+    criticalFailures.push(...config.execution_intent.issues);
+  }
   const broker = await buildBrokerState({ runtimeEnv, options, liveCapable, criticalFailures, warnings, recommendedActions });
   const policySnapshot = options.policySnapshot !== undefined
     ? options.policySnapshot
@@ -163,6 +167,11 @@ function buildConfigState({ repoRoot, runtimeEnv, options, warnings, recommended
     warnings.push(Reason.ENV_CHANGED_AFTER_START_RESTART_REQUIRED);
     recommendedActions.push('Restart trader/scanner/dashboard so .env.local changes are loaded.');
   }
+  const executionIntent = analyzeExecutionIntent(loadedConfig || {}, runtimeEnv);
+  if (executionIntent.live_mode_selected && executionIntent.issues.length) {
+    warnings.push(...executionIntent.issues);
+    recommendedActions.push('Fix live execution mode configuration before starting or continuing live operation.');
+  }
   return {
     loaded,
     load_error: loadError,
@@ -174,6 +183,7 @@ function buildConfigState({ repoRoot, runtimeEnv, options, warnings, recommended
     config_loaded_at: nowIso(),
     drift: [],
     loaded_config: loadedConfig,
+    execution_intent: executionIntent,
   };
 }
 

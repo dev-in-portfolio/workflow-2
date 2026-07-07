@@ -4,10 +4,13 @@ const http = require('http');
 const { spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const { URL } = require('url');
+const { loadConfig } = require('./config');
 const { loadRuntimeEnv } = require('./runtime-env');
+const { AlpacaTradeAdapter } = require('./alpaca-adapter');
+const { syncLocalStateFromBroker } = require('./broker-sync-service');
+const { validateExecutionIntent } = require('./execution-mode');
 const { isRegularUsMarketHours, resolveMarketRegime } = require('./market-hours');
 const { nowIso, safeNumber, resolveRepoRoot, resolveDataPath } = require('./util');
-const { APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
 const { createLocalProcessController } = require('./local-process-controller');
 const { classifyExitProtection } = require('./exit-protection');
 const { readOperatorTimelineTail } = require('./operator-timeline');
@@ -44,7 +47,7 @@ const DEFAULT_TRADER_PORTS = [3001, 3000, 3002, 3003, 3004, 3005, 3006, 3007, 30
 const DEFAULT_REFRESH_MAX_AGE_MS = 2_000;
 const DEFAULT_RECENT_ENTRY_LIMIT = 12;
 const DEFAULT_LOG_LINE_LIMIT = 20;
-const DASHBOARD_RUNTIME_VERSION = '2026-07-01.live-market-watch-intelligence.1';
+const DASHBOARD_RUNTIME_VERSION = '2026-07-06.broker-authoritative-positions.1';
 const execFileAsync = (file, args, options = {}) => {
   if (process.platform === 'win32') {
     const tempDir = process.env.TEMP || 'C:\\Windows\\Temp';
@@ -83,6 +86,7 @@ function createDashboardServer(options = {}) {
     cache: null,
     cacheAtMs: 0,
     dashboardPort: options.port || DEFAULT_DASHBOARD_PORT,
+    brokerSyncInFlight: false,
   };
   const dashboardDir = resolveDashboardDir(options.dashboardDir);
   const dataDir = resolveDataDir(options.dataDir);
@@ -249,6 +253,8 @@ function createDashboardServer(options = {}) {
         if (controlManager?.refresh) {
           await controlManager.refresh();
         }
+        state.cache = null;
+        state.cacheAtMs = 0;
         const afterState = controlManager?.getState?.() || null;
         return sendJson(res, result.ok ? 200 : 400, {
           status: result.ok ? 'ok' : 'error',
@@ -266,6 +272,57 @@ function createDashboardServer(options = {}) {
           message: error.message,
           timestamp: nowIso(),
         });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/broker/sync') {
+      if (state.brokerSyncInFlight) {
+        return sendJson(res, 409, {
+          ok: false,
+          status: 'error',
+          error: 'broker_sync_already_running',
+          reason_codes: ['BROKER_SYNC_ALREADY_RUNNING'],
+          message: 'Broker sync is already running. Wait for it to finish before starting another sync.',
+          timestamp: nowIso(),
+        });
+      }
+      state.brokerSyncInFlight = true;
+      try {
+        await readJsonBody(req, { maxBytes: 4096 });
+        const env = options.runtimeEnv || loadRuntimeEnv(options.env || process.env, options.repoRoot || path.resolve(__dirname, '..'));
+        const config = loadConfig(env);
+        if (String(config.TRADING_MODE || '').trim().toLowerCase() === 'live') {
+          validateExecutionIntent(config, env, { action: 'broker-sync' });
+        }
+        const adapter = options.brokerSyncAdapter || new AlpacaTradeAdapter({
+          baseUrl: config.ALPACA_API_BASE_URL || undefined,
+          apiKeyId: config.ALPACA_API_KEY_ID || undefined,
+          apiSecretKey: config.ALPACA_API_SECRET_KEY || undefined,
+          paperTrading: !(config.TRADING_MODE === 'live' && config.LIVE_TRADING_ENABLED),
+        });
+        const result = await syncLocalStateFromBroker({
+          env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+          dataDir,
+          executionAdapter: adapter,
+          controlManager,
+          maxOpenPositions: config.MAX_OPEN_POSITIONS,
+          source: 'dashboard_broker_sync',
+        });
+        state.cache = null;
+        state.cacheAtMs = 0;
+        return sendJson(res, result.ok ? 200 : 503, result);
+      } catch (error) {
+        return sendJson(res, error?.code === 'LIVE_EXECUTION_BLOCKED' ? 400 : 500, {
+          ok: false,
+          status: 'error',
+          error: error?.code === 'LIVE_EXECUTION_BLOCKED' ? 'live_execution_blocked' : 'broker_sync_failed',
+          reason_codes: error?.reason_codes || [error?.code || 'BROKER_SYNC_FAILED'],
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      } finally {
+        state.brokerSyncInFlight = false;
       }
     }
 
@@ -504,8 +561,13 @@ function createDashboardServer(options = {}) {
       const filePath = assetIndex[url.pathname];
       if (filePath.endsWith('.html')) {
         try {
-          const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
-          return sendDashboardPage(res, filePath, getContentType(filePath), buildDashboardBootstrap(url.pathname, snapshot));
+          const bootstrap = url.pathname === '/' || url.pathname === '/index.html'
+            ? buildDashboardBootstrap(url.pathname, null)
+            : buildDashboardBootstrap(
+              url.pathname,
+              await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor }),
+            );
+          return sendDashboardPage(res, filePath, getContentType(filePath), bootstrap);
         } catch (error) {
           return sendJson(res, 500, {
             status: 'error',
@@ -573,23 +635,21 @@ async function getCachedSnapshot(state, options, context) {
 }
 
 function buildDashboardBootstrap(page, snapshot = {}) {
+  const hasSnapshot = Boolean(snapshot && typeof snapshot === 'object');
   const normalizedPage = String(page || '/').toLowerCase();
   return {
     page: normalizedPage,
-    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
-    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
-    homeSummary: buildHomeSummary(snapshot),
-    watchSnapshot: buildWatchSnapshotResponse(snapshot),
-    controlSummary: buildControlSummary(snapshot),
-    sourceHealthSummary: buildSourceHealthSummary(snapshot),
+    generated_at: hasSnapshot ? (snapshot.generated_at || snapshot.timestamp || nowIso()) : nowIso(),
+    timestamp: hasSnapshot ? (snapshot.timestamp || snapshot.generated_at || nowIso()) : nowIso(),
+    homeSummary: hasSnapshot ? buildHomeSummary(snapshot) : null,
+    watchSnapshot: hasSnapshot ? buildWatchSnapshotResponse(snapshot) : null,
+    controlSummary: hasSnapshot ? buildControlSummary(snapshot) : null,
+    sourceHealthSummary: hasSnapshot ? buildSourceHealthSummary(snapshot) : null,
   };
 }
 
 async function getSummarySnapshot(state, options, context) {
-  if (state.cache) {
-    return state.cache;
-  }
-  return buildLocalSummarySnapshot(options, context, state);
+  return getCachedSnapshot(state, options, context);
 }
 
 function buildLocalSummarySnapshot(options = {}, context = {}, state = {}) {
@@ -1417,10 +1477,17 @@ async function fetchEndpointJson(fetchImpl, baseUrl, pathname) {
   }
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, options = {}) {
+  const maxBytes = Math.max(1, Number(options.maxBytes || 64 * 1024) || 64 * 1024);
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > maxBytes) {
+      throw new Error('Request body is too large');
+    }
+    chunks.push(buffer);
   }
   if (!chunks.length) return {};
   const raw = Buffer.concat(chunks).toString('utf8').trim();
@@ -2245,6 +2312,7 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
   const liveOpenPositionsCount = livePositions?.available && Number.isFinite(Number(livePositions?.count))
     ? Number(livePositions.count)
     : null;
+  const brokerPositionsAuthoritative = liveOpenPositionsCount !== null;
   const accountEquity = safeNumber(liveAccount?.data?.equity ?? liveAccount?.data?.portfolio_value ?? null, null);
   const accountLastEquity = safeNumber(liveAccount?.data?.last_equity ?? null, null);
   const accountChangeToday = Number.isFinite(accountEquity) && Number.isFinite(accountLastEquity)
@@ -2338,10 +2406,12 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     recent_activity_count: recentEntries.paperOutcomes.length + recentEntries.riskDecisions.length + recentEntries.signals.length,
     total_trades_today: totalTradesToday,
     average_trades_per_hour: Number.isFinite(totalTradesToday) && Number.isFinite(uptimeHours) && uptimeHours > 0 ? totalTradesToday / uptimeHours : null,
-    open_positions_count: liveOpenPositionsCount ?? derivedOpenPositions,
+    open_positions_count: brokerPositionsAuthoritative ? liveOpenPositionsCount : derivedOpenPositions,
     live_open_positions_count: liveOpenPositionsCount,
-    open_positions_count_source: liveOpenPositionsCount !== null ? 'alpaca' : 'derived',
+    open_positions_count_source: brokerPositionsAuthoritative ? 'alpaca' : 'derived',
+    broker_positions_authoritative: brokerPositionsAuthoritative,
     derived_open_positions_count: derivedOpenPositions,
+    stale_derived_open_positions_count: brokerPositionsAuthoritative ? derivedOpenPositions : 0,
     daily_change: accountChangeToday,
     daily_change_source: Number.isFinite(accountEquity) && Number.isFinite(accountLastEquity) ? 'alpaca' : 'report',
     account_equity: accountEquity,
@@ -2402,7 +2472,13 @@ function buildWatchSnapshot({
   const livePositionMap = buildLivePositionMap(livePositions);
   const liveOrderMap = buildLiveOpenOrderMap(liveOpenOrders);
 
-  const regularWatchList = approved.map((symbol) => buildRegularWatchEntry(symbol, {
+  const regularWatchSymbols = [...new Set([
+    ...approved,
+    ...(Array.isArray(runtime?.active_symbols) ? runtime.active_symbols.map((symbol) => normalizeWatchSymbol(symbol)).filter(Boolean) : []),
+    ...regularWatchStatusEntries.map((entry) => normalizeWatchSymbol(entry?.symbol)).filter(Boolean),
+  ])];
+
+  const regularWatchList = regularWatchSymbols.map((symbol) => buildRegularWatchEntry(symbol, {
     candidate: candidateBySymbol.get(symbol) || null,
     recentSkip: recentSkipBySymbol.get(symbol) || null,
     regularWatchEntry: regularWatchEntryBySymbol.get(symbol) || null,
@@ -2427,6 +2503,10 @@ function buildWatchSnapshot({
   const dynamicEnabled = Boolean(memeMonitorStatus?.hotList?.enabled);
   const hotHotEnabled = Boolean(memeMonitorStatus?.hotHotScoring?.enabled);
   const watchedSymbols = new Set(approvedSet);
+  for (const symbol of Array.isArray(runtime?.active_symbols) ? runtime.active_symbols : []) {
+    const normalized = normalizeWatchSymbol(symbol);
+    if (normalized) watchedSymbols.add(normalized);
+  }
   for (const entry of [...(dynamicPayload?.dynamicHotList || []), ...(dynamicPayload?.hotHotList || [])]) {
     const symbol = normalizeWatchSymbol(entry?.symbol);
     if (symbol) watchedSymbols.add(symbol);
@@ -2594,6 +2674,23 @@ function buildCompactScannerRuntime(runtime = {}) {
     preview_reason_codes: Array.isArray(runtime.preview_reason_codes) ? runtime.preview_reason_codes.slice(0, 20) : [],
     market_closed_execution_block: Boolean(runtime.market_closed_execution_block),
     skip_summary: runtime.skip_summary || null,
+    waiting_for_buy: runtime.waiting_for_buy || null,
+    portfolio: runtime.portfolio ? {
+      open_positions_count: runtime.portfolio.open_positions_count ?? null,
+      remaining_position_slots: runtime.portfolio.remaining_position_slots ?? null,
+      buying_power: runtime.portfolio.buying_power ?? null,
+      cash: runtime.portfolio.cash ?? null,
+    } : null,
+    broker_truth: runtime.broker_truth || null,
+    position_sizing: runtime.position_sizing ? {
+      mode: runtime.position_sizing.mode || null,
+      max_buying_power_deployment_pct: runtime.position_sizing.max_buying_power_deployment_pct ?? null,
+      buying_power_market_order_buffer_pct: runtime.position_sizing.buying_power_market_order_buffer_pct ?? null,
+      buying_power_cash_reserve: runtime.position_sizing.buying_power_cash_reserve ?? null,
+      latest_candidates: Array.isArray(runtime.position_sizing.latest_candidates)
+        ? runtime.position_sizing.latest_candidates.slice(0, 5)
+        : [],
+    } : null,
     candidate_lifecycle_summary: compactCandidateLifecycleSummary(runtime.candidate_lifecycle_summary || null),
     execution_quality_summary: compactExecutionQualitySummary(runtime.execution_quality_summary || null),
   };
@@ -2939,9 +3036,24 @@ function resolveTopSymbolScore(entry = {}, sourceLabel = '') {
     return safeNumber(entry?.adjusted_rank_score ?? entry?.rank_score ?? entry?.scannerScore ?? entry?.score, null);
   }
   if (source.includes('regular watch movers')) {
-    return safeNumber(entry?.regularWatchScore ?? entry?.scannerScore ?? entry?.score, null);
+    return resolveRegularWatchDisplayedScore(entry);
   }
-  return safeNumber(entry?.regularWatchScore ?? entry?.scannerScore ?? entry?.score ?? entry?.rank_score, null);
+  if (source.includes('regular watch')) {
+    return resolveRegularWatchDisplayedScore(entry);
+  }
+  return safeNumber(entry?.score ?? entry?.scannerScore ?? entry?.regularWatchScore ?? entry?.rank_score, null);
+}
+
+function resolveRegularWatchDisplayedScore(entry = {}) {
+  const regularScore = safeNumber(entry?.regularWatchScore, null);
+  const scannerScore = safeNumber(entry?.scannerScore, null);
+  const genericScore = safeNumber(entry?.score, null);
+  const rankScore = safeNumber(entry?.rank_score, null);
+  if (Number.isFinite(regularScore) && Math.abs(regularScore) > 1e-9) return regularScore;
+  if (Number.isFinite(scannerScore)) return scannerScore;
+  if (Number.isFinite(regularScore)) return regularScore;
+  if (Number.isFinite(genericScore)) return genericScore;
+  return rankScore;
 }
 
 function buildRegularWatchIntelligenceSnapshot({
@@ -3035,6 +3147,8 @@ function summarizeScannerPreview(runtime = null) {
     previewCandidates: previewCandidates.slice(),
     topPreviewCandidates: topPreviewCandidates.slice(),
     previewReasonCodes,
+    waitingForBuy: runtime?.waiting_for_buy || null,
+    brokerTruth: runtime?.broker_truth || runtime?.broker_state || null,
   };
 }
 
@@ -3139,6 +3253,10 @@ function buildRegularWatchEntry(symbol, { candidate = null, recentSkip = null, r
     spreadPct: safeNumber(candidate?.spread_pct, null),
     volumeMultiple,
     scannerScore: safeNumber(candidate?.adjusted_rank_score ?? candidate?.rank_score, null),
+    displayedRankScore: safeNumber(candidate?.rank_score, null),
+    executionStatus: candidate?.execution_status || null,
+    waitingReason: candidate?.waiting_reason || recentSkip?.reason || null,
+    sizingExplanation: candidate?.sizing_explanation || null,
     regularWatchScore: safeNumber(regularWatchEntry?.score, null),
     status,
     reason: hasCandidate ? null : recentSkip?.reason || 'market_data_unavailable',
@@ -3528,7 +3646,7 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
     minBuyNotional: safeNumber(runtimeEnv.MIN_BUY_NOTIONAL, null),
-    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || APPROVED_LIVE_MARKET_SYMBOLS.join(',')),
+    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || ''),
     positionStopLossDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_DOLLARS, null),
     positionStopLossNotionalPct: safeNumber(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT, null),
     positionStopLossMaxDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS, null),
@@ -3602,13 +3720,24 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
     positions: positions.map((position) => {
       const marketValue = safeNumber(position.market_value ?? position.marketValue, null);
       const unrealized = safeNumber(position.unrealized_pl ?? position.unrealizedPnl ?? position.unrealized_intraday_pl, null);
+      const quantity = safeNumber(position.net_quantity ?? position.qty ?? null, null);
+      const avgEntryPrice = safeNumber(position.avg_entry_price, null);
+      const currentPrice = safeNumber(position.current_price, null);
       const runtimeState = runtimeBySymbol.get(String(position.symbol || '').toUpperCase()) || {};
       const effectiveStopLoss = safeNumber(runtimeState.stop_loss_dollars, calculateEffectiveStopLossDollars({
         baseStopLossDollars: rules.stop_loss_dollars,
         stopLossNotionalPct: rules.stop_loss_notional_pct,
         stopLossMaxDollars: rules.stop_loss_max_dollars,
         positionMarketValue: marketValue,
+        positionQuantity: quantity,
       }));
+      const stopLossPerShare = Math.abs(quantity) > 0 ? effectiveStopLoss / Math.abs(quantity) : null;
+      const hardStopPrice = Number.isFinite(avgEntryPrice) && Number.isFinite(stopLossPerShare)
+        ? Math.max(0.01, avgEntryPrice - stopLossPerShare)
+        : null;
+      const distanceToStopPerShare = Number.isFinite(currentPrice) && Number.isFinite(hardStopPrice)
+        ? currentPrice - hardStopPrice
+        : null;
       const distanceToStop = Number.isFinite(unrealized) ? unrealized + effectiveStopLoss : null;
       const trailingPeak = safeNumber(runtimeState.trailing_peak_unrealized_pl ?? scannerRuntime?.trailing_state?.positions?.[position.symbol]?.peak_unrealized_pl, null);
       const trailingActive = Boolean(runtimeState.trailing_active ?? (Number.isFinite(trailingPeak) && trailingPeak >= rules.trailing_profit_start_dollars));
@@ -3618,16 +3747,20 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
       return {
         symbol: position.symbol || null,
         market_value: marketValue,
-        quantity: safeNumber(position.net_quantity ?? position.qty ?? null, null),
-        avg_entry_price: safeNumber(position.avg_entry_price, null),
-        current_price: safeNumber(position.current_price, null),
+        quantity,
+        avg_entry_price: avgEntryPrice,
+        current_price: currentPrice,
         unrealized_pl: unrealized,
         stop_loss_dollars: effectiveStopLoss,
         effective_stop_loss_dollars: effectiveStopLoss,
+        stop_loss_total_dollars: effectiveStopLoss,
+        stop_loss_per_share: Number.isFinite(stopLossPerShare) ? Number(stopLossPerShare.toFixed(4)) : null,
+        hard_stop_price: Number.isFinite(hardStopPrice) ? Number(hardStopPrice.toFixed(4)) : null,
         base_stop_loss_dollars: rules.stop_loss_dollars,
         stop_loss_notional_pct: rules.stop_loss_notional_pct,
         stop_loss_max_dollars: rules.stop_loss_max_dollars,
         distance_to_stop_dollars: Number.isFinite(distanceToStop) ? Number(distanceToStop.toFixed(4)) : null,
+        distance_to_stop_per_share: Number.isFinite(distanceToStopPerShare) ? Number(distanceToStopPerShare.toFixed(4)) : null,
         trailing_active: trailingActive,
         trailing_peak_unrealized_pl: Number.isFinite(trailingPeak) ? trailingPeak : null,
         trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? trailingSellAt : null,
@@ -3717,9 +3850,7 @@ function resolveLiveMarketRules(env = {}, policySnapshot = null) {
   const policy = policySnapshot?.policy || {};
   return {
     workflow: 'Live Market',
-    approved_symbols: Array.isArray(policy.approvedSymbols) && policy.approvedSymbols.length
-      ? policy.approvedSymbols
-      : APPROVED_LIVE_MARKET_SYMBOLS.slice(),
+    approved_symbols: Array.isArray(policy.approvedSymbols) ? policy.approvedSymbols : [],
     excluded_buy_symbols: parseCsvForDrift(env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS || ''),
     max_open_positions: safeNumber(policy.maxOpenPositions, safeNumber(env.MAX_OPEN_POSITIONS, 2)),
     buy_notional_target: safeNumber(policy.buyNotionalTarget, safeNumber(env.BUY_NOTIONAL_TARGET, 150)),
@@ -3731,6 +3862,13 @@ function resolveLiveMarketRules(env = {}, policySnapshot = null) {
     trailing_profit_giveback_dollars: safeNumber(policy.trailingProfitGivebackDollars, safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 0.3)),
     sell_profit_threshold_pct: safeNumber(policy.sellProfitThresholdPct, resolveProfitExitThresholdPct(env, 'stocks')),
     sell_net_profit_floor_dollars: resolveProfitExitFloorDollars(policySnapshot, env),
+    position_sizing: {
+      mode: String(env.POSITION_SIZING_MODE || (parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED) ? 'risk_budget' : 'fixed_notional')).trim().toLowerCase(),
+      max_buying_power_deployment_pct: safeNumber(env.MAX_BUYING_POWER_DEPLOYMENT_PCT, 100),
+      buying_power_market_order_buffer_pct: safeNumber(env.BUYING_POWER_MARKET_ORDER_BUFFER_PCT, 0),
+      buying_power_cash_reserve: safeNumber(env.BUYING_POWER_CASH_RESERVE ?? env.CASH_RESERVE_DOLLARS, 0),
+      allow_buying_power_fractional_shares: parseBoolForDrift(env.ALLOW_BUYING_POWER_FRACTIONAL_SHARES),
+    },
     risk_budget_sizing: {
       enabled: parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED),
       max_risk_per_trade_dollars: safeNumber(env.MAX_RISK_PER_TRADE_DOLLARS, 0),

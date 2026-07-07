@@ -50,7 +50,10 @@ function buildPaperOrderRequestFromSignal(signal, options = {}) {
       sizing_method: signal.sizing_method ?? signal.sizing_mode ?? null,
       risk_budget: signal.risk_budget ?? signal.risk_budget_sizing ?? null,
       risk_budget_sizing: signal.risk_budget_sizing ?? signal.risk_budget ?? null,
+      buying_power_sizing: signal.buying_power_sizing ?? null,
+      sizing_explanation: signal.sizing_explanation ?? null,
       structure_stop: signal.structure_stop ?? null,
+      allow_bracket: signal.allow_bracket ?? signal.allowBracket ?? null,
       allow_scale_in: Boolean(signal.allow_scale_in || signal.allowScaleIn || options.allow_scale_in || options.allowScaleIn),
       time_in_force: timeInForce,
       strategy_name: signal.strategy_name || 'unknown',
@@ -76,14 +79,17 @@ function buildPaperOrderRequestFromSignal(signal, options = {}) {
     quantity: hasQuantity ? Number((quantity * sizeMultiplier).toFixed(6)) : null,
     notional: hasNotional ? Number((notional * sizeMultiplier).toFixed(2)) : null,
     limit_price: signal.limit_price ?? null,
-    stop_loss: signal.stop_loss ?? null,
-    take_profit: signal.take_profit ?? null,
+    stop_loss: null,
+    take_profit: null,
     entry_price: signal.entry_price ?? signal.price ?? null,
     sizing_method: signal.sizing_method ?? signal.sizing_mode ?? null,
     risk_budget: signal.risk_budget ?? signal.risk_budget_sizing ?? null,
     risk_budget_sizing: signal.risk_budget_sizing ?? signal.risk_budget ?? null,
+    buying_power_sizing: signal.buying_power_sizing ?? null,
+    sizing_explanation: signal.sizing_explanation ?? null,
     structure_stop: signal.structure_stop ?? null,
     allow_scale_in: Boolean(signal.allow_scale_in || signal.allowScaleIn || options.allow_scale_in || options.allowScaleIn),
+    allow_bracket: false,
     time_in_force: signal.time_in_force || 'day',
     strategy_name: signal.strategy_name || 'unknown',
     confidence_score: signal.confidence_score ?? null,
@@ -132,6 +138,32 @@ function resolveBuyOrderSizing(signal, options = {}) {
       supports_fractional_shares: Boolean(supportsFractionalShares),
       sizing_mode: 'notional_fallback',
       reason_codes: ['PRICE_UNAVAILABLE'],
+    };
+  }
+
+  const signalQuantity = safeNumber(signal.quantity, null);
+  const signalNotional = safeNumber(signal.notional, null);
+  if (Number.isFinite(signalQuantity) && signalQuantity > 0) {
+    const quantity = supportsFractionalShares ? floorToDecimals(signalQuantity, 6) : Math.floor(signalQuantity);
+    if (!(quantity > 0)) {
+      return {
+        pass: false,
+        reason_codes: ['BUY_BUDGET_TOO_SMALL_FOR_WHOLE_SHARES'],
+        target_notional: Number.isFinite(signalNotional) && signalNotional > 0 ? signalNotional : targetNotional,
+        price,
+        supports_fractional_shares: Boolean(supportsFractionalShares),
+        sizing_mode: 'signal_whole_share_qty',
+      };
+    }
+    return {
+      pass: true,
+      quantity,
+      notional: Number((quantity * price).toFixed(2)),
+      target_notional: Number.isFinite(signalNotional) && signalNotional > 0 ? signalNotional : targetNotional,
+      price,
+      supports_fractional_shares: Boolean(supportsFractionalShares),
+      sizing_mode: supportsFractionalShares ? 'signal_fractional_qty' : 'signal_whole_share_qty',
+      reason_codes: [],
     };
   }
 

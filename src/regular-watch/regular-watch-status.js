@@ -39,6 +39,22 @@ function defaultRegularWatchStatus() {
     },
     regularWatchList: [],
     regularWatchMovers: [],
+    universe: {
+      source: null,
+      full_eligible_count: 0,
+      current_batch_size: 0,
+      rotation_batch_size: 0,
+      fast_lane_enabled: false,
+      fast_lane_candidate_count: 0,
+      fast_lane_limit: 0,
+      fast_lane_sources: {},
+      merged_scan_size: 0,
+      displayed_top_limit: 100,
+      scanned_today_count: 0,
+      fresh_data_count: 0,
+      rotation: null,
+      warning: null,
+    },
     sources: [],
     generatedAt: null,
     stale: true,
@@ -74,6 +90,7 @@ function normalizeRegularWatchStatus(status = {}) {
   };
   base.regularWatchList = Array.isArray(status.regularWatchList) ? status.regularWatchList.slice() : [];
   base.regularWatchMovers = Array.isArray(status.regularWatchMovers) ? status.regularWatchMovers.slice() : [];
+  base.universe = normalizeUniverseStatus(status.universe || status.symbol_universe || {});
   base.sources = normalizeSourceStatuses(sources);
   base.generatedAt = status.generatedAt || status.generated_at || null;
   base.stale = Boolean(status.stale ?? true);
@@ -153,6 +170,7 @@ function buildRegularWatchStatusSnapshot({ featureState = null, status = null } 
     positionAwareness,
     regularWatchList: Array.isArray(currentStatus.regularWatchList) ? currentStatus.regularWatchList.slice() : [],
     regularWatchMovers: Array.isArray(currentStatus.regularWatchMovers) ? currentStatus.regularWatchMovers.slice() : [],
+    universe: currentStatus.universe || defaultRegularWatchStatus().universe,
     sources: Array.isArray(currentStatus.sources) ? currentStatus.sources.slice() : [],
     generatedAt: currentStatus.generatedAt || null,
     stale: Boolean(currentStatus.stale),
@@ -230,12 +248,57 @@ function normalizeSourceStatuses(value = []) {
   }));
 }
 
+function normalizeUniverseStatus(value = {}) {
+  const base = defaultRegularWatchStatus().universe;
+  return {
+    ...base,
+    ...value,
+    source: value.source || base.source,
+    full_eligible_count: Number.isFinite(Number(value.full_eligible_count ?? value.fullEligibleCount))
+      ? Number(value.full_eligible_count ?? value.fullEligibleCount)
+      : base.full_eligible_count,
+    current_batch_size: Number.isFinite(Number(value.current_batch_size ?? value.currentBatchSize))
+      ? Number(value.current_batch_size ?? value.currentBatchSize)
+      : base.current_batch_size,
+    rotation_batch_size: Number.isFinite(Number(value.rotation_batch_size ?? value.rotationBatchSize))
+      ? Number(value.rotation_batch_size ?? value.rotationBatchSize)
+      : base.rotation_batch_size,
+    fast_lane_enabled: Boolean(value.fast_lane_enabled ?? value.fastLaneEnabled ?? base.fast_lane_enabled),
+    fast_lane_candidate_count: Number.isFinite(Number(value.fast_lane_candidate_count ?? value.fastLaneCandidateCount))
+      ? Number(value.fast_lane_candidate_count ?? value.fastLaneCandidateCount)
+      : base.fast_lane_candidate_count,
+    fast_lane_limit: Number.isFinite(Number(value.fast_lane_limit ?? value.fastLaneLimit))
+      ? Number(value.fast_lane_limit ?? value.fastLaneLimit)
+      : base.fast_lane_limit,
+    fast_lane_sources: value.fast_lane_sources || value.fastLaneSources || base.fast_lane_sources,
+    merged_scan_size: Number.isFinite(Number(value.merged_scan_size ?? value.mergedScanSize))
+      ? Number(value.merged_scan_size ?? value.mergedScanSize)
+      : base.merged_scan_size,
+    displayed_top_limit: Number.isFinite(Number(value.displayed_top_limit ?? value.displayedTopLimit))
+      ? Number(value.displayed_top_limit ?? value.displayedTopLimit)
+      : base.displayed_top_limit,
+    scanned_today_count: Number.isFinite(Number(value.scanned_today_count ?? value.scannedTodayCount))
+      ? Number(value.scanned_today_count ?? value.scannedTodayCount)
+      : base.scanned_today_count,
+    fresh_data_count: Number.isFinite(Number(value.fresh_data_count ?? value.freshDataCount))
+      ? Number(value.fresh_data_count ?? value.freshDataCount)
+      : base.fresh_data_count,
+    scanned_today_date: value.scanned_today_date || value.scannedTodayDate || null,
+    scanned_today_symbols: Array.isArray(value.scanned_today_symbols)
+      ? value.scanned_today_symbols.slice()
+      : (Array.isArray(value.scannedTodaySymbols) ? value.scannedTodaySymbols.slice() : []),
+    rotation: value.rotation || null,
+    warning: value.warning || null,
+  };
+}
+
 module.exports = {
   buildRegularWatchStatusSnapshot,
   clearRegularWatchErrors,
   defaultRegularWatchStatus,
   loadRegularWatchStatus,
   normalizeRegularWatchStatus,
+  normalizeUniverseStatus,
   normalizeFeatureFlags,
   normalizeSourceStatuses,
   refreshRegularWatchStatus,

@@ -37,17 +37,16 @@ function Import-EnvFile {
 Import-EnvFile (Join-Path $repoRoot '.env')
 Import-EnvFile (Join-Path $repoRoot '.env.local')
 
-$logDir = Join-Path $repoRoot 'data\logs'
-if (-not (Test-Path $logDir)) {
-  New-Item -ItemType Directory -Path $logDir | Out-Null
+$action = 'start'
+for ($index = 0; $index -lt $args.Length; $index++) {
+  if ($args[$index] -eq '-Action' -and ($index + 1) -lt $args.Length) {
+    $action = $args[$index + 1]
+    break
+  }
+  if ($args[$index] -match '^(start|stop)$') {
+    $action = $args[$index]
+    break
+  }
 }
 
-$logPath = Join-Path $logDir 'trader-startup.log'
-Start-Transcript -Path $logPath -Append | Out-Null
-try {
-  Write-Host "Starting trader from $repoRoot"
-  Write-Host "Writing startup transcript to $logPath"
-  node src/trader-cli.js
-} finally {
-  Stop-Transcript | Out-Null
-}
+node scripts/regular-stock-daily-start-stop.js $action

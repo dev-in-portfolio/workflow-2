@@ -2,6 +2,8 @@ const state = {
   snapshot: null,
   loading: true,
   error: null,
+  brokerSync: null,
+  brokerSyncBusy: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -17,7 +19,7 @@ const numberFormatter = new Intl.NumberFormat('en-US', {
 });
 
 const missingText = '-';
-const DASHBOARD_FRONTEND_VERSION = '2026-07-01.live-market-watch-intelligence.1';
+const DASHBOARD_FRONTEND_VERSION = '2026-07-06.broker-authoritative-positions.1';
 const dashboardRequest = createDashboardRequest();
 const bootstrapSnapshot = getDashboardSnapshotForPage('home');
 let lastDynamicTopSignature = '';
@@ -72,7 +74,10 @@ async function refreshSnapshot() {
     return;
   }
   try {
-    const response = await dashboardRequest('/api/home-summary', { cache: 'no-store' });
+    const response = await dashboardRequest(`/api/home-summary?ts=${Date.now()}`, {
+      cache: 'no-store',
+      headers: { 'cache-control': 'no-store' },
+    });
     const snapshot = await response.json();
     if (!response.ok) {
       throw new Error(snapshot?.message || snapshot?.error || `HTTP ${response.status}`);
@@ -106,15 +111,22 @@ function render(snapshot) {
   const brokerStatus = resolveBrokerStatus(live);
   const scannerStatus = resolveScannerStatus(live, scannerFreshness, snapshot?.control);
 
+  const brokerAuthoritative = summary.broker_positions_authoritative || summary.open_positions_count_source === 'alpaca';
   const openPositionCount = Number.isFinite(Number(summary.open_positions_count))
     ? summary.open_positions_count
-    : summary.derived_open_positions_count;
+    : brokerAuthoritative
+      ? 0
+      : summary.derived_open_positions_count;
   const lastTradeAge = summary.last_trade_at ? formatRelativeTime(summary.last_trade_at) : null;
   updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus });
   $('openPositions').textContent = formatCount(openPositionCount);
-  $('openPositionsHint').textContent = summary.open_positions_count_source === 'alpaca'
-    ? 'Live broker count'
+  const staleDerivedCount = Number(summary.stale_derived_open_positions_count || 0);
+  $('openPositionsHint').textContent = brokerAuthoritative
+    ? staleDerivedCount > 0
+      ? `Live broker count; ${formatCount(staleDerivedCount)} stale local`
+      : 'Live broker count'
     : 'Derived fallback';
+  renderBrokerSyncStatus();
   $('lastTradeAge').textContent = lastTradeAge || missingText;
   $('lastTradeHint').textContent = summary.last_trade_at
     ? `At ${formatClock(summary.last_trade_at)}`
@@ -136,8 +148,9 @@ function render(snapshot) {
     : `Waiting for live performance data. Snapshot ${snapshotAgeLabel}.`;
   const versionWarning = dashboardVersionWarning(snapshot);
   const scannerCopy = scannerStatus.detail || `Scanner data ${scannerAgeLabel}.`;
-  $('profitStatusCopy').textContent = versionWarning || `${statusCopy} ${scannerCopy} Broker ${brokerStatus.message}.`;
-  $('profitStatusCopyAlt').textContent = versionWarning || `${statusCopy} ${scannerCopy} Broker ${brokerStatus.message}.`;
+  const waitingCopy = buildWaitingCopy(live?.scanner_runtime);
+  $('profitStatusCopy').textContent = versionWarning || `${statusCopy} ${scannerCopy} ${waitingCopy} Broker ${brokerStatus.message}.`;
+  $('profitStatusCopyAlt').textContent = versionWarning || `${statusCopy} ${scannerCopy} ${waitingCopy} Broker ${brokerStatus.message}.`;
   $('reportDate').textContent = snapshot?.live?.report?.date || snapshot?.live?.status?.started_at || missingText;
   renderPositionCard($('positionOne'), exitPositions[0], snapshot, { primary: true, slotLabel: 'Primary position' });
   renderPositionCard($('positionTwo'), exitPositions[1], snapshot, { primary: false, slotLabel: 'Secondary position' });
@@ -146,6 +159,65 @@ function render(snapshot) {
   renderCandidateLifecycle(live?.candidate_lifecycle_summary || live?.scanner_runtime?.candidate_lifecycle_summary);
   renderExecutionQuality(live?.execution_quality_summary || live?.scanner_runtime?.execution_quality_summary || live?.execution_quality_state);
   renderDynamicTopSymbols(snapshot?.dynamicTopSymbols || [], snapshot);
+}
+
+function renderBrokerSyncStatus() {
+  const button = $('syncBrokerStateButton');
+  const status = $('brokerSyncStatus');
+  if (!button || !status) return;
+  button.disabled = state.brokerSyncBusy;
+  button.textContent = state.brokerSyncBusy ? 'Syncing...' : 'Sync Broker State';
+  if (state.brokerSyncBusy) {
+    status.textContent = 'Syncing with Alpaca... scanner and trader stay running.';
+    return;
+  }
+  const result = state.brokerSync;
+  if (!result) {
+    status.textContent = 'Re-read Alpaca without restarting scanner.';
+    status.className = '';
+    return;
+  }
+  const repaired = Array.isArray(result.repaired_local_state) ? result.repaired_local_state.length : 0;
+  const slots = Number.isFinite(Number(result.available_position_slots_after))
+    ? `${formatCount(result.available_position_slots_after)} slot(s)`
+    : 'slots unknown';
+  status.textContent = result.ok
+    ? `Broker sync ${result.status || 'ok'} at ${formatClock(result.timestamp)}. Repaired ${repaired}; ${slots} after sync.`
+    : `Broker sync failed: ${result.message || result.error || 'Alpaca unavailable'}`;
+  status.className = result.ok ? 'sync-ok' : 'sync-error';
+}
+
+async function syncBrokerState() {
+  if (!dashboardRequest || state.brokerSyncBusy) return;
+  state.brokerSyncBusy = true;
+  renderBrokerSyncStatus();
+  try {
+    const response = await dashboardRequest('/api/broker/sync', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+      },
+      body: JSON.stringify({ source: 'home-dashboard' }),
+    });
+    const result = await response.json();
+    state.brokerSync = result;
+    if (!response.ok) {
+      throw new Error(result?.message || result?.error || `HTTP ${response.status}`);
+    }
+  } catch (error) {
+    state.brokerSync = {
+      ok: false,
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      message: error.message,
+    };
+  } finally {
+    state.brokerSyncBusy = false;
+    renderBrokerSyncStatus();
+    await refreshSnapshot();
+  }
 }
 
 function updateStatusRail({ freshness, botStatus, brokerStatus, scannerStatus }) {
@@ -241,11 +313,29 @@ function resolveScannerStatus(live, scannerFreshness, control = null) {
 function buildWorkflowHint(snapshot, snapshotAgeLabel, scannerAgeLabel) {
   const scannerStatus = String(snapshot?.control?.scanner?.status || '').toLowerCase();
   const traderStatus = String(snapshot?.control?.trader?.status || '').toLowerCase();
+  const waiting = buildWaitingCopy(snapshot?.live?.scanner_runtime);
   const parts = [`Snapshot ${snapshotAgeLabel}`];
   if (traderStatus) parts.push(`Trader ${traderStatus}`);
   if (scannerStatus) parts.push(`Scanner ${scannerStatus}`);
   if (!scannerStatus && scannerAgeLabel !== 'age unknown') parts.push(`Scanner data ${scannerAgeLabel}`);
+  if (waiting) parts.push(waiting);
   return parts.join('. ');
+}
+
+function buildWaitingCopy(scannerRuntime = {}) {
+  const waiting = scannerRuntime?.waiting_for_buy || {};
+  const reason = String(waiting.reason_code || '').toUpperCase();
+  const sizingMode = scannerRuntime?.position_sizing?.mode;
+  const slotCount = scannerRuntime?.portfolio?.remaining_position_slots;
+  const sizingCopy = sizingMode ? `Sizing ${sizingMode}` : null;
+  if (reason === 'MAX_POSITION_SLOTS_FILLED') {
+    const slotCopy = Number.isFinite(Number(slotCount)) ? `${formatCount(slotCount)} slot open` : 'slot occupied';
+    return `Waiting: position slot occupied (${slotCopy}). ${sizingCopy || ''}`.trim();
+  }
+  if (reason) {
+    return `Waiting: ${reason.replaceAll('_', ' ').toLowerCase()}. ${sizingCopy || ''}`.trim();
+  }
+  return sizingCopy || '';
 }
 
 function renderHotListStatus(snapshot = {}) {
@@ -477,7 +567,7 @@ function renderDynamicTopSymbols(items, snapshot = null) {
   const freshness = resolveDynamicTopFreshness(snapshot);
   const dataAgeLabel = formatDataAge(freshness.timestamp);
   const sourceLabel = freshness.source ? `${freshness.source} data` : 'Dynamic source data';
-  meta.textContent = `${formatCount(list.length)} ranked by score. ${sourceLabel} ${dataAgeLabel}.`;
+  meta.textContent = `${formatCount(list.length)} ranked by displayed score. ${sourceLabel} ${dataAgeLabel}.`;
   target.classList.toggle('is-updating', changed);
   if (changed) {
     window.setTimeout(() => target?.classList?.remove('is-updating'), 300);
@@ -639,7 +729,9 @@ function renderPositionCard(target, position, snapshot = {}, options = {}) {
     return;
   }
   const visual = derivePositionVisual(position, snapshot);
-  const stop = Number(snapshot?.regime?.stop_loss_dollars ?? 10);
+  const stop = Number(position.stop_loss_total_dollars ?? position.stop_loss_dollars ?? snapshot?.regime?.stop_loss_dollars ?? 10);
+  const stopPerShare = Number(position.stop_loss_per_share ?? position.base_stop_loss_dollars ?? snapshot?.regime?.stop_loss_dollars ?? NaN);
+  const hardStopPrice = Number(position.hard_stop_price);
   target.className = `position-card-large ${visual.stateClass} ${options.primary ? 'is-primary' : ''}`.trim();
   target.style.setProperty('--meter-fill', `${visual.meterFill}%`);
   target.style.setProperty('--pressure-fill', `${visual.pressureFill}%`);
@@ -679,7 +771,9 @@ function renderPositionCard(target, position, snapshot = {}, options = {}) {
       <span><b>Market value</b> ${escapeHtml(formatCurrency(position.market_value))}</span>
       <span><b>Avg price</b> ${escapeHtml(formatCurrency(position.avg_entry_price))}</span>
       <span><b>Current</b> ${escapeHtml(formatCurrency(position.current_price))}</span>
-      <span><b>Stop</b> ${escapeHtml(formatCurrency(-Math.abs(stop)))}</span>
+      <span><b>Stop price</b> ${escapeHtml(Number.isFinite(hardStopPrice) ? formatCurrency(hardStopPrice) : '-')}</span>
+      <span><b>Stop / share</b> ${escapeHtml(Number.isFinite(stopPerShare) ? formatCurrency(stopPerShare) : '-')}</span>
+      <span><b>Total stop</b> ${escapeHtml(formatCurrency(-Math.abs(stop)))}</span>
       <span><b>Distance</b> ${escapeHtml(formatSignedCurrency(position.distance_to_stop_dollars))}</span>
     </div>
     <div class="position-note">${escapeHtml(visual.note)}</div>
@@ -693,7 +787,9 @@ function derivePositionVisual(position, snapshot = {}) {
   const trailTrigger = Number(position?.trailing_sell_if_unrealized_pl_at_or_below);
   const trailingActive = Boolean(position?.trailing_active);
   const trailingStart = Number(snapshot?.regime?.trailing_profit_start_dollars ?? 5);
-  const stop = Number(snapshot?.regime?.stop_loss_dollars ?? 10);
+  const stop = Number(position?.stop_loss_total_dollars ?? position?.stop_loss_dollars ?? snapshot?.regime?.stop_loss_dollars ?? 10);
+  const hardStopPrice = Number(position?.hard_stop_price);
+  const stopPriceText = Number.isFinite(hardStopPrice) ? ` at ${formatCurrency(hardStopPrice)}` : '';
   const distanceSafe = Number.isFinite(distanceToStop) ? distanceToStop : null;
   const trailSpan = Number.isFinite(peak) && Number.isFinite(trailTrigger) ? Math.max(0.01, peak - trailTrigger) : null;
   const currentTrailProgress = Number.isFinite(unrealized) && trailSpan !== null
@@ -710,7 +806,7 @@ function derivePositionVisual(position, snapshot = {}) {
   if (Number.isFinite(unrealized) && unrealized < 0) {
     state = 'state-under-pressure';
     statusTone = 'critical';
-    note = `Under water by ${formatSignedCurrency(unrealized)}. The stop remains ${formatSignedCurrency(-Math.abs(stop))}.`;
+    note = `Under water by ${formatSignedCurrency(unrealized)}. Position stop is ${formatSignedCurrency(-Math.abs(stop))}${stopPriceText}.`;
   } else if (trailingActive && Number.isFinite(peak) && peak >= trailingStart) {
     state = pressure > 0.72 ? 'state-near-exit' : 'state-profit-locked';
     statusTone = pressure > 0.72 ? 'warn' : 'ok';
@@ -807,7 +903,11 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-render(state.snapshot || bootstrapSnapshot || {});
+render(state.snapshot || {});
+const syncBrokerStateButton = $('syncBrokerStateButton');
+if (syncBrokerStateButton) {
+  syncBrokerStateButton.addEventListener('click', syncBrokerState);
+}
 if (dashboardRequest) {
   refreshSnapshot();
   setInterval(refreshSnapshot, 5_000);

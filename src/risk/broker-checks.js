@@ -6,6 +6,7 @@ function performBrokerChecks(
   marketContext, config, now, portfolio, signalSide,
   fillRate, partialFillRate, multiSourceConfirmation,
   strategyRequiresOpenMarket,
+  isScannerExitSell = false,
 ) {
   const reasonCodes = [];
   const warnings = [];
@@ -40,7 +41,7 @@ function performBrokerChecks(
     reasonCodes.push(RiskReason.HIGH_PARTIAL_FILL_RATE);
   }
 
-  if (multiSourceConfirmation && !multiSourceConfirmation.confirmed) {
+  if (!isScannerExitSell && multiSourceConfirmation && !multiSourceConfirmation.confirmed && !marketContext.single_source_momentum_override) {
     reasonCodes.push(RiskReason.MULTI_SOURCE_CONFIRMATION_FAILED);
   }
 

@@ -81,6 +81,26 @@ test('buy sizing uses fractional shares for stock orders when explicitly enabled
   assert.equal(order.time_in_force, 'day');
 });
 
+test('buy sizing preserves scanner-provided whole-share risk-budget quantity', () => {
+  const order = buildPaperOrderRequestFromSignal({
+    signal_id: 'sig-risk-budget-whole',
+    action_candidate: 'paper_buy',
+    symbol: 'VRM',
+    asset_type: 'stock',
+    entry_price: 4.045,
+    quantity: 8,
+    notional: 32.36,
+    supports_fractional_shares: false,
+    sizing_method: 'risk_budget',
+  }, {
+    buyNotionalTarget: 150,
+  });
+
+  assert.equal(order.quantity, 8);
+  assert.equal(order.notional, 32.36);
+  assert.equal(order.supports_fractional_shares, false);
+});
+
 test('buy order requests retain the scale-in flag for broker-side conflict checks', () => {
   const order = buildPaperOrderRequestFromSignal({
     signal_id: 'sig-scale-in',

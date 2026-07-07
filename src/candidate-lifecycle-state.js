@@ -743,6 +743,7 @@ module.exports = {
   saveCandidateLifecycleState,
   normalizeCandidateLifecycleState,
   reconcileCandidateLifecycleState,
+  resolveScannerMode,
   summarizeCandidateLifecycleState,
   decayCandidateRank,
   normalizeCandidateKey,

@@ -6,7 +6,8 @@ const { PaperTradeAdapter } = require('./paper-adapter');
 const { createMinimalTradingServer } = require('./minimal-server');
 const { nowIso, resolveRepoRoot } = require('./util');
 const { loadRuntimeEnv } = require('./runtime-env');
-const { parseSymbolList, APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
+const { validateExecutionIntent } = require('./execution-mode');
+const { parseSymbolList } = require('./volatile-stock-universe');
 
 function resolvePerformanceHistoryPath(env = process.env) {
   const configuredPath = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
@@ -48,6 +49,7 @@ function buildExecutionAdapter(env = process.env, config = loadConfig(env), opti
   if (options.executionAdapter) {
     return options.executionAdapter;
   }
+  validateExecutionIntent(config, env, { action: 'build-execution-adapter' });
   if (!config.ALPACA_EXECUTION_ENABLED) {
     return options.paperAdapter || new PaperTradeAdapter({ dryRun: true });
   }
@@ -101,7 +103,7 @@ function startMinimalTradingServer(env = process.env, options = {}) {
       buyNotionalTarget: config.BUY_NOTIONAL_TARGET,
       minBuyNotional: config.MIN_BUY_NOTIONAL,
       volatilityThresholdPct: null,
-      approvedSymbols: parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS),
+      approvedSymbols: parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS, []),
       positionStopLossDollars: Number(runtimeEnv.POSITION_STOP_LOSS_DOLLARS || config.POSITION_STOP_LOSS_DOLLARS || 1),
       positionStopLossNotionalPct: Number(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT || config.POSITION_STOP_LOSS_NOTIONAL_PCT || 0.75),
       positionStopLossMaxDollars: Number(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS || config.POSITION_STOP_LOSS_MAX_DOLLARS || 2.5),

@@ -2,7 +2,7 @@ const { createStockScanner } = require('../src/stock-scanner');
 const { buildScannerConfig } = require('../src/scanner-config');
 const { loadRuntimeEnv } = require('../src/runtime-env');
 const { nowIso, resolveRepoRoot } = require('../src/util');
-const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('../src/volatile-stock-universe');
+const { parseSymbolList } = require('../src/volatile-stock-universe');
 const fs = require('fs');
 const path = require('path');
 
@@ -45,7 +45,7 @@ function main(env = process.env) {
   const policyExitOverrides = buildPolicyExitOverrides(livePolicy);
   const stockSymbols = parseSymbolList(
     runtimeEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS,
-    APPROVED_LIVE_MARKET_SYMBOLS,
+    [],
   );
   const scanner = createStockScanner({
     env: runtimeEnv,

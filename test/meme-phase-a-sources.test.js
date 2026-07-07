@@ -35,6 +35,8 @@ function textResponse(text, { ok = true, status = 200 } = {}) {
 
 test('phase A adapters surface market, tradability, halt, and SEC signals', async () => {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'meme-phase-a-sources-'));
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const fetchImpl = async (url) => {
     if (String(url).includes('/v2/stocks/snapshots')) {
       return jsonResponse({
@@ -66,8 +68,8 @@ test('phase A adapters surface market, tradability, halt, and SEC signals', asyn
         filings: {
           recent: {
             form: ['8-K', 'S-1'],
-            filingDate: ['2026-07-02', '2026-07-01'],
-            reportDate: ['2026-07-02', '2026-07-01'],
+            filingDate: [today, yesterday],
+            reportDate: [today, yesterday],
             accessionNumber: ['0001', '0002'],
           },
         },
