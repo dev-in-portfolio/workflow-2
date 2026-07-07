@@ -8,6 +8,8 @@ const { loadRegularWatchState, resolveRegularWatchStatePath } = require('./regul
 const { loadRegularWatchStatus, resolveRegularWatchStatusPath } = require('./regular-watch/regular-watch-status');
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
+const { buildSelectionV2Score } = require('./scanner-selection-v2');
+const { recordScannerSelectionShadow } = require('./scanner-outcome-shadow');
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
 const { assertSignalCandidate } = require('./module-contracts');
@@ -205,6 +207,20 @@ function createStockScanner(options = {}) {
   const nearCloseManageOnlyMinutes = Math.max(0, safeNumber(options.nearCloseManageOnlyMinutes ?? env.STOCK_SCANNER_NEAR_CLOSE_MANAGE_ONLY_MINUTES, 15));
   const volatilityStopEnabled = options.volatilityStopEnabled ?? parseBool(env.STOCK_SCANNER_VOLATILITY_STOP_ENABLED, false);
   const marketQualityRankingEnabled = options.marketQualityRankingEnabled ?? parseBool(env.STOCK_SCANNER_MARKET_QUALITY_RANKING_ENABLED, false);
+  const scannerSelectionV2ShadowEnabled = options.scannerSelectionV2ShadowEnabled ?? parseBool(env.SCANNER_SELECTION_V2_SHADOW, true);
+  const scannerSelectionV2AuthorityEnabled = options.scannerSelectionV2AuthorityEnabled ?? parseBool(env.SCANNER_SELECTION_V2_AUTHORITY_ENABLED, false);
+  const scannerSelectionV2OutcomeTrackingEnabled = options.scannerSelectionV2OutcomeTrackingEnabled ?? parseBool(env.SCANNER_SELECTION_V2_OUTCOME_TRACKING_ENABLED, scannerSelectionV2ShadowEnabled);
+  const scannerSelectionV2Config = {
+    selectionV2MaxSpreadPct: safeNumber(options.selectionV2MaxSpreadPct ?? env.SCANNER_SELECTION_V2_MAX_SPREAD_PCT, 2.5),
+    selectionV2HardBlockSpreadPct: safeNumber(options.selectionV2HardBlockSpreadPct ?? env.SCANNER_SELECTION_V2_HARD_BLOCK_SPREAD_PCT, 5),
+    selectionV2MinRelativeVolume: safeNumber(options.selectionV2MinRelativeVolume ?? env.SCANNER_SELECTION_V2_MIN_RELATIVE_VOLUME, 0.25),
+    selectionV2MinFreshnessScore: safeNumber(options.selectionV2MinFreshnessScore ?? env.SCANNER_SELECTION_V2_MIN_FRESHNESS_SCORE, 35),
+    selectionV2MaxVwapExtensionPct: safeNumber(options.selectionV2MaxVwapExtensionPct ?? env.SCANNER_SELECTION_V2_MAX_VWAP_EXTENSION_PCT, 7),
+    selectionV2SpreadPenaltyThresholdPct: safeNumber(options.selectionV2SpreadPenaltyThresholdPct ?? env.SCANNER_SELECTION_V2_SPREAD_PENALTY_THRESHOLD_PCT, 0.75),
+    selectionV2RegularWatchMaxBonus: safeNumber(options.selectionV2RegularWatchMaxBonus ?? env.SCANNER_SELECTION_V2_REGULAR_WATCH_MAX_BONUS, 12),
+    selectionV2RegularWatchMaxAgeSeconds: safeNumber(options.selectionV2RegularWatchMaxAgeSeconds ?? env.SCANNER_SELECTION_V2_REGULAR_WATCH_MAX_AGE_SECONDS, 180),
+    selectionV2PriorityOverrideMaxBonus: safeNumber(options.selectionV2PriorityOverrideMaxBonus ?? env.SCANNER_SELECTION_V2_PRIORITY_OVERRIDE_MAX_BONUS, 15),
+  };
   const executionQualityFeedbackEnabled = options.executionQualityFeedbackEnabled ?? parseBool(env.EXECUTION_QUALITY_FEEDBACK_ENABLED, false);
   const executionQualityRankPenaltyEnabled = options.executionQualityRankPenaltyEnabled ?? parseBool(env.EXECUTION_QUALITY_RANK_PENALTY_ENABLED, false);
   const executionQualitySizeMultiplierEnabled = options.executionQualitySizeMultiplierEnabled ?? parseBool(env.EXECUTION_QUALITY_SIZE_MULTIPLIER_ENABLED, false);
@@ -696,10 +712,15 @@ function createStockScanner(options = {}) {
         spreadRankPenaltyThresholdPct,
         spreadRankPenaltyPerPct,
         spreadRankPenaltyCap,
+        scannerSelectionV2ShadowEnabled,
+        scannerSelectionV2AuthorityEnabled,
+        scannerSelectionV2Config,
         scannerMode,
         optionalHooks: {
           volatility_stop_enabled: Boolean(volatilityStopEnabled),
           market_quality_ranking_enabled: Boolean(marketQualityRankingEnabled),
+          scanner_selection_v2_shadow_enabled: Boolean(scannerSelectionV2ShadowEnabled),
+          scanner_selection_v2_authority_enabled: Boolean(scannerSelectionV2AuthorityEnabled),
           risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
         },
         riskBudgetSizingEnabled,
@@ -830,10 +851,15 @@ function createStockScanner(options = {}) {
           spreadRankPenaltyThresholdPct,
           spreadRankPenaltyPerPct,
           spreadRankPenaltyCap,
+          scannerSelectionV2ShadowEnabled,
+          scannerSelectionV2AuthorityEnabled,
+          scannerSelectionV2Config,
           scannerMode,
           optionalHooks: {
             volatility_stop_enabled: Boolean(volatilityStopEnabled),
             market_quality_ranking_enabled: Boolean(marketQualityRankingEnabled),
+            scanner_selection_v2_shadow_enabled: Boolean(scannerSelectionV2ShadowEnabled),
+            scanner_selection_v2_authority_enabled: Boolean(scannerSelectionV2AuthorityEnabled),
             risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
           },
           riskBudgetSizingEnabled,
@@ -1413,6 +1439,15 @@ function createStockScanner(options = {}) {
 
   function writeRuntimeSnapshot({ receivedAt, durationMs, portfolio = null, allocation = null, brokerState = null, intradayRegime = null, optionalHooks = null, trailingState = null, partialFillSummary = null, executionQualityState = null, executionQualitySummary = null, antiChurnState = null, antiChurnSummary = null, setupFatigueState = null, setupFatigueSummary = null, sessionGuards = null, candidateLifecycleState = null, candidateLifecycleSummary = null, hotSlotRotation = null, skipSummary = null, recentSkips = [], candidates = [], previewCandidates = [], marketClosedExecutionBlock = false, results = [], recentTradePenalties = new Map(), error = null }) {
     if (!runtimeStateEnabled) return;
+    let scannerSelectionShadowOutcome = null;
+    if (scannerSelectionV2ShadowEnabled && scannerSelectionV2OutcomeTrackingEnabled) {
+      scannerSelectionShadowOutcome = recordScannerSelectionShadow({
+        candidates: candidates.length ? candidates : previewCandidates,
+        receivedAt,
+        env,
+        repoRoot,
+      });
+    }
     const previewDetails = summarizePreviewCandidates(previewCandidates);
     const waitingForBuy = summarizeWaitingForBuy({
       candidates,
@@ -1460,6 +1495,18 @@ function createStockScanner(options = {}) {
         .map((candidate) => ({
           symbol: candidate.symbol,
           setup_key: candidate.setupKey || null,
+          selection_status: candidate.payload?.market_context?.scanner?.candidate_lifecycle_selected ? 'selected' : 'ranked',
+          selection_v2: candidate.payload?.market_context?.scanner?.selection_v2 || null,
+          selection_v2_score: candidate.payload?.market_context?.scanner?.selection_v2?.final_opportunity_score ?? null,
+          setup_classification: candidate.payload?.market_context?.scanner?.selection_v2?.setup_classification || null,
+          raw_market_score: candidate.payload?.market_context?.scanner?.selection_v2?.market_score ?? null,
+          trend_quality_score: candidate.payload?.market_context?.scanner?.selection_v2?.components?.trend_quality_score ?? null,
+          momentum_score: candidate.payload?.market_context?.scanner?.selection_v2?.components?.momentum_score ?? null,
+          relative_volume_score: candidate.payload?.market_context?.scanner?.selection_v2?.components?.relative_volume_score ?? null,
+          structure_score: candidate.payload?.market_context?.scanner?.selection_v2?.components?.structure_score ?? null,
+          reward_risk_score: candidate.payload?.market_context?.scanner?.selection_v2?.components?.reward_risk_score ?? null,
+          overextension_penalty: candidate.payload?.market_context?.scanner?.selection_v2?.penalties?.overextension_penalty ?? null,
+          social_watch_bonus: candidate.payload?.market_context?.scanner?.selection_v2?.bonuses ?? null,
           current_price: candidate.payload?.market_context?.scanner?.current_price ?? null,
           previous_close: candidate.payload?.market_context?.scanner?.previous_close ?? null,
           move_pct: candidate.payload?.market_context?.scanner?.move_pct ?? null,
@@ -1496,6 +1543,11 @@ function createStockScanner(options = {}) {
           sizing_explanation: candidate.payload?.market_context?.scanner?.sizing_explanation || null,
           execution_status: candidate.payload?.market_context?.scanner?.execution_status || null,
           waiting_reason: candidate.payload?.market_context?.scanner?.waiting_reason || null,
+          block_stage: candidate.payload?.market_context?.scanner?.execution_status || null,
+          block_reason: candidate.payload?.market_context?.scanner?.waiting_reason
+            || candidate.payload?.market_context?.scanner?.selection_v2?.reason_codes?.[0]
+            || null,
+          submission_result: null,
           candidate_lifecycle_status: candidate.payload?.market_context?.scanner?.candidate_lifecycle_status || null,
           candidate_lifecycle_reason_codes: candidate.payload?.market_context?.scanner?.candidate_lifecycle_reason_codes || [],
           candidate_lifecycle_decayed_rank: candidate.payload?.market_context?.scanner?.candidate_lifecycle_decayed_rank || null,
@@ -1547,12 +1599,22 @@ function createStockScanner(options = {}) {
       optional_hooks: optionalHooks || {
         volatility_stop_enabled: Boolean(volatilityStopEnabled),
         market_quality_ranking_enabled: Boolean(marketQualityRankingEnabled),
+        scanner_selection_v2_shadow_enabled: Boolean(scannerSelectionV2ShadowEnabled),
+        scanner_selection_v2_authority_enabled: Boolean(scannerSelectionV2AuthorityEnabled),
+        scanner_selection_v2_outcome_tracking_enabled: Boolean(scannerSelectionV2OutcomeTrackingEnabled),
         execution_quality_feedback_enabled: Boolean(executionQualityFeedbackEnabled),
         execution_quality_rank_penalty_enabled: Boolean(executionQualityRankPenaltyEnabled),
         execution_quality_size_multiplier_enabled: Boolean(executionQualitySizeMultiplierEnabled),
         execution_quality_cooldown_enabled: Boolean(executionQualityCooldownEnabled),
         risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
         position_sizing_mode: positionSizingMode,
+      },
+      scanner_selection_v2: {
+        shadow_enabled: Boolean(scannerSelectionV2ShadowEnabled),
+        authority_enabled: Boolean(scannerSelectionV2AuthorityEnabled),
+        outcome_tracking_enabled: Boolean(scannerSelectionV2OutcomeTrackingEnabled),
+        outcome_record: scannerSelectionShadowOutcome,
+        config: scannerSelectionV2Config,
       },
       position_sizing: {
         mode: positionSizingMode,
@@ -2050,6 +2112,24 @@ function buildCandidates(bundle, options = {}) {
         regularWatchEntry,
         regularWatchRankingEnabled,
       });
+      const selectionV2 = options.scannerSelectionV2ShadowEnabled
+        ? buildSelectionV2Score({
+          symbol,
+          snapshot,
+          latestQuote,
+          currentPrice: scannerContext.current_price,
+          previousClose: scannerContext.previous_close,
+          spreadPct: scannerContext.spread_pct,
+          receivedAt: now,
+          structureStop: scannerContext.structure_stop || null,
+          regularWatchEntry,
+          priorityOverride: {
+            eligible: isPriorityOverrideSymbol,
+            legacy_applied: isPriorityOverrideApplied,
+          },
+          options: options.scannerSelectionV2Config || {},
+        })
+        : null;
       scannerContext.dynamic_watchlist_member = isDynamicWatchSymbol;
       scannerContext.priority_override_eligible = isPriorityOverrideSymbol;
       scannerContext.priority_override_applied = isPriorityOverrideApplied;
@@ -2058,6 +2138,9 @@ function buildCandidates(bundle, options = {}) {
       scannerContext.secondary_confirmation_available = secondaryConfirmationAvailable;
       scannerContext.secondary_confirmation_source = secondaryConfirmationSource;
       scannerContext.regular_watch_comparison = regularWatchComparison;
+      scannerContext.selection_v2 = selectionV2;
+      scannerContext.selection_v2_shadow_only = Boolean(selectionV2);
+      scannerContext.selection_v2_authoritative = Boolean(options.scannerSelectionV2AuthorityEnabled);
       candidate.dynamicWatchlistMember = isDynamicWatchSymbol;
       candidate.priorityOverrideEligible = isPriorityOverrideSymbol;
       candidate.priorityOverrideApplied = isPriorityOverrideApplied;
@@ -2066,6 +2149,8 @@ function buildCandidates(bundle, options = {}) {
       candidate.secondaryConfirmationSource = secondaryConfirmationSource;
       candidate.priorityOverrideSortScore = candidate.rankScore;
       candidate.regularWatchComparison = regularWatchComparison;
+      candidate.selectionV2 = selectionV2;
+      candidate.selectionV2SortScore = selectionV2?.qualified ? selectionV2.final_opportunity_score : Number.NEGATIVE_INFINITY;
       candidate.regularWatchSortScore = Number.isFinite(Number(regularWatchComparison?.sortScore))
         ? Number(regularWatchComparison.sortScore)
         : candidate.priorityOverrideSortScore;
@@ -2083,6 +2168,11 @@ function buildCandidates(bundle, options = {}) {
     }
   }
   buyEntries.sort((a, b) => {
+    if (options.scannerSelectionV2AuthorityEnabled) {
+      const aV2 = Number.isFinite(Number(a.selectionV2SortScore)) ? Number(a.selectionV2SortScore) : Number.NEGATIVE_INFINITY;
+      const bV2 = Number.isFinite(Number(b.selectionV2SortScore)) ? Number(b.selectionV2SortScore) : Number.NEGATIVE_INFINITY;
+      if (bV2 !== aV2) return bV2 - aV2;
+    }
     const aScore = Number.isFinite(Number(a.regularWatchSortScore))
       ? Number(a.regularWatchSortScore)
       : (Number.isFinite(Number(a.priorityOverrideSortScore)) ? Number(a.priorityOverrideSortScore) : Number(a.rankScore || 0));
@@ -2143,7 +2233,7 @@ function buildCandidates(bundle, options = {}) {
       candidate.payload.market_context.scanner.candidate_lifecycle_status = lifecycleEntry?.status || candidate.payload.market_context.scanner.candidate_lifecycle_status || 'watching';
       candidate.payload.market_context.scanner.candidate_lifecycle_reason_codes = lifecycleEntry?.reason_codes || candidate.payload.market_context.scanner.candidate_lifecycle_reason_codes || [];
       candidate.payload.market_context.scanner.candidate_lifecycle_decayed_rank = roundScore(lifecycleEntry?.decayed_rank ?? candidate.rankScore);
-      candidate.payload.market_context.scanner.candidate_lifecycle_selected = Boolean(lifecycleEntry?.status === 'entered');
+      candidate.payload.market_context.scanner.candidate_lifecycle_selected = Boolean(lifecycleEntry?.status === 'selected' || lifecycleEntry?.status === 'entered');
     }
   }
   const limitedBuys = selectedBuyEntries.slice(0, Math.max(0, options.maxBuyCandidates ?? options.maxCandidatesPerRun ?? 2));
@@ -2245,6 +2335,9 @@ function buildRegularWatchComparison({ symbol, candidate, regularWatchEntry = nu
   const rankingBonus = rankingEligible && Number.isFinite(regularWatchScore)
     ? Math.max(0, Math.round(regularWatchScore - (baseSortScore || 0)))
     : 0;
+  const boundedSupplementalBonus = rankingEligible && Number.isFinite(regularWatchScore)
+    ? Math.min(12, Math.max(0, ((regularWatchScore - 50) / 50) * 12))
+    : 0;
   const sortScore = rankingEligible && Number.isFinite(regularWatchScore)
     ? regularWatchScore
     : baseSortScore;
@@ -2255,6 +2348,10 @@ function buildRegularWatchComparison({ symbol, candidate, regularWatchEntry = nu
     rankingEligible,
     rankingApplied: rankingEligible && rankingBonus > 0,
     rankingBonus,
+    boundedSupplementalBonus: roundScore(boundedSupplementalBonus),
+    supplementalSortScore: Number.isFinite(baseSortScore) ? roundScore(baseSortScore + boundedSupplementalBonus) : null,
+    preferredModel: 'scanner_market_score_plus_bounded_regular_watch_bonus',
+    legacyModel: 'regular_watch_score_replaces_sort_score_when_enabled',
     scannerScore: Number.isFinite(scannerScore) ? scannerScore : null,
     regularWatchScore: Number.isFinite(regularWatchScore) ? regularWatchScore : null,
     scoreDelta,
@@ -3734,7 +3831,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       candidate_lifecycle_status: side === 'buy' ? candidateLifecycleEntry?.status || (options.candidateLifecycleEnabled ? 'watching' : null) : null,
       candidate_lifecycle_reason_codes: side === 'buy' ? candidateLifecycleEntry?.reason_codes || [] : [],
       candidate_lifecycle_decayed_rank: side === 'buy' ? roundScore(candidateLifecycleEntry?.decayed_rank ?? rankScore) : null,
-      candidate_lifecycle_selected: side === 'buy' ? Boolean(candidateLifecycleEntry?.status === 'entered') : false,
+      candidate_lifecycle_selected: side === 'buy' ? Boolean(candidateLifecycleEntry?.status === 'selected' || candidateLifecycleEntry?.status === 'entered') : false,
       source_mode: side === 'buy' ? options.sourceMode || null : null,
       source_list: side === 'buy' ? options.sourceList || null : null,
       source_lists: side === 'buy' ? uniqueSourceLabels(options.sourceLists || []) : [],
