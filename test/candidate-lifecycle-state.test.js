@@ -70,8 +70,8 @@ test('candidate lifecycle progresses from watching to eligible after enough scan
     minHoldScans: 1,
   });
 
-  assert.equal(second.summary.entered_count, 1);
-  assert.equal(second.state.candidates['MU::mu-breakout'].status, 'entered');
+  assert.equal(second.summary.selected_count, 1);
+  assert.equal(second.state.candidates['MU::mu-breakout'].status, 'selected');
   assert.equal(second.state.selected_key, 'MU::mu-breakout');
 });
 
@@ -223,7 +223,7 @@ test('hard band allows meaningful rotation', () => {
   });
 
   assert.equal(next.state.selected_key, 'WDC::wdc-breakout');
-  assert.equal(next.state.candidates['WDC::wdc-breakout'].status, 'entered');
+  assert.equal(next.state.candidates['WDC::wdc-breakout'].status, 'selected');
 });
 
 test('hunt mode changes to monitor and manage-only blocks buys', () => {

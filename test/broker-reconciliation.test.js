@@ -93,6 +93,41 @@ test('broker open buy order blocks stale direct portfolio buys', async () => {
   assert(result.reason_codes.includes('OPEN_BUY_ORDER_FOR_SYMBOL'));
 });
 
+test('fresh broker truth clears stale local held-position gate after manual sell', async () => {
+  const submitted = [];
+  const result = await processTradingSignal({
+    signal: buySignal({
+      signal_id: 'sig-buy-aapl-after-vrm-sell',
+      request_id: 'req-buy-aapl-after-vrm-sell',
+      symbol: 'AAPL',
+    }),
+    portfolio: {
+      available: true,
+      open_positions_count: 1,
+      remaining_position_slots: 0,
+      symbols_held: ['VRM'],
+      positions: [{ symbol: 'VRM', qty: '25' }],
+    },
+  }, {
+    executionAdapter: strictAdapter({
+      getAccount: async () => ({ cash: '500', buying_power: '500', equity: '500' }),
+      getPositions: async () => [],
+      getOpenOrders: async () => [],
+      submitOrder: async (request) => {
+        submitted.push(request);
+        return { order_id: request.request_id, status: 'filled', request };
+      },
+    }),
+    policySnapshot: { policy: permissivePolicy({ maxOpenPositions: 1, approvedSymbols: ['AAPL'] }) },
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.broker_reconciliation.available, true);
+  assert.equal(result.broker_reconciliation.broker_reconciled_portfolio.remaining_position_slots, 1);
+  assert.deepEqual(result.broker_reconciliation.broker_reconciled_portfolio.symbols_held, []);
+  assert.equal(submitted.length, 1);
+});
+
 test('missing broker account fails closed for Alpaca-capable buy paths', async () => {
   const result = await processTradingSignal({
     signal: buySignal(),

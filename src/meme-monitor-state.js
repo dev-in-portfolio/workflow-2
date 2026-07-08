@@ -24,7 +24,7 @@ const FEATURE_KEYS = [
 const FEATURE_META = {
   MEME_MONITOR_ENABLED: { label: 'Meme Monitor', parent: null, category: 'display_runtime_toggle' },
   MEME_REDDIT_SCANNER_ENABLED: { label: 'Reddit Scanner', parent: 'MEME_MONITOR_ENABLED', category: 'display_runtime_toggle' },
-  MEME_HOT_LIST_ENABLED: { label: 'Hot List', parent: 'MEME_REDDIT_SCANNER_ENABLED', category: 'display_runtime_toggle' },
+  MEME_HOT_LIST_ENABLED: { label: 'Hot List', parent: 'MEME_MONITOR_ENABLED', category: 'display_runtime_toggle' },
   MEME_DYNAMIC_WATCHLIST_ENABLED: { label: 'Dynamic Watchlist', parent: 'MEME_HOT_LIST_ENABLED', category: 'two_key_runtime_toggle' },
   MEME_PRIORITY_OVERRIDE_ENABLED: { label: 'Priority Override', parent: 'MEME_DYNAMIC_WATCHLIST_ENABLED', category: 'two_key_runtime_toggle' },
   MEME_HOT_SLOT_ROTATION_ENABLED: { label: 'Hot Slot Rotation', parent: 'MEME_PRIORITY_OVERRIDE_ENABLED', category: 'two_key_runtime_toggle' },

@@ -6,6 +6,7 @@ const { normalizeExecutionQualityKey } = require('../execution-quality-state');
 const { evaluateSetupFatigueCandidate } = require('../setup-fatigue');
 const { summarizeSessionGuards } = require('../session-guards');
 const { calculateRiskBudgetSize } = require('../risk-budget-sizing');
+const { calculateBuyingPowerSize } = require('../buying-power-sizing');
 const { calculateStructureAwareStop } = require('../structure-stops');
 const { SetupFatigueReason } = require('../setup-fatigue');
 const { buildPositionLookup, buildOpenOrderLookup } = require('./broker-fetcher');
@@ -56,6 +57,14 @@ function buildCandidates(bundle, options = {}) {
       stopLossMaxDollars: options.stopLossMaxDollars,
       trailingProfitStartDollars: options.trailingProfitStartDollars,
       trailingProfitGivebackDollars: options.trailingProfitGivebackDollars,
+      stalePositionExitEnabled: options.stalePositionExitEnabled,
+      stalePositionMaxHoldMinutes: options.stalePositionMaxHoldMinutes,
+      stalePositionMinPeakProfitDollars: options.stalePositionMinPeakProfitDollars,
+      stalePositionMaxExitPnlDollars: options.stalePositionMaxExitPnlDollars,
+      stalledWinnerExitEnabled: options.stalledWinnerExitEnabled,
+      stalledWinnerMaxHoldMinutes: options.stalledWinnerMaxHoldMinutes,
+      stalledWinnerMaxMinutesSincePeak: options.stalledWinnerMaxMinutesSincePeak,
+      stalledWinnerMinProfitDollars: options.stalledWinnerMinProfitDollars,
       trailingState: options.trailingState,
       position: positionsBySymbol.get(symbol) || null,
       openOrder: openOrdersBySymbol.get(symbol) || null,
@@ -64,6 +73,8 @@ function buildCandidates(bundle, options = {}) {
       skipTracker: options.skipTracker,
       twelveDataQuote: options.twelveDataQuotes?.[symbol] || null,
       requireMultiSourceConfirmation: options.requireMultiSourceConfirmation,
+      singleSourceMomentumEnabled: options.singleSourceMomentumEnabled,
+      singleSourceMomentumMinRankScore: options.singleSourceMomentumMinRankScore,
       allowContrarianEntries: options.allowContrarianEntries,
       blockBuys: options.blockBuys,
       marketOpen: options.marketOpen,
@@ -77,6 +88,7 @@ function buildCandidates(bundle, options = {}) {
       maxRiskPerTradeDollars: options.maxRiskPerTradeDollars,
       maxRiskPerTradePctEquity: options.maxRiskPerTradePctEquity,
       maxTradeNotional: options.maxTradeNotional,
+      buyingPowerMarketOrderBufferPct: options.buyingPowerMarketOrderBufferPct,
       minStopDistanceDollars: options.minStopDistanceDollars,
       maxStopDistanceDollars: options.maxStopDistanceDollars,
       allowRiskBudgetFractionalShares: options.allowRiskBudgetFractionalShares,
@@ -454,15 +466,19 @@ function calculateEffectiveStopLossDollars({
   stopLossNotionalPct = 0,
   stopLossMaxDollars = baseStopLossDollars,
   positionMarketValue = null,
+  positionQuantity = null,
 } = {}) {
   const base = Math.abs(safeNumber(baseStopLossDollars, 1));
-  const maxStop = Math.max(base, Math.abs(safeNumber(stopLossMaxDollars, base)));
+  const quantity = Math.abs(safeNumber(positionQuantity, NaN));
+  const quantityMultiplier = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+  const basePositionStop = roundCurrency(base * quantityMultiplier);
+  const maxStop = Math.max(basePositionStop, Math.abs(safeNumber(stopLossMaxDollars, base)) * quantityMultiplier);
   const notionalPct = Math.max(0, safeNumber(stopLossNotionalPct, 0));
   const marketValue = Math.abs(safeNumber(positionMarketValue, NaN));
   const notionalStop = Number.isFinite(marketValue) && marketValue > 0 && notionalPct > 0
     ? marketValue * (notionalPct / 100)
-    : base;
-  return roundCurrency(Math.min(maxStop, Math.max(base, notionalStop)));
+    : basePositionStop;
+  return roundCurrency(Math.min(maxStop, Math.max(basePositionStop, notionalStop)));
 }
 
 function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, positionQty, options }) {
@@ -475,6 +491,18 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const trailingGiveback = options.trailingProfitGivebackDollars ?? 0.3;
   const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars, 0));
   const peak = safeNumber(trailingRecord.peak_unrealized_pl, null);
+  const openedAt = normalizeIso(options.position?.opened_at || options.position?.filled_at || trailingRecord.opened_at || trailingRecord.first_seen_at || null);
+  const peakUpdatedAt = normalizeIso(trailingRecord.peak_updated_at || trailingRecord.trailing_started_at || openedAt || null);
+  const heldSeconds = openedAt ? Math.max(0, (new Date(options.receivedAt || nowIso()).getTime() - new Date(openedAt).getTime()) / 1000) : null;
+  const secondsSincePeak = peakUpdatedAt ? Math.max(0, (new Date(options.receivedAt || nowIso()).getTime() - new Date(peakUpdatedAt).getTime()) / 1000) : null;
+  const staleExitEnabled = Boolean(options.stalePositionExitEnabled);
+  const staleMaxHoldSeconds = Math.max(1, safeNumber(options.stalePositionMaxHoldMinutes, 12)) * 60;
+  const staleMinPeakProfit = Math.max(0, safeNumber(options.stalePositionMinPeakProfitDollars, 0.25));
+  const staleMaxExitPnl = safeNumber(options.stalePositionMaxExitPnlDollars, 0);
+  const stalledWinnerExitEnabled = Boolean(options.stalledWinnerExitEnabled);
+  const stalledWinnerMaxHoldSeconds = Math.max(1, safeNumber(options.stalledWinnerMaxHoldMinutes, 18)) * 60;
+  const stalledWinnerMaxSecondsSincePeak = Math.max(1, safeNumber(options.stalledWinnerMaxMinutesSincePeak, 8)) * 60;
+  const stalledWinnerMinProfit = Math.max(0, safeNumber(options.stalledWinnerMinProfitDollars, 1));
   const entryPrice = safeNumber(options.position?.avg_entry_price ?? options.position?.avgEntryPrice ?? options.position_avg_entry_price, null);
   const entrySlippage = Math.max(0, safeNumber(options.position?.entry_slippage ?? options.position?.entrySlippage, 0));
   const exitSlippage = Math.max(0, safeNumber(options.exitSlippage ?? options.position?.exit_slippage ?? options.position?.exitSlippage, 0));
@@ -483,9 +511,12 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const effectiveTrailingStart = Math.max(trailingStart, sellNetProfitFloorDollars + trailingGiveback + executionDrag);
   const trailingActive = Number.isFinite(peak) && peak >= effectiveTrailingStart;
   const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
-  const grossPnl = Number.isFinite(entryPrice)
-    ? (currentPrice - entryPrice) * Math.abs(positionQty)
-    : unrealized;
+  const brokerPnlTrusted = options.position?.current_price !== undefined || options.position?.currentPrice !== undefined || options.position?.market_value !== undefined || options.position?.marketValue !== undefined;
+  const grossPnl = brokerPnlTrusted && Number.isFinite(unrealized)
+    ? unrealized
+    : Number.isFinite(entryPrice)
+      ? (currentPrice - entryPrice) * Math.abs(positionQty)
+      : null;
   const netPnl = Number.isFinite(grossPnl) ? grossPnl - executionDrag : null;
   const positionMarketValue = safeNumber(
     options.position?.market_value ?? options.position?.marketValue,
@@ -496,22 +527,62 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     stopLossNotionalPct,
     stopLossMaxDollars,
     positionMarketValue,
+    positionQuantity: positionQty,
   });
+  const stopLossPerShare = Math.abs(positionQty) > 0 ? effectiveStopLossDollars / Math.abs(positionQty) : null;
+  const hardStopPrice = Number.isFinite(entryPrice) && Number.isFinite(stopLossPerShare)
+    ? Math.max(0.01, entryPrice - stopLossPerShare)
+    : null;
+  const distanceToStopPerShare = Number.isFinite(currentPrice) && Number.isFinite(hardStopPrice)
+    ? currentPrice - hardStopPrice
+    : null;
   let exitReason = null;
+  let exitMode = trailingActive ? 'profit_protection_active' : 'pre_target_hard_stop_only';
   if (Number.isFinite(unrealized) && unrealized <= -effectiveStopLossDollars) {
     exitReason = 'STOP_LOSS_DOLLARS';
+    exitMode = 'hard_stop_triggered';
   } else if (trailingActive && Number.isFinite(unrealized) && unrealized <= trailingSellAt) {
     exitReason = 'TRAILING_PROFIT_GIVEBACK';
+    exitMode = 'trailing_profit_giveback_triggered';
+  } else if (
+    stalledWinnerExitEnabled
+    && trailingActive
+    && Number.isFinite(heldSeconds)
+    && heldSeconds >= stalledWinnerMaxHoldSeconds
+    && Number.isFinite(secondsSincePeak)
+    && secondsSincePeak >= stalledWinnerMaxSecondsSincePeak
+    && Number.isFinite(netPnl)
+    && netPnl >= stalledWinnerMinProfit
+  ) {
+    exitReason = 'STALLED_WINNER_TIMEOUT';
+    exitMode = 'stalled_winner_recycle';
+  } else if (
+    staleExitEnabled
+    && !trailingActive
+    && Number.isFinite(heldSeconds)
+    && heldSeconds >= staleMaxHoldSeconds
+    && safeNumber(peak, Number.NEGATIVE_INFINITY) < staleMinPeakProfit
+    && Number.isFinite(netPnl)
+    && netPnl <= staleMaxExitPnl
+  ) {
+    exitReason = 'STALE_POSITION_TIMEOUT';
+    exitMode = 'stale_position_recycle';
   }
   const exitState = {
     symbol,
+    exit_mode: exitMode,
     unrealized_pl: Number.isFinite(unrealized) ? roundCurrency(unrealized) : null,
     stop_loss_dollars: roundCurrency(effectiveStopLossDollars),
+    stop_loss_total_dollars: roundCurrency(effectiveStopLossDollars),
+    stop_loss_per_share: Number.isFinite(stopLossPerShare) ? roundCurrency(stopLossPerShare) : null,
+    hard_stop_price: Number.isFinite(hardStopPrice) ? roundCurrency(hardStopPrice) : null,
     base_stop_loss_dollars: roundCurrency(Math.abs(stopLossDollars)),
     stop_loss_notional_pct: roundCurrency(stopLossNotionalPct),
     stop_loss_max_dollars: roundCurrency(stopLossMaxDollars),
     position_market_value: Number.isFinite(positionMarketValue) ? roundCurrency(positionMarketValue) : null,
     distance_to_stop_dollars: Number.isFinite(unrealized) ? roundCurrency(unrealized + effectiveStopLossDollars) : null,
+    distance_to_stop_per_share: Number.isFinite(distanceToStopPerShare) ? roundCurrency(distanceToStopPerShare) : null,
+    profit_protection_active: trailingActive,
     trailing_active: trailingActive,
     trailing_peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
     trailing_activation_profit_dollars: roundCurrency(effectiveTrailingStart),
@@ -520,6 +591,18 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     sell_price: Number.isFinite(currentPrice) ? roundCurrency(currentPrice) : null,
     entry_price: Number.isFinite(entryPrice) ? roundCurrency(entryPrice) : null,
     quantity: Number(Math.abs(positionQty).toFixed(6)),
+    opened_at: openedAt,
+    peak_updated_at: peakUpdatedAt,
+    held_seconds: Number.isFinite(heldSeconds) ? Math.round(heldSeconds) : null,
+    seconds_since_peak: Number.isFinite(secondsSincePeak) ? Math.round(secondsSincePeak) : null,
+    stale_position_exit_enabled: staleExitEnabled,
+    stale_position_max_hold_seconds: Math.round(staleMaxHoldSeconds),
+    stale_position_min_peak_profit_dollars: roundCurrency(staleMinPeakProfit),
+    stale_position_max_exit_pnl_dollars: roundCurrency(staleMaxExitPnl),
+    stalled_winner_exit_enabled: stalledWinnerExitEnabled,
+    stalled_winner_max_hold_seconds: Math.round(stalledWinnerMaxHoldSeconds),
+    stalled_winner_max_seconds_since_peak: Math.round(stalledWinnerMaxSecondsSincePeak),
+    stalled_winner_min_profit_dollars: roundCurrency(stalledWinnerMinProfit),
     gross_pnl: Number.isFinite(grossPnl) ? roundCurrency(grossPnl) : null,
     entry_slippage: roundCurrency(entrySlippage),
     exit_slippage: roundCurrency(exitSlippage),
@@ -532,10 +615,14 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   if (!exitReason) {
     options.skipTracker?.record?.('EXIT_TARGET_NOT_MET', {
       symbol,
+      exit_mode: exitState.exit_mode,
+      profit_protection_active: exitState.profit_protection_active,
       unrealized_pl: exitState.unrealized_pl,
       net_pnl: exitState.net_pnl,
       sell_net_profit_floor_dollars: exitState.sell_net_profit_floor_dollars,
       trailing_activation_profit_dollars: exitState.trailing_activation_profit_dollars,
+      held_seconds: exitState.held_seconds,
+      stale_position_max_hold_seconds: exitState.stale_position_max_hold_seconds,
     });
     return null;
   }
@@ -556,12 +643,77 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   });
 }
 
+function assessRecentUpwardMomentum({
+  currentPrice,
+  minuteBar = null,
+  minRecentMovePct = 0.03,
+  minRecentRangePct = 0.05,
+  minRecentCloseLocationPct = 60,
+} = {}) {
+  const price = safeNumber(currentPrice, null);
+  const open = safeNumber(minuteBar?.o ?? minuteBar?.open, null);
+  const high = safeNumber(minuteBar?.h ?? minuteBar?.high, null);
+  const low = safeNumber(minuteBar?.l ?? minuteBar?.low, null);
+  const close = safeNumber(minuteBar?.c ?? minuteBar?.close ?? price, price);
+  const minMove = Math.max(0, safeNumber(minRecentMovePct, 0.03));
+  const minRange = Math.max(0, safeNumber(minRecentRangePct, 0.05));
+  const minCloseLocation = Math.max(0, Math.min(100, safeNumber(minRecentCloseLocationPct, 60)));
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(close) || close <= 0) {
+    return { accepted: false, reason_code: 'RECENT_MOMENTUM_PRICE_UNAVAILABLE' };
+  }
+  const recentMovePct = Number.isFinite(open) && open > 0 ? ((close - open) / open) * 100 : null;
+  const recentRangePct = Number.isFinite(high) && Number.isFinite(low) && low > 0 && high >= low
+    ? ((high - low) / low) * 100
+    : null;
+  const closeLocationPct = Number.isFinite(high) && Number.isFinite(low) && high > low
+    ? ((close - low) / (high - low)) * 100
+    : null;
+  const moveAccepted = Number.isFinite(recentMovePct) && recentMovePct >= minMove;
+  const pressureAccepted = Number.isFinite(recentRangePct)
+    && recentRangePct >= minRange
+    && Number.isFinite(closeLocationPct)
+    && closeLocationPct >= minCloseLocation;
+  return {
+    accepted: moveAccepted || pressureAccepted,
+    reason_code: moveAccepted || pressureAccepted ? null : 'RECENT_UPWARD_MOMENTUM_WEAK',
+    recent_move_pct: Number.isFinite(recentMovePct) ? roundScore(recentMovePct) : null,
+    min_recent_move_pct: roundScore(minMove),
+    recent_range_pct: Number.isFinite(recentRangePct) ? roundScore(recentRangePct) : null,
+    min_recent_range_pct: roundScore(minRange),
+    close_location_pct: Number.isFinite(closeLocationPct) ? roundScore(closeLocationPct) : null,
+    min_recent_close_location_pct: roundScore(minCloseLocation),
+  };
+}
+
 function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, options }) {
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const notional = safeNumber(options.notional, 150);
   const minBuyNotional = Math.max(1, safeNumber(options.minBuyNotional ?? options.allocation?.floor ?? 25, 25));
   if (!Number.isFinite(notional) || notional <= 0) {
     options.skipTracker?.record?.('BELOW_MINIMUM_BUY_NOTIONAL', { symbol, notional });
+    return null;
+  }
+  const minMovePct = Math.max(0, safeNumber(options.minMovePct, 0));
+  if (options.allowContrarianEntries !== true && movePct < minMovePct) {
+    options.skipTracker?.record?.('SESSION_MOVE_BELOW_ENTRY_MINIMUM', {
+      symbol,
+      move_pct: roundScore(movePct),
+      min_move_pct: roundScore(minMovePct),
+    });
+    return null;
+  }
+  const recentMomentum = assessRecentUpwardMomentum({
+    currentPrice,
+    minuteBar: snapshot.minuteBar || snapshot.minute_bar || null,
+    minRecentMovePct: options.minRecentMovePct,
+    minRecentRangePct: options.minRecentRangePct,
+    minRecentCloseLocationPct: options.minRecentCloseLocationPct,
+  });
+  if (options.requireRecentMomentum === true && !recentMomentum.accepted) {
+    options.skipTracker?.record?.(recentMomentum.reason_code || 'RECENT_MOMENTUM_WEAK', {
+      symbol,
+      ...recentMomentum,
+    });
     return null;
   }
   const volumeScore = Math.log10(Math.max(10, safeNumber(snapshot.prevDailyBar?.v ?? snapshot.dailyBar?.v ?? 0, 0)));
@@ -644,9 +796,68 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   let stopLossOverride = null;
   let takeProfitOverride = null;
   let riskBudgetSizing = null;
+  let buyingPowerSizing = null;
   let structureStop = null;
   let sizingMethod = 'fixed_notional';
-  if (options.riskBudgetSizingEnabled) {
+  const positionSizingMode = String(options.positionSizingMode || (options.riskBudgetSizingEnabled ? 'risk_budget' : 'fixed_notional')).trim().toLowerCase();
+  if (positionSizingMode === 'buying_power') {
+    structureStop = calculateStructureAwareStop({
+      symbol,
+      side: 'buy',
+      price: currentPrice,
+      marketData: {
+        ...snapshot,
+        spread_pct: spreadPct,
+        minute_low: snapshot.minuteBar?.l,
+        minute_high: snapshot.minuteBar?.h,
+        low_price: snapshot.minuteBar?.l ?? snapshot.dailyBar?.l ?? null,
+        high_price: snapshot.minuteBar?.h ?? snapshot.dailyBar?.h ?? null,
+      },
+      fixedStopDollars: options.stopLossDollars,
+      spreadPct,
+      minStopDistanceDollars: options.minStopDistanceDollars,
+      maxStopDistanceDollars: options.maxStopDistanceDollars > 0 ? options.maxStopDistanceDollars : null,
+    });
+    if (!structureStop.accepted) {
+      options.skipTracker?.record?.(structureStop.reason_codes?.[0] || 'STRUCTURE_STOP_UNAVAILABLE', {
+        symbol,
+        structure_stop: structureStop,
+      });
+      return null;
+    }
+    const buyingPower = safeNumber(options.portfolio?.buying_power ?? options.portfolio?.buyingPower ?? options.portfolio?.account?.buying_power ?? null, null);
+    const cash = safeNumber(options.portfolio?.cash ?? options.portfolio?.account?.cash ?? null, null);
+    const maxNotional = safeNumber(options.maxTradeNotional, 0) > 0 ? options.maxTradeNotional : null;
+    buyingPowerSizing = calculateBuyingPowerSize({
+      symbol,
+      side: 'buy',
+      price: currentPrice,
+      buyingPower,
+      cash,
+      deploymentPct: options.maxBuyingPowerDeploymentPct,
+      marketOrderBufferPct: options.buyingPowerMarketOrderBufferPct,
+      cashReserve: options.buyingPowerCashReserve,
+      maxNotional,
+      minNotional: options.allocation?.floor ?? minBuyNotional,
+      allowFractionalShares: options.allowBuyingPowerFractionalShares,
+    });
+    if (!buyingPowerSizing.accepted) {
+      for (const reason of buyingPowerSizing.reason_codes || ['BUYING_POWER_SIZING_REJECTED']) {
+        options.skipTracker?.record?.(reason, {
+          symbol,
+          buying_power_sizing: buyingPowerSizing,
+          structure_stop: structureStop,
+        });
+      }
+      return null;
+    }
+    candidateQuantity = buyingPowerSizing.quantity;
+    candidateNotional = buyingPowerSizing.notional;
+    candidateSupportsFractionalShares = buyingPowerSizing.allow_fractional_shares;
+    stopLossOverride = structureStop.stop_price;
+    takeProfitOverride = roundEquityPrice(currentPrice + Math.max(structureStop.stop_distance * 1.8, currentPrice * 0.02));
+    sizingMethod = 'buying_power';
+  } else if (positionSizingMode === 'risk_budget' || options.riskBudgetSizingEnabled) {
     structureStop = calculateStructureAwareStop({
       symbol,
       side: 'buy',
@@ -741,6 +952,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     takeProfitOverride,
     sizingMethod,
     riskBudgetSizing,
+    buyingPowerSizing,
     structureStop,
     rankScore,
     baseRankScore,
@@ -773,7 +985,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   return candidate;
 }
 
-function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, executionQualityPenalty = 0, executionQualityEntry = null, executionQualitySizeMultiplier = 1, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, setupFatigue = null, sessionGuards = null, exitState = null, setupKey = null }) {
+function buildSignalCandidate({ symbol, side, currentPrice, previousClose, spreadPct, snapshot, latestQuote, options, quantity, notional, supportsFractionalShares = true, stopLossOverride = null, takeProfitOverride = null, sizingMethod = 'fixed_notional', riskBudgetSizing = null, buyingPowerSizing = null, structureStop = null, rankScore = 0, baseRankScore = rankScore, recentTradeRankPenalty = 0, setupRankPenalty = 0, executionQualityPenalty = 0, executionQualityEntry = null, executionQualitySizeMultiplier = 1, spreadRankPenalty = 0, totalRankPenalty = recentTradeRankPenalty + setupRankPenalty + spreadRankPenalty, recentTradePenalty = null, setupPenalty = null, setupFatigue = null, sessionGuards = null, exitState = null, setupKey = null }) {
   const receivedAt = options.receivedAt || nowIso();
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
@@ -853,6 +1065,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       candidate_lifecycle_selected: side === 'buy' ? Boolean(candidateLifecycleEntry?.status === 'entered') : false,
       sizing_method: side === 'buy' ? sizingMethod : null,
       risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
+      buying_power_sizing: side === 'buy' ? buyingPowerSizing : null,
       structure_stop: side === 'buy' ? structureStop : null,
       execution_quality: side === 'buy' ? executionQualityEntry || null : null,
       execution_quality_state: side === 'buy' ? options.executionQualitySummary || null : null,
@@ -880,7 +1093,25 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     trade_side: side,
     sellMaxPriceDiffPct: options.sellMaxPriceDiffPct ?? 0.75,
   });
-  if (options.requireMultiSourceConfirmation && !providerConfirmation?.confirmed) {
+  const assetType = 'stock';
+  const singleSourceMomentumOverride = shouldAllowSingleSourceMomentum({
+    side,
+    assetType,
+    rankScore,
+    providerConfirmation,
+    enabled: options.singleSourceMomentumEnabled,
+    minRankScore: options.singleSourceMomentumMinRankScore,
+  });
+  if (singleSourceMomentumOverride) {
+    marketContext.single_source_momentum_override = {
+      enabled: true,
+      reason_code: 'SINGLE_SOURCE_MOMENTUM_OVERRIDE',
+      rank_score: roundScore(rankScore),
+      min_rank_score: safeNumber(options.singleSourceMomentumMinRankScore, 500),
+      provider_confirmation: providerConfirmation || null,
+    };
+  }
+  if (options.requireMultiSourceConfirmation && !providerConfirmation?.confirmed && !singleSourceMomentumOverride) {
     options.skipTracker?.record?.('MULTI_SOURCE_CONFIRMATION_FAILED', { symbol });
     return null;
   }
@@ -917,12 +1148,14 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     requested_notional: side === 'buy' ? options.allocation?.requested ?? notional : null,
     submitted_notional: side === 'buy' ? notional : null,
     min_buy_notional: side === 'buy' ? options.allocation?.floor ?? null : null,
-    stop_loss: stopLoss,
-    take_profit: takeProfit,
+    stop_loss: side === 'buy' ? stopLoss : null,
+    take_profit: side === 'buy' ? takeProfit : null,
     sizing_method: side === 'buy' ? sizingMethod : null,
     risk_budget_sizing: side === 'buy' ? riskBudgetSizing : null,
+    buying_power_sizing: side === 'buy' ? buyingPowerSizing : null,
     structure_stop: side === 'buy' ? structureStop : null,
     risk_budget: side === 'buy' ? riskBudgetSizing : null,
+    allow_bracket: false,
     confidence_score: normalizedPrimary.confidence_score,
     freshness_score: 100,
     source_quality_score: clamp(80 + (providerConfirmation?.confirmed ? 10 : -10), 0, 100),
@@ -934,6 +1167,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     edge_score: clamp(78 + Math.min(12, Math.abs(movePct) * 2), 0, 100),
     volume,
     market_context: marketContext,
+    single_source_momentum_override: Boolean(singleSourceMomentumOverride),
     setup_fatigue: side === 'buy' ? setupFatigue : null,
     session_guards: side === 'buy' ? summarizeSessionGuards(sessionGuards) : null,
     candidate_lifecycle: side === 'buy' ? candidateLifecycleEntry || null : null,
@@ -960,6 +1194,28 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
   };
 }
 
+function shouldAllowSingleSourceMomentum({
+  side,
+  assetType,
+  rankScore,
+  providerConfirmation,
+  enabled = false,
+  minRankScore = 500,
+} = {}) {
+  if (!enabled) return false;
+  if (String(side || '').toLowerCase() !== 'buy') return false;
+  if (String(assetType || 'stock').toLowerCase() !== 'stock') return false;
+  if (providerConfirmation?.confirmed) return false;
+  return safeNumber(rankScore, 0) >= safeNumber(minRankScore, 500);
+}
+
+function normalizeIso(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
 module.exports = {
   createSkipTracker,
   buildCandidates,
@@ -975,6 +1231,7 @@ module.exports = {
   resolveCandidateSetupKey,
   determineScannerMode,
   calculateEffectiveStopLossDollars,
+  shouldAllowSingleSourceMomentum,
   buildExitCandidate,
   buildBuyCandidate,
   buildSignalCandidate,

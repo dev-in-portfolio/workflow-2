@@ -572,7 +572,7 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.blocked_count, 1);
   assert.equal(snapshot.summary.approved_count, 3);
   assert.equal(snapshot.regime.workflow, 'Live Market');
-  assert.deepEqual(snapshot.regime.approved_symbols, ['SPCX', 'SMCI', 'FDX', 'MU', 'APGE', 'NVDA', 'IBM', 'INTC', 'MRVL', 'MARA', 'IREN', 'GOOGL', 'FCEL', 'CBRS', 'VIX', 'AMO', 'SNDK', 'VTAK']);
+  assert.deepEqual(snapshot.regime.approved_symbols, []);
   assert.equal(snapshot.regime.stop_loss_dollars, 1);
   assert.equal(snapshot.regime.stop_loss_notional_pct, 0.75);
   assert.equal(snapshot.regime.stop_loss_max_dollars, 2.5);
@@ -591,6 +591,69 @@ test('dashboard snapshot aggregates read-only endpoints and local files', async 
   assert.equal(snapshot.summary.last_trade_at, '2026-06-19T15:04:01.000Z');
   assert.equal(snapshot.recent_activity.riskDecisions.length, 1);
   assert(snapshot.source_health.length >= 5);
+});
+
+test('dashboard snapshot reports resolved port and prefers controller trader', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-port-trader-'));
+  const dataDir = path.join(tempDir, 'data');
+  fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'runtime'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+
+  const buildTrader = (mode) => http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/risk-policy') {
+      res.end(JSON.stringify({ accepted: true, policy_snapshot: { source: mode, policy: {} } }));
+      return;
+    }
+    res.end(JSON.stringify({ status: 'ok', mode, timestamp: '2026-07-03T00:00:00.000Z' }));
+  });
+  const staleTrader = buildTrader('direct');
+  const activeTrader = buildTrader('minimal-v1');
+  await new Promise((resolve) => staleTrader.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => activeTrader.listen(0, '127.0.0.1', resolve));
+  const activePort = activeTrader.address().port;
+  const activeBaseUrl = `http://127.0.0.1:${activePort}`;
+
+  const controlManager = {
+    async refresh() {
+      return {
+        trader: { status: 'running', port: activePort, base_url: activeBaseUrl },
+        scanner: { status: 'running', profile: 'live-market' },
+        workflow: { status: 'running' },
+      };
+    },
+  };
+
+  const snapshot = await buildDashboardSnapshot({
+    port: 1111,
+    dataDir,
+    env: {
+      DASHBOARD_TRADER_PORTS: String(staleTrader.address().port),
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
+    },
+    fetchImpl: global.fetch,
+  }, {
+    dataDir,
+    controlManager,
+  }, {
+    dashboardPort: 1112,
+    startedAt: '2026-07-03T00:00:00.000Z',
+  });
+
+  await new Promise((resolve) => staleTrader.close(resolve));
+  await new Promise((resolve) => activeTrader.close(resolve));
+
+  assert.equal(snapshot.dashboard.port, 1112);
+  assert.equal(snapshot.dashboard.base_url, 'http://127.0.0.1:1112');
+  assert.equal(snapshot.dashboard.trader_base_url, activeBaseUrl);
+  assert.equal(snapshot.dashboard.trader_discovery.selected, activeBaseUrl);
 });
 
 test('dashboard snapshot includes watch data when watch fixtures exist', async () => {
@@ -1297,6 +1360,124 @@ test('dashboard snapshot prefers live alpaca positions when available', async ()
   assert.equal(snapshot.summary.open_positions_count, 2);
   assert.equal(snapshot.summary.live_open_positions_count, 2);
   assert.equal(snapshot.summary.open_positions_count_source, 'alpaca');
+  assert.equal(snapshot.summary.broker_positions_authoritative, true);
+});
+
+test('dashboard snapshot keeps forced broker flat state above stale local history', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-flat-broker-test-'));
+  const dataDir = path.join(tempDir, 'data');
+  fs.mkdirSync(path.join(dataDir, 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'logs', 'overnight-status.json'), JSON.stringify({
+    status: 'ok',
+    mode: 'minimal-v1',
+    report_date: '2026-07-06',
+    timestamp: '2026-07-06T14:50:00.000Z',
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'live-policy.json'), JSON.stringify({
+    source: 'startup-config',
+    policy: {
+      minConfidenceForPaper: 72,
+      maxOpenPositions: 1,
+      positionSizeMultiplier: 1,
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(dataDir, 'performance-history.jsonl'), [
+    JSON.stringify({
+      entry_type: 'paper_outcome',
+      record: {
+        symbol: 'INTC',
+        side: 'buy',
+        quantity: 9,
+        paper_result: {
+          filled_quantity: 9,
+          average_fill_price: 21.9,
+          filled_at: '2026-07-06T14:35:00.000Z',
+          order_id: 'ord-intc',
+          status: 'filled',
+        },
+        recorded_at: '2026-07-06T14:35:00.000Z',
+      },
+    }),
+  ].join('\n'));
+  fs.writeFileSync(path.join(dataDir, 'policy-history.jsonl'), '');
+
+  const positionsServer = http.createServer((req, res) => {
+    if (req.url === '/v2/positions') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify([]));
+      return;
+    }
+    if (req.url === '/v2/account') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ equity: '209.03', buying_power: '209.03', cash: '209.03' }));
+      return;
+    }
+    if (req.url === '/v2/orders?status=open') {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify([]));
+      return;
+    }
+    res.statusCode = 404;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ error: 'not_found' }));
+  });
+  await new Promise((resolve) => positionsServer.listen(0, '127.0.0.1', resolve));
+  const positionsBaseUrl = `http://127.0.0.1:${positionsServer.address().port}`;
+
+  const trader = http.createServer((req, res) => {
+    const payloads = {
+      '/status': { status: 'ok', mode: 'minimal-v1', uptime_minutes: 12, heartbeat_count: 3, last_request_at: '2026-07-06T14:50:00.000Z', timestamp: '2026-07-06T14:50:01.000Z' },
+      '/daily-live-results': { date: '2026-07-06', signal_count: 1, blocked_count: 1, approved_count: 0, paper_pnl: 0, drawdown: 0, top_block_reasons: [] },
+      '/risk-policy': { accepted: true, policy_snapshot: { source: 'startup-config', policy: { minConfidenceForPaper: 72, maxOpenPositions: 1, positionSizeMultiplier: 1 } } },
+      '/performance/tuning': { accepted: true, tuning: { recommended_tuning_notes: [] } },
+      '/policy-effectiveness': { accepted: true, policy_effectiveness: { intervals: [] } },
+      '/overnight-status': { accepted: true, status: 'ok', mode: 'minimal-v1' },
+    };
+    const payload = payloads[req.url];
+    res.setHeader('content-type', 'application/json');
+    if (!payload) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'not_found' }));
+      return;
+    }
+    res.end(JSON.stringify(payload));
+  });
+  await new Promise((resolve) => trader.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${trader.address().port}`;
+
+  const snapshot = await buildDashboardSnapshot({
+    traderBaseUrl: baseUrl,
+    port: 1111,
+    dataDir,
+    env: {
+      ALPACA_API_KEY_ID: 'key',
+      ALPACA_API_SECRET_KEY: 'secret',
+      ALPACA_API_BASE_URL: positionsBaseUrl,
+      MEME_MONITOR_ENABLED: 'false',
+      MEME_REDDIT_SCANNER_ENABLED: 'false',
+      MEME_HOT_LIST_ENABLED: 'false',
+      MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
+      MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
+      MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+      MEME_AUTO_ACTION_ENABLED: 'false',
+    },
+    fetchImpl: global.fetch,
+  }, {
+    dataDir,
+  }, {});
+
+  await new Promise((resolve) => trader.close(resolve));
+  await new Promise((resolve) => positionsServer.close(resolve));
+
+  assert.equal(snapshot.summary.open_positions_count, 0);
+  assert.equal(snapshot.summary.live_open_positions_count, 0);
+  assert.equal(snapshot.summary.open_positions_count_source, 'alpaca');
+  assert.equal(snapshot.summary.broker_positions_authoritative, true);
+  assert.equal(snapshot.summary.derived_open_positions_count, 1);
+  assert.equal(snapshot.summary.stale_derived_open_positions_count, 1);
+  assert.equal(snapshot.recent_activity.open_positions.length, 0);
+  assert.equal(snapshot.recent_activity.derived_open_positions.length, 1);
+  assert(snapshot.alerts.some((alert) => alert.title === 'Live positions disagree with local history'));
 });
 
 test('dashboard snapshot prefers Alpaca daily account change when available', async () => {

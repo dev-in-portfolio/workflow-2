@@ -111,7 +111,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   const scannerResult = performScannerChecks(signal, signalSide, marketContext, config, normalizedSignalSymbol, approvedSymbols);
   const portfolioResult = performPortfolioChecks(signalSide, signal, portfolio, config, effectiveMaxOpenPositions, effectiveMaxDailyLoss, effectiveMaxExposurePerAsset, effectiveMaxExposurePerSector, effectiveMaxCryptoExposure, effectiveMaxPositionNotional, normalizedSignalSymbol);
   const signalResult = performSignalChecks(signal, marketContext, config, now, signalSide, isScannerExitSell, stopLoss, takeProfit, entryPrice, rewardRiskRatio, confidenceBucket, minProviderConfirmationScore);
-  const brokerResult = performBrokerChecks(marketContext, config, now, portfolio, signalSide, fillRate, partialFillRate, multiSourceConfirmation, signal.strategy_requires_open_market);
+  const brokerResult = performBrokerChecks(marketContext, config, now, portfolio, signalSide, fillRate, partialFillRate, multiSourceConfirmation, signal.strategy_requires_open_market, isScannerExitSell);
 
   const reasonCodes = [...scannerResult.reasonCodes, ...portfolioResult.reasonCodes, ...signalResult.reasonCodes, ...brokerResult.reasonCodes];
   const warnings = [...scannerResult.warnings, ...portfolioResult.warnings, ...signalResult.warnings, ...brokerResult.warnings];

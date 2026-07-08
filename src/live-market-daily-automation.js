@@ -153,11 +153,11 @@ async function probeDashboard(baseUrl, fetchImpl = globalThis.fetch) {
 }
 
 async function readDashboardState(baseUrl, fetchImpl = globalThis.fetch) {
-  const [control, snapshot] = await Promise.all([
+  const [controlPayload, snapshot] = await Promise.all([
     fetchJson(fetchImpl, `${trimTrailingSlash(baseUrl)}/api/control/state`),
     fetchJson(fetchImpl, `${trimTrailingSlash(baseUrl)}/api/snapshot`),
   ]);
-  return { control, snapshot };
+  return { control: controlPayload?.control || null, snapshot };
 }
 
 async function postControlAction(baseUrl, action, profile, fetchImpl = globalThis.fetch) {

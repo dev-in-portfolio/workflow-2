@@ -82,6 +82,7 @@
 
   function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
+    if (['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)) return;
     navigator.serviceWorker.register('/sw.js').catch(() => null);
   }
 

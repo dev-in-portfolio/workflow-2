@@ -1834,8 +1834,6 @@ test('alpaca execution adapter strips brackets for fractional stock orders', asy
   });
 
   const result = await adapter.submitOrder({
-    request_id: 'req-fractional',
-    signal_id: 'sig-fractional',
     symbol: 'INTC',
     asset_type: 'stock',
     side: 'buy',
@@ -1848,12 +1846,49 @@ test('alpaca execution adapter strips brackets for fractional stock orders', asy
   });
 
   assert.equal(result.order_id, 'alpaca-order-fractional');
-  const body = JSON.parse(requests[0].init.body);
+  const body = JSON.parse(requests.find((request) => typeof request.init.body === 'string')?.init.body);
   assert.equal(body.order_class, undefined);
   assert.equal(body.take_profit, undefined);
   assert.equal(body.stop_loss, undefined);
   assert.equal(body.time_in_force, 'day');
   assert.equal(body.qty, '0.95');
+});
+
+test('alpaca execution adapter strips brackets when live request opts out', async () => {
+  const requests = [];
+  const adapter = new AlpacaTradeAdapter({
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    paperTrading: false,
+    baseUrl: 'https://api.alpaca.markets',
+    fetch: async (url, init) => {
+      requests.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: 'alpaca-order-no-bracket', status: 'accepted' }),
+      };
+    },
+  });
+
+  const result = await adapter.submitOrder({
+    symbol: 'VRM',
+    asset_type: 'stock',
+    side: 'buy',
+    order_type: 'market',
+    quantity: 8,
+    stop_loss: 3.8,
+    take_profit: 4.5,
+    allow_bracket: false,
+    time_in_force: 'day',
+  });
+
+  assert.equal(result.order_id, 'alpaca-order-no-bracket');
+  const body = JSON.parse(requests.find((request) => typeof request.init.body === 'string')?.init.body);
+  assert.equal(body.order_class, undefined);
+  assert.equal(body.take_profit, undefined);
+  assert.equal(body.stop_loss, undefined);
+  assert.equal(body.qty, '8');
 });
 
 test('alpaca execution adapter infers fractional stock sells from quantity', async () => {
@@ -2002,6 +2037,26 @@ test('server cli selects paper or alpaca execution adapters from config', () => 
     ALPACA_API_BASE_URL: 'https://paper-api.alpaca.markets',
   }), {});
   assert.equal(alpacaAdapter instanceof AlpacaTradeAdapter, true);
+});
+
+test('server cli blocks live mode when adapter resolution would silently fall back to paper', () => {
+  assert.throws(() => buildExecutionAdapter({
+    TRADING_MODE: 'live',
+    LIVE_TRADING_ENABLED: 'true',
+    LIVE_TRADING_CONFIRMATION_PHRASE: 'confirmed',
+    ALPACA_EXECUTION_ENABLED: 'false',
+    ALPACA_API_KEY_ID: 'key',
+    ALPACA_API_SECRET_KEY: 'secret',
+    ALPACA_API_BASE_URL: 'https://api.alpaca.markets',
+  }, loadConfig({
+    TRADING_MODE: 'live',
+    LIVE_TRADING_ENABLED: 'true',
+    LIVE_TRADING_CONFIRMATION_PHRASE: 'confirmed',
+    ALPACA_EXECUTION_ENABLED: 'false',
+    ALPACA_API_KEY_ID: 'key',
+    ALPACA_API_SECRET_KEY: 'secret',
+    ALPACA_API_BASE_URL: 'https://api.alpaca.markets',
+  }), {}), /LIVE_MODE_REQUIRES_ALPACA_EXECUTION_ENABLED/);
 });
 
 test('server cli propagates auto policy refresh settings into the server factory', () => {

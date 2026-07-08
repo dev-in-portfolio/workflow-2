@@ -67,6 +67,35 @@ test('source cache stores and reuses successful json payloads', async () => {
   assert.equal(cachedFile.fresh, true);
 });
 
+test('source fetch timeout wrapper does not pass cache metadata to fetch', async () => {
+  const calls = [];
+  const fetchImpl = async (_url, options = {}) => {
+    calls.push(options);
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({ ok: true });
+      },
+    };
+  };
+
+  const result = await fetchJsonWithTimeout(fetchImpl, 'https://example.com/data', {
+    timeoutMs: 10,
+    cache: {
+      cacheDir: fs.mkdtempSync(path.join(os.tmpdir(), 'source-cache-regression-')),
+      source: 'alpacaMarket',
+      category: 'snapshots',
+      key: 'SPCX',
+      ttlSeconds: 1,
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal('cache' in calls[0], false);
+});
+
 test('stale cache reports stale metadata', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'source-cache-stale-'));
   const cache = {

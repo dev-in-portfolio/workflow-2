@@ -3,6 +3,8 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const { loadRuntimeEnv } = require('./runtime-env');
+const { loadConfig } = require('./config');
+const { validateExecutionIntent, summarizeLiveStartBlock } = require('./execution-mode');
 const { nowIso, resolveRepoRoot } = require('./util');
 const { appendOperatorTimelineEvent } = require('./operator-timeline');
 const { acquireProcessLock, listProcessLocks, releaseProcessLock } = require('./process-lock');
@@ -62,6 +64,7 @@ function createLocalProcessController(options = {}) {
   const execFileAsyncImpl = options.execFileAsync || execFileAsync;
   const traderPort = Number.isFinite(Number(options.traderPort)) ? Number(options.traderPort) : 3001;
   const runtimeEnv = options.runtimeEnv || loadRuntimeEnv(env, repoRoot);
+  const startupConfig = options.startupConfig || loadConfig(runtimeEnv);
   const workflowStatePath = options.workflowStatePath || path.join(repoRoot, 'data', 'workflow-state.json');
   const legacyScannerProfilesAllowed = options.allowLegacyScannerProfiles === true;
   const persisted = readPersistedWorkflowState();
@@ -118,6 +121,15 @@ function createLocalProcessController(options = {}) {
     return withWorkflowLock('start-workflow', async () => {
       state.workflow.status = 'starting';
       const nextProfile = setDesiredScannerProfile(profile || state.workflow.desired_scanner_profile || state.scanner.last_profile || 'live-market');
+      const liveIntentResult = validateExecutionIntent(startupConfig, runtimeEnv, { action: 'start-workflow', throwOnError: false });
+      if (!liveIntentResult.ok) {
+        state.workflow.issues = liveIntentResult.intent.issues.slice();
+        state.workflow.status = 'degraded';
+        return markAction('start-workflow', false, summarizeLiveStartBlock({ ...liveIntentResult, action: 'start-workflow' }).message, {
+          reason_codes: liveIntentResult.intent.issues.slice(),
+          scanner_profile: nextProfile,
+        });
+      }
       const traderResult = await startTrader();
       if (!traderResult.ok) {
         updateWorkflowStatus();
@@ -168,6 +180,12 @@ function createLocalProcessController(options = {}) {
   }
 
   async function startTrader() {
+    const liveIntentResult = validateExecutionIntent(startupConfig, runtimeEnv, { action: 'start-trader', throwOnError: false });
+    if (!liveIntentResult.ok) {
+      return markAction('start-trader', false, summarizeLiveStartBlock({ ...liveIntentResult, action: 'start-trader' }).message, {
+        reason_codes: liveIntentResult.intent.issues.slice(),
+      });
+    }
     await refreshTraderState(state.trader);
     if (state.trader.status === 'running' || await isUrlAlive(state.trader.base_url)) {
       return markAction('start-trader', true, 'Trader already running');

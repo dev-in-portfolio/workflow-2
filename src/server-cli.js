@@ -3,40 +3,42 @@ const { loadConfig } = require('./config');
 const { AlpacaTradeAdapter } = require('./alpaca-adapter');
 const { PaperTradeAdapter } = require('./paper-adapter');
 const { createTradingControlServer } = require('./server');
-const { nowIso } = require('./util');
+const { nowIso, resolveRepoRoot } = require('./util');
 const { loadRuntimeEnv } = require('./runtime-env');
+const { validateExecutionIntent } = require('./execution-mode');
 const { createOvernightScanner } = require('./overnight-scanner');
-const { parseSymbolList, APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
+const { parseSymbolList } = require('./volatile-stock-universe');
 const { loadMemeMonitorState } = require('./meme-monitor-state');
 
 function resolvePerformanceHistoryPath(env = process.env) {
   const configuredPath = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
   if (configuredPath) {
-    return path.resolve(configuredPath);
+    return path.resolve(resolveRepoRoot(), configuredPath);
   }
-  return path.resolve('data', 'performance-history.jsonl');
+  return path.resolve(resolveRepoRoot(), 'data', 'performance-history.jsonl');
 }
 
 function resolvePolicyPath(env = process.env) {
   const configuredPath = String(env.LIVE_POLICY_PATH || '').trim();
   if (configuredPath) {
-    return path.resolve(configuredPath);
+    return path.resolve(resolveRepoRoot(), configuredPath);
   }
-  return path.resolve('data', 'live-policy.json');
+  return path.resolve(resolveRepoRoot(), 'data', 'live-policy.json');
 }
 
 function resolvePolicyHistoryPath(env = process.env) {
   const configuredPath = String(env.POLICY_HISTORY_PATH || '').trim();
   if (configuredPath) {
-    return path.resolve(configuredPath);
+    return path.resolve(resolveRepoRoot(), configuredPath);
   }
-  return path.resolve('data', 'policy-history.jsonl');
+  return path.resolve(resolveRepoRoot(), 'data', 'policy-history.jsonl');
 }
 
 function buildExecutionAdapter(env = process.env, config = loadConfig(env), options = {}) {
   if (options.executionAdapter) {
     return options.executionAdapter;
   }
+  validateExecutionIntent(config, env, { action: 'build-execution-adapter' });
   if (!config.ALPACA_EXECUTION_ENABLED) {
     return options.paperAdapter || new PaperTradeAdapter({ dryRun: true });
   }
@@ -117,7 +119,7 @@ function startTradingControlServer(env = process.env, options = {}) {
       buyNotionalTarget: config.BUY_NOTIONAL_TARGET,
       minBuyNotional: config.MIN_BUY_NOTIONAL,
       volatilityThresholdPct: null,
-      approvedSymbols: parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS),
+      approvedSymbols: parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS, []),
       positionStopLossDollars: Number(runtimeEnv.POSITION_STOP_LOSS_DOLLARS || config.POSITION_STOP_LOSS_DOLLARS || 1),
       positionStopLossNotionalPct: Number(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT || config.POSITION_STOP_LOSS_NOTIONAL_PCT || 0.75),
       positionStopLossMaxDollars: Number(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS || config.POSITION_STOP_LOSS_MAX_DOLLARS || 2.5),

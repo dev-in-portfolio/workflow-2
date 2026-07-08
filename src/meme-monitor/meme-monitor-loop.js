@@ -56,18 +56,18 @@ function createMemeMonitorLoop(options = {}) {
       });
     }
 
-    if (!redditEnabled) {
-      return persistIdleState({
-        statusPath,
-        hotListPath,
-        enabled: true,
-        mode: 'off',
-        sources: sourceConfig.sourceDefinitions,
-        lastError: null,
-      });
-    }
-
-    const collectorResult = await collector.collectSources({ env, repoRoot, dataDir, runOptions });
+    const collectorResult = redditEnabled
+      ? await collector.collectSources({ env, repoRoot, dataDir, runOptions })
+      : {
+          ok: true,
+          status: 'off',
+          mode: 'non-reddit-shadow',
+          records: [],
+          rejected: [],
+          sources: sourceConfig.sourceDefinitions,
+          symbolsDetected: 0,
+          rejectedTokens: 0,
+        };
     if (!collectorResult.ok) {
       const payload = persistIdleState({
         statusPath,

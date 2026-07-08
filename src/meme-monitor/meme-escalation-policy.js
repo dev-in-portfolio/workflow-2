@@ -21,7 +21,7 @@ function clampScore(value) {
 }
 
 function resolveMemeScoreMode(policy = {}) {
-  if (!policy.masterEnabled || !policy.redditScannerEnabled) return 'off';
+  if (!policy.masterEnabled) return 'off';
   if (!policy.hotListEnabled) return 'off';
   if (!policy.dynamicWatchlistEnabled) return 'shadow';
   return 'active';

@@ -172,7 +172,7 @@ function normalizeReasonCodes(value) {
 
 function normalizeStatus(value) {
   const normalized = String(value || '').trim().toLowerCase();
-  if (['watching', 'eligible', 'entered', 'expired', 'blocked'].includes(normalized)) return normalized;
+  if (['watching', 'eligible', 'selected', 'submitted', 'approved', 'ordered', 'filled', 'entered', 'expired', 'blocked'].includes(normalized)) return normalized;
   return 'watching';
 }
 
@@ -427,7 +427,7 @@ function reconcileCandidateLifecycleState({
       expires_at: expired ? now : normalizeIso(previous.expires_at || null),
       reason_codes: [...reasonCodes],
       updated_at: now,
-      entered_at: status === 'entered' ? (enteredAt || now) : enteredAt,
+      entered_at: (status === 'selected' || status === 'entered') ? (enteredAt || now) : enteredAt,
       blocked_at: status === 'blocked' ? (blockedAt || now) : blockedAt,
       eligible_at: status === 'eligible' ? (eligibleAt || now) : eligibleAt,
       expired_at: status === 'expired' ? (expiredAt || now) : expiredAt,
@@ -485,7 +485,7 @@ function reconcileCandidateLifecycleState({
 
   if (nextSelection?.selected_key && nextMap.has(nextSelection.selected_key)) {
     const selected = nextMap.get(nextSelection.selected_key);
-    selected.status = queueActive ? 'entered' : selected.status;
+    selected.status = queueActive ? 'selected' : selected.status;
     selected.entered_at = selected.entered_at || now;
     selected.reason_codes = [...new Set([...(selected.reason_codes || []), CandidateLifecycleReason.CANDIDATE_QUEUE_CONFIRMED])];
     nextMap.set(nextSelection.selected_key, selected);
@@ -565,7 +565,7 @@ function chooseSelection({
       rotation_at: null,
     };
   }
-  const selected = currentSelectedEntry?.status === 'entered' || currentSelectedEntry?.status === 'eligible'
+  const selected = ['selected', 'entered', 'eligible'].includes(currentSelectedEntry?.status)
     ? currentSelectedEntry
     : null;
   if (!selected) {
@@ -677,6 +677,7 @@ function summarizeCandidateLifecycleState(state = {}) {
   const watchedCandidates = candidates.filter((entry) => entry.status === 'watching');
   const eligibleCandidates = candidates.filter((entry) => entry.status === 'eligible');
   const enteredCandidates = candidates.filter((entry) => entry.status === 'entered');
+  const selectedCandidates = candidates.filter((entry) => entry.status === 'selected');
   const expiredCandidates = candidates.filter((entry) => entry.status === 'expired');
   const blockedCandidates = candidates.filter((entry) => entry.status === 'blocked');
   const reasonCodes = [...new Set(candidates.flatMap((entry) => entry.reason_codes || []))];
@@ -690,12 +691,14 @@ function summarizeCandidateLifecycleState(state = {}) {
     selected_decayed_rank: safeNumber(normalized.selection_state?.selected_decayed_rank, null),
     watched_count: watchedCandidates.length,
     eligible_count: eligibleCandidates.length,
+    selected_count: selectedCandidates.length,
     entered_count: enteredCandidates.length,
     expired_count: expiredCandidates.length,
     blocked_count: blockedCandidates.length,
     total_count: candidates.length,
     watched_candidates: watchedCandidates,
     eligible_candidates: eligibleCandidates,
+    selected_candidates: selectedCandidates,
     entered_candidates: enteredCandidates,
     expired_candidates: expiredCandidates,
     blocked_candidates: blockedCandidates,
@@ -743,6 +746,7 @@ module.exports = {
   saveCandidateLifecycleState,
   normalizeCandidateLifecycleState,
   reconcileCandidateLifecycleState,
+  resolveScannerMode,
   summarizeCandidateLifecycleState,
   decayCandidateRank,
   normalizeCandidateKey,

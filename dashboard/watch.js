@@ -4,10 +4,58 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const dashboardRequest = createDashboardRequest();
+const bootstrapSnapshot = getDashboardSnapshotForPage('watch');
+
+if (bootstrapSnapshot) {
+  state.snapshot = bootstrapSnapshot;
+  state.error = null;
+}
+
+function createDashboardRequest() {
+  if (typeof fetch !== 'function' && typeof XMLHttpRequest === 'undefined') {
+    return null;
+  }
+  return async function request(url, options = {}) {
+    if (typeof fetch === 'function') {
+      return fetch(url, options);
+    }
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(options.method || 'GET', url, true);
+      if (options.headers) {
+        for (const [key, value] of Object.entries(options.headers)) {
+          xhr.setRequestHeader(key, value);
+        }
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) return;
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status || 0,
+          async json() {
+            return JSON.parse(xhr.responseText || 'null');
+          },
+          async text() {
+            return xhr.responseText || '';
+          },
+        });
+      };
+      xhr.onerror = () => reject(new Error(`Request failed for ${url}`));
+      xhr.send(options.body || null);
+    });
+  };
+}
 
 async function refreshSnapshot() {
+  if (!dashboardRequest) {
+    if (state.snapshot) {
+      render(state.snapshot);
+    }
+    return;
+  }
   try {
-    const response = await fetch('/api/snapshot', { cache: 'no-store' });
+    const response = await dashboardRequest('/api/watch-snapshot', { cache: 'no-store' });
     const snapshot = await response.json();
     if (!response.ok) {
       throw new Error(snapshot?.message || snapshot?.error || `HTTP ${response.status}`);
@@ -17,7 +65,7 @@ async function refreshSnapshot() {
     render(snapshot);
   } catch (error) {
     state.error = error.message;
-    render(null);
+    render(state.snapshot || bootstrapSnapshot || {});
   }
 }
 
@@ -31,6 +79,7 @@ function render(snapshot) {
   const hotHotList = Array.isArray(watch.hotHotList?.symbols) ? watch.hotHotList.symbols : [];
   const memeMonitor = watch.memeMonitor || {};
   const regularWatchIntelligence = watch.regularWatchIntelligence || snapshot?.regularWatchIntelligence || {};
+  const scannerPreview = watch.scannerPreview || regularWatchIntelligence?.scannerPreview || snapshot?.scannerPreview || {};
   const hotSlotRotation = watch.hotSlotRotation || memeMonitor?.hotSlotRotation || {};
   const featureRows = Array.isArray(watch.actionsState) && watch.actionsState.length
     ? watch.actionsState
@@ -41,7 +90,7 @@ function render(snapshot) {
   $('watchStateValue').textContent = resolveWatchState(watch);
   $('watchPill').textContent = resolveWatchPill(watch, state.error);
   $('watchPill').className = `pill ${resolveWatchPillTone(watch, state.error)}`;
-  $('watchSummary').textContent = buildSummaryLine(snapshot, watch, featureRows, state.error);
+  $('watchSummary').textContent = buildSummaryLine(snapshot, watch, scannerPreview, featureRows, state.error);
   $('watchRegularCount').textContent = formatCount(regularWatchList.length);
   $('watchMoverCount').textContent = formatCount(regularWatchMovers.length);
   $('watchDynamicCount').textContent = formatCount(dynamicHotList.length);
@@ -64,7 +113,7 @@ function render(snapshot) {
   }
 }
 
-function buildSummaryLine(snapshot, watch, featureRows, error) {
+function buildSummaryLine(snapshot, watch, scannerPreview, featureRows, error) {
   if (error) {
     return `Snapshot error: ${error}`;
   }
@@ -78,15 +127,27 @@ function buildSummaryLine(snapshot, watch, featureRows, error) {
     watch.hotHotList?.lastError ? `Hot Hot List: ${watch.hotHotList.lastError}` : null,
   ].filter(Boolean);
   const statusText = `${formatCount(watch.regularWatchList?.length || 0)} approved symbols, ${formatCount(watch.regularWatchMovers?.length || 0)} movers, ${formatCount(watch.dynamicHotList?.symbols?.length || 0)} dynamic alerts, ${formatCount(watch.hotHotList?.symbols?.length || 0)} hot hot symbols.`;
+  const scannerSource = watch.scannerSource || {};
   const featureText = featureRows.map(([label, status]) => `${label}: ${String(status || 'off').toUpperCase()}`).join(' | ');
   const summaryBits = [
     `Regular Watch ${regularWatchStatus}`,
     `Meme Monitor ${memeMonitorStatus}`,
     `Hot Slot Rotation ${hotSlotRotationStatus}`,
+    `Scanner Source ${String(scannerSource.mode || 'approved').toUpperCase()}${scannerSource.dynamicSourceEmpty ? ' (dynamic source empty)' : ''}`,
+    `Scanner Source Counts approved ${formatCount(scannerSource.approvedSourceCount || 0)}, regular watch ${formatCount(scannerSource.regularWatchSourceCount || 0)}, movers ${formatCount(scannerSource.regularWatchMoversSourceCount || 0)}, dynamic hot ${formatCount(scannerSource.dynamicHotSourceCount || 0)}, hot hot ${formatCount(scannerSource.hotHotSourceCount || 0)}`,
     `Last scan ${formatClock(lastScanAt)}`,
     `Source warnings ${sourceWarnings.length ? sourceWarnings.join(' | ') : 'none'}`,
   ];
-  return `${statusText} ${summaryBits.join(' | ')}. Actions tab state: ${featureText}.`;
+  const previewText = scannerPreview?.previewCandidateCount
+    ? `Scanner preview ${formatCount(scannerPreview.previewCandidateCount)} candidate${scannerPreview.previewCandidateCount === 1 ? '' : 's'} while market closed${Array.isArray(scannerPreview.topPreviewCandidates) && scannerPreview.topPreviewCandidates.length ? `; top symbols ${scannerPreview.topPreviewCandidates.slice(0, 3).map((entry) => `${entry?.symbol}${entry?.source_list ? ` (${entry.source_list})` : ''}`).filter(Boolean).join(', ')}` : ''}.`
+    : null;
+  const waitingText = scannerPreview?.waitingForBuy?.message
+    ? ` Waiting on: ${scannerPreview.waitingForBuy.message}${scannerPreview.waitingForBuy.candidate_symbol ? ` Top symbol ${scannerPreview.waitingForBuy.candidate_symbol}.` : ''}`
+    : '';
+  const brokerTruthText = scannerPreview?.brokerTruth?.freshness
+    ? ` Broker truth ${String(scannerPreview.brokerTruth.freshness).replace(/_/g, ' ')}.`
+    : '';
+  return `${statusText} ${summaryBits.join(' | ')}.${previewText ? ` ${previewText}` : ''}${waitingText}${brokerTruthText} Actions tab state: ${featureText}.`;
 }
 
 function renderRegularWatchList(items) {
@@ -104,13 +165,15 @@ function renderRegularWatchList(items) {
         <span><b>Tradable</b> ${escapeHtml(item.tradableStatus || 'unknown')}</span>
         <span><b>Halt status</b> ${escapeHtml(item.haltStatus || 'unknown')}</span>
         <span><b>Market data</b> ${escapeHtml(item.marketDataState || 'unknown')}</span>
-        <span><b>Scanner score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Displayed rank</b> ${escapeHtml(formatNumber(item.displayedRankScore ?? item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Execution score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
         <span><b>Regular score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
+        <span><b>Execution status</b> ${escapeHtml(item.executionStatus || 'watching')}</span>
         <span><b>Comparison</b> ${escapeHtml(formatCandidateComparison(item.candidateComparison))}</span>
         <span><b>Sources</b> ${escapeHtml(formatSources(item.sourceStatus || item.sourceDetails || item.sourceContributors || item.sources))}</span>
         <span><b>Position</b> ${escapeHtml(item.positionStatus || formatTagList(item.positionTags))}</span>
         <span><b>Position tags</b> ${escapeHtml(formatTagList(item.positionTags))}</span>
-        <span><b>Reason</b> ${escapeHtml(item.reason || (Array.isArray(item.reasonCodes) ? item.reasonCodes.join(', ') : 'none'))}</span>
+        <span><b>Waiting on</b> ${escapeHtml(item.waitingReason || item.reason || (Array.isArray(item.reasonCodes) ? item.reasonCodes.join(', ') : 'none'))}</span>
         <span><b>Risk</b> ${escapeHtml(formatReasonList(item.riskWarnings || item.reasonCodes))}</span>
       </div>
     </article>
@@ -131,13 +194,15 @@ function renderMovers(items, snapshot) {
         <span><b>Move</b> ${escapeHtml(formatSignedPercent(item.dailyMovePct ?? item.movePct))}</span>
         <span><b>Volume multiple</b> ${escapeHtml(formatNumber(item.volumeMultiple))}</span>
         <span><b>Spread</b> ${escapeHtml(formatPercent(item.spread ?? item.spreadPct))}</span>
-        <span><b>Scanner score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Displayed rank</b> ${escapeHtml(formatNumber(item.displayedRankScore ?? item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
+        <span><b>Execution score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
         <span><b>Regular score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
+        <span><b>Execution status</b> ${escapeHtml(item.executionStatus || 'watching')}</span>
         <span><b>Comparison</b> ${escapeHtml(formatCandidateComparison(item.candidateComparison))}</span>
         <span><b>Sources</b> ${escapeHtml(formatSources(item.sourceStatus || item.sourceDetails || item.sourceContributors || item.sources))}</span>
         <span><b>Position</b> ${escapeHtml(item.positionStatus || formatTagList(item.positionTags))}</span>
         <span><b>Position tags</b> ${escapeHtml(formatTagList(item.positionTags))}</span>
-        <span><b>Status</b> ${escapeHtml(item.status || 'moving')}</span>
+        <span><b>Waiting on</b> ${escapeHtml(item.waitingReason || item.status || 'moving')}</span>
         <span><b>Reason codes</b> ${escapeHtml(formatReasonList(item.reasonCodes))}</span>
         <span><b>Risk</b> ${escapeHtml(formatReasonList(item.riskWarnings || item.reasonCodes))}</span>
       </div>
@@ -498,5 +563,8 @@ function escapeHtml(value) {
   })[char]);
 }
 
-refreshSnapshot();
-setInterval(refreshSnapshot, 5000);
+render(state.snapshot || bootstrapSnapshot || {});
+if (dashboardRequest) {
+  refreshSnapshot();
+  setInterval(refreshSnapshot, 5000);
+}

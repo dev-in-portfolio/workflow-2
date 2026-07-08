@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { evaluatePolicyHealth, runLivePreflight } = require('../src');
+const { createMinimalTradingServer, createTradingControlServer, evaluatePolicyHealth, runLivePreflight } = require('../src');
 const { formatPreflightResult } = require('../scripts/live-preflight');
 
 function liveEnv(overrides = {}) {
@@ -130,6 +130,40 @@ test('live preflight returns NO_GO when Alpaca credentials are missing', async (
 
   assert.equal(result.status, 'NO_GO');
   assert(result.critical_failures.includes('PREFLIGHT_ALPACA_CREDENTIALS_MISSING'));
+});
+
+test('live preflight returns NO_GO when live mode would fall back away from Alpaca execution', async () => {
+  const result = await preflight({
+    runtimeEnv: liveEnv({ ALPACA_EXECUTION_ENABLED: 'false' }),
+  });
+
+  assert.equal(result.status, 'NO_GO');
+  assert(result.critical_failures.includes('LIVE_MODE_REQUIRES_ALPACA_EXECUTION_ENABLED'));
+});
+
+test('live-intended server factories refuse implicit paper adapter fallback', () => {
+  const env = liveEnv();
+
+  assert.throws(
+    () => createTradingControlServer({ env }),
+    (error) => error.code === 'LIVE_EXECUTION_ADAPTER_REQUIRED'
+      && error.reason_codes.includes('LIVE_MODE_REQUIRES_BROKER_EXECUTION_ADAPTER'),
+  );
+  assert.throws(
+    () => createMinimalTradingServer({ env }),
+    (error) => error.code === 'LIVE_EXECUTION_ADAPTER_REQUIRED'
+      && error.reason_codes.includes('LIVE_MODE_REQUIRES_BROKER_EXECUTION_ADAPTER'),
+  );
+});
+
+test('live-intended server factories accept explicit broker-backed adapters', () => {
+  const env = liveEnv();
+  const executionAdapter = adapter();
+  const controlServer = createTradingControlServer({ env, executionAdapter });
+  const minimalServer = createMinimalTradingServer({ env, executionAdapter });
+
+  assert.equal(typeof controlServer.listen, 'function');
+  assert.equal(typeof minimalServer.listen, 'function');
 });
 
 test('live preflight warns when env local changed after runtime start', async () => {

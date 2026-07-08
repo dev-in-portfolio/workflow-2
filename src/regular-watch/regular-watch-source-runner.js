@@ -1,20 +1,21 @@
 const { loadRegularWatchState, resolveRegularWatchStatePath } = require('./regular-watch-feature-state');
-const { saveRegularWatchStatus, resolveRegularWatchStatusPath } = require('./regular-watch-status');
+const { loadRegularWatchStatus, saveRegularWatchStatus, resolveRegularWatchStatusPath } = require('./regular-watch-status');
 const { scoreRegularWatchSymbol } = require('./regular-watch-score');
 const { buildScannerConfig } = require('../scanner-config');
-const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('../volatile-stock-universe');
+const { VOLATILE_STOCK_SYMBOLS, parseSymbolList, resolveRotatingStockSymbols } = require('../volatile-stock-universe');
 const { nowIso } = require('../util');
+const { fetchJsonWithTimeout, redactSourceMessage } = require('../source-fetch');
 const { fetchAlpacaMarketSignals, fetchAlpacaAssetSignals, fetchNasdaqHaltsSignals, fetchSecEdgarSignals } = require('../meme-monitor/phase-a-source-runner');
 const { fetchPolygonMarketSignals } = require('../meme-monitor/sources/polygon-market-source');
 const { fetchAlphaVantageSignals } = require('../meme-monitor/sources/alpha-vantage-source');
+const { loadDynamicHotList, resolveDynamicHotListPath } = require('../meme-monitor/hot-list-store');
 
 function resolveRegularWatchSymbols(env = process.env) {
   const scannerConfig = buildScannerConfig(env);
   const configured = Array.isArray(scannerConfig.symbols) && scannerConfig.symbols.length
     ? scannerConfig.symbols
-    : parseSymbolList(env.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS);
-  const approved = new Set(APPROVED_LIVE_MARKET_SYMBOLS.map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean));
-  return [...new Set(configured.map((symbol) => String(symbol || '').trim().toUpperCase()).filter((symbol) => symbol && approved.has(symbol)))];
+    : resolveRotatingStockSymbols(env.STOCK_SCANNER_SYMBOLS);
+  return parseSymbolList(configured, []);
 }
 
 function resolveRegularWatchSourceRuntime(env = process.env, runtimeState = null) {
@@ -51,14 +52,48 @@ async function runRegularWatchSources(options = {}) {
   });
   const statusPath = options.statusPath || resolveRegularWatchStatusPath({ dataDir, repoRoot });
   const timeoutMs = Math.max(1000, Number(options.timeoutMs || env.REGULAR_WATCH_SOURCE_TIMEOUT_MS || 5000) || 5000);
-  const maxSymbols = Math.max(1, Number(options.maxSymbolsPerRun || env.REGULAR_WATCH_MAX_SYMBOLS_PER_RUN || 100) || 100);
+  const maxSymbols = Math.max(1, Number(options.maxSymbolsPerRun || env.REGULAR_WATCH_MAX_SYMBOLS_PER_RUN || 500) || 500);
+  const displayedTopLimit = Math.max(1, Number(options.displayedTopLimit || env.REGULAR_WATCH_DISPLAY_LIMIT || 100) || 100);
+  const fastLaneEnabled = String(options.fastLaneEnabled ?? env.REGULAR_WATCH_FAST_LANE_ENABLED ?? 'true').toLowerCase() !== 'false';
+  const fastLaneLimit = Math.max(0, Number(options.fastLaneLimit || env.REGULAR_WATCH_FAST_LANE_LIMIT || 250) || 250);
   const sourceRuntime = resolveRegularWatchSourceRuntime(env, runtimeState);
   const now = nowIso();
-  const symbols = resolveRegularWatchSymbols(env).slice(0, maxSymbols);
+  const previousStatus = loadRegularWatchStatus({ dataDir, repoRoot, filePath: statusPath });
+  const universe = await resolveRegularWatchUniverse({
+    env,
+    fetchImpl,
+    repoRoot,
+    timeoutMs,
+    fallbackSymbols: resolveRegularWatchSymbols(env),
+  });
+  const fastLane = buildFastLaneSymbols({
+    enabled: fastLaneEnabled,
+    limit: fastLaneLimit,
+    previousStatus,
+    dynamicHotList: loadDynamicHotList({
+      dataDir,
+      filePath: options.dynamicHotListPath || resolveDynamicHotListPath({ dataDir, repoRoot }),
+      env,
+      now,
+    }),
+    universeSymbols: universe.symbols,
+  });
+  const rotation = selectRotatingSymbolBatch({
+    symbols: universe.symbols,
+    batchSize: Math.max(1, maxSymbols - fastLane.symbols.length),
+    previousOffset: previousStatus.universe?.rotation?.next_offset,
+  });
+  const symbols = uniqueSymbols([...fastLane.symbols, ...rotation.symbols]).slice(0, maxSymbols);
+  const scannedToday = updateScannedTodaySymbols({
+    previousUniverse: previousStatus.universe,
+    symbols,
+    now,
+  });
   const baseSources = buildBaseSourceEntries({
     sourceRuntime,
     symbols,
     now,
+    universe,
   });
 
   if (!sourceRuntime.master) {
@@ -68,6 +103,15 @@ async function runRegularWatchSources(options = {}) {
       now,
       reason: 'master_disabled',
       symbols,
+      universe: buildUniverseStatus({
+        universe,
+        rotation,
+        fastLane,
+        mergedSymbols: symbols,
+        displayedTopLimit,
+        scannedToday,
+        freshDataCount: 0,
+      }),
     });
     return saveRegularWatchStatus(idle, { dataDir, filePath: statusPath });
   }
@@ -76,6 +120,7 @@ async function runRegularWatchSources(options = {}) {
   const sourceResults = await runEnabledSources({
     env,
     fetchImpl: timedFetch,
+    repoRoot,
     symbols,
     timeoutMs,
     sourceRuntime,
@@ -118,6 +163,11 @@ async function runRegularWatchSources(options = {}) {
       symbolsChecked: regularWatchList.length,
       moversFound: regularWatchMovers.length,
       blockedSymbols,
+      fullUniverseSymbols: universe.symbols.length,
+      currentBatchSize: symbols.length,
+      rotationBatchSize: rotation.symbols.length,
+      fastLaneCandidateCount: fastLane.symbols.length,
+      scannedTodayCount: scannedToday.symbols.length,
       features: {
         marketConfirmation: Boolean(sourceRuntime.marketConfirmation),
         assetValidation: Boolean(sourceRuntime.assetValidation),
@@ -131,6 +181,15 @@ async function runRegularWatchSources(options = {}) {
     },
     regularWatchList,
     regularWatchMovers,
+    universe: buildUniverseStatus({
+      universe,
+      rotation,
+      fastLane,
+      mergedSymbols: symbols,
+      displayedTopLimit,
+      scannedToday,
+      freshDataCount: regularWatchList.filter((entry) => !entry.stale && Number.isFinite(Number(entry.currentPrice))).length,
+    }),
     generatedAt: now,
     stale,
     status: runtimeStatus,
@@ -141,7 +200,7 @@ async function runRegularWatchSources(options = {}) {
   return saveRegularWatchStatus(status, { dataDir, filePath: statusPath });
 }
 
-async function runEnabledSources({ env, fetchImpl, symbols, timeoutMs, sourceRuntime } = {}) {
+async function runEnabledSources({ env, fetchImpl, repoRoot, symbols, timeoutMs, sourceRuntime } = {}) {
   const sourceStatusMap = {};
   const sourceSignals = [];
   let anyErrors = false;
@@ -161,15 +220,15 @@ async function runEnabledSources({ env, fetchImpl, symbols, timeoutMs, sourceRun
   };
 
   addResult('alpacaMarket', sourceRuntime.marketConfirmation || sourceRuntime.assetValidation || sourceRuntime.haltCheck || sourceRuntime.secRiskCheck
-    ? await fetchAlpacaMarketSignals({ env, fetchImpl, symbols, timeoutMs })
+    ? await fetchAlpacaMarketSignalsBatched({ env, fetchImpl, repoRoot, symbols, timeoutMs })
     : inactiveSource('alpacaMarket'));
 
   addResult('alpacaAssets', sourceRuntime.assetValidation || sourceRuntime.positionAwareness
-    ? await fetchAlpacaAssetSignals({ env, fetchImpl, symbols, timeoutMs })
+    ? await fetchAlpacaAssetSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs })
     : inactiveSource('alpacaAssets'));
 
   addResult('nasdaqHalts', sourceRuntime.haltCheck
-    ? await fetchNasdaqHaltsSignals({ env, fetchImpl, symbols, timeoutMs })
+    ? await fetchNasdaqHaltsSignals({ env, fetchImpl, repoRoot, symbols, timeoutMs })
     : inactiveSource('nasdaqHalts'));
 
   addResult('secEdgar', sourceRuntime.secRiskCheck || sourceRuntime.newsCatalyst
@@ -196,7 +255,7 @@ async function runEnabledSources({ env, fetchImpl, symbols, timeoutMs, sourceRun
   };
 }
 
-function buildBaseSourceEntries({ sourceRuntime, symbols, now } = {}) {
+function buildBaseSourceEntries({ sourceRuntime, symbols, now, universe = null } = {}) {
   const universeStatus = symbols.length
     ? 'active'
     : 'inactive';
@@ -209,6 +268,8 @@ function buildBaseSourceEntries({ sourceRuntime, symbols, now } = {}) {
       lastError: null,
       blockedReason: null,
       symbolsDetected: symbols.length,
+      fullUniverseSymbols: universe?.symbols?.length ?? symbols.length,
+      universeSource: universe?.source || null,
     },
     alpacaMarket: buildDisabledSource('alpacaMarket', 'market', sourceRuntime.marketConfirmation, now),
     alpacaAssets: buildDisabledSource('alpacaAssets', 'risk', sourceRuntime.assetValidation, now),
@@ -261,7 +322,7 @@ function inactiveSource(source) {
   };
 }
 
-function buildIdleStatus({ runtimeState, sources, now, reason, symbols } = {}) {
+function buildIdleStatus({ runtimeState, sources, now, reason, symbols, universe = null } = {}) {
   return {
     version: '2026-06-30.regular-watch-status.2',
     updated_at: now,
@@ -275,6 +336,8 @@ function buildIdleStatus({ runtimeState, sources, now, reason, symbols } = {}) {
       symbolsChecked: symbols.length,
       moversFound: 0,
       blockedSymbols: 0,
+      fullUniverseSymbols: universe?.full_eligible_count || universe?.symbols?.length || symbols.length,
+      currentBatchSize: symbols.length,
       features: {
         marketConfirmation: Boolean(runtimeState?.features?.REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED?.effective),
         assetValidation: Boolean(runtimeState?.features?.REGULAR_WATCH_ASSET_VALIDATION_ENABLED?.effective),
@@ -288,12 +351,263 @@ function buildIdleStatus({ runtimeState, sources, now, reason, symbols } = {}) {
     },
     regularWatchList: [],
     regularWatchMovers: [],
+    universe,
     generatedAt: now,
     stale: true,
     status: 'off',
     lastRunAt: now,
     lastError: reason || null,
   };
+}
+
+async function resolveRegularWatchUniverse({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  repoRoot = process.cwd(),
+  timeoutMs = 5000,
+  fallbackSymbols = [],
+} = {}) {
+  const configured = parseSymbolList(env.STOCK_SCANNER_SYMBOLS, []);
+  if (configured.length) {
+    return {
+      source: 'configured_stock_scanner_symbols',
+      symbols: configured,
+      fallback: false,
+      warning: null,
+    };
+  }
+  const source = String(env.REGULAR_WATCH_UNIVERSE_SOURCE || 'alpaca_assets').trim().toLowerCase();
+  if (source !== 'alpaca_assets') {
+    return {
+      source: 'built_in_volatile_stock_symbols',
+      symbols: parseSymbolList(fallbackSymbols, VOLATILE_STOCK_SYMBOLS),
+      fallback: true,
+      warning: 'REGULAR_WATCH_UNIVERSE_SOURCE is not alpaca_assets.',
+    };
+  }
+  const fetched = await fetchAlpacaRegularStockUniverse({ env, fetchImpl, repoRoot, timeoutMs });
+  if (fetched.ok && fetched.symbols.length) {
+    return {
+      source: 'alpaca_assets',
+      symbols: fetched.symbols,
+      fallback: false,
+      warning: null,
+    };
+  }
+  return {
+    source: 'built_in_volatile_stock_symbols',
+    symbols: parseSymbolList(fallbackSymbols, VOLATILE_STOCK_SYMBOLS),
+    fallback: true,
+    warning: fetched.error || 'Alpaca asset universe unavailable; using built-in fallback list.',
+  };
+}
+
+async function fetchAlpacaRegularStockUniverse({ env = process.env, fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
+  const apiKeyId = String(env?.ALPACA_API_KEY_ID || '').trim();
+  const apiSecretKey = String(env?.ALPACA_API_SECRET_KEY || '').trim();
+  const baseUrl = String(env?.ALPACA_API_BASE_URL || '').trim() || 'https://paper-api.alpaca.markets';
+  if (!apiKeyId || !apiSecretKey) {
+    return { ok: false, symbols: [], error: 'ALPACA credentials missing' };
+  }
+  try {
+    const result = await fetchJsonWithTimeout(fetchImpl, `${trimTrailingSlash(baseUrl)}/v2/assets`, {
+      timeoutMs,
+      headers: alpacaHeaders(apiKeyId, apiSecretKey),
+    });
+    if (!result.response.ok) {
+      return { ok: false, symbols: [], error: `Alpaca assets HTTP ${result.response.status}` };
+    }
+    const assets = Array.isArray(result.body) ? result.body : result.body?.assets || result.body?.data || [];
+    const symbols = assets
+      .filter((asset) => String(asset?.asset_class || asset?.class || '').toLowerCase() === 'us_equity')
+      .filter((asset) => String(asset?.status || '').toLowerCase() === 'active')
+      .filter((asset) => asset?.tradable === true)
+      .map((asset) => String(asset?.symbol || '').trim().toUpperCase())
+      .filter((symbol) => symbol && !symbol.includes('/') && !symbol.includes(' '))
+      .sort((a, b) => a.localeCompare(b));
+    return { ok: true, symbols: [...new Set(symbols)], error: null };
+  } catch (error) {
+    return { ok: false, symbols: [], error: redactSourceMessage(error.message) };
+  }
+}
+
+function selectRotatingSymbolBatch({ symbols = [], batchSize = 500, previousOffset = 0 } = {}) {
+  const unique = parseSymbolList(symbols, []);
+  const size = Math.max(1, Math.floor(Number(batchSize) || 500));
+  if (!unique.length) {
+    return { symbols: [], offset: 0, next_offset: 0, batch_size: size, full_eligible_count: 0, wrapped: false };
+  }
+  if (size >= unique.length) {
+    return { symbols: unique, offset: 0, next_offset: 0, batch_size: size, full_eligible_count: unique.length, wrapped: true };
+  }
+  const offset = Math.max(0, Math.floor(Number(previousOffset) || 0)) % unique.length;
+  const selected = [];
+  for (let index = 0; index < size; index += 1) {
+    selected.push(unique[(offset + index) % unique.length]);
+  }
+  const nextOffset = (offset + size) % unique.length;
+  return {
+    symbols: selected,
+    offset,
+    next_offset: nextOffset,
+    batch_size: size,
+    full_eligible_count: unique.length,
+    wrapped: nextOffset <= offset,
+  };
+}
+
+function buildFastLaneSymbols({
+  enabled = true,
+  limit = 250,
+  previousStatus = {},
+  dynamicHotList = null,
+  universeSymbols = [],
+} = {}) {
+  const max = Math.max(0, Math.floor(Number(limit) || 0));
+  if (!enabled || max <= 0) {
+    return { enabled: false, symbols: [], count: 0, limit: max, sources: {} };
+  }
+  const universe = new Set(parseSymbolList(universeSymbols, []));
+  const sourceCounts = {};
+  const candidates = [];
+  const add = (symbol, source, score = 0) => {
+    const normalized = String(symbol || '').trim().toUpperCase();
+    if (!normalized || (universe.size && !universe.has(normalized))) return;
+    sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+    candidates.push({ symbol: normalized, source, score: Number(score) || 0 });
+  };
+  for (const entry of Array.isArray(previousStatus?.regularWatchMovers) ? previousStatus.regularWatchMovers : []) {
+    add(entry?.symbol, 'previous_regular_watch_movers', entry?.score ?? entry?.regularWatchScore);
+  }
+  for (const entry of Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList.slice(0, max) : []) {
+    if (String(entry?.status || '').toLowerCase() === 'blocked') continue;
+    add(entry?.symbol, 'previous_regular_watch_top', entry?.score ?? entry?.regularWatchScore);
+  }
+  for (const entry of Array.isArray(dynamicHotList?.dynamicHotList) ? dynamicHotList.dynamicHotList : []) {
+    add(entry?.symbol, 'dynamic_hot_list', entry?.marketConfirmationScore ?? entry?.memeHeatScore);
+  }
+  for (const entry of Array.isArray(dynamicHotList?.hotHotList) ? dynamicHotList.hotHotList : []) {
+    add(entry?.symbol, 'hot_hot_list', entry?.marketConfirmationScore ?? entry?.memeHeatScore);
+  }
+  const symbols = [];
+  const seen = new Set();
+  for (const entry of candidates.sort((a, b) => b.score - a.score || a.symbol.localeCompare(b.symbol))) {
+    if (seen.has(entry.symbol)) continue;
+    seen.add(entry.symbol);
+    symbols.push(entry.symbol);
+    if (symbols.length >= max) break;
+  }
+  return {
+    enabled: true,
+    symbols,
+    count: symbols.length,
+    limit: max,
+    sources: sourceCounts,
+  };
+}
+
+function updateScannedTodaySymbols({ previousUniverse = {}, symbols = [], now = nowIso() } = {}) {
+  const date = String(now || nowIso()).slice(0, 10);
+  const previousDate = previousUniverse?.scanned_today_date || null;
+  const scanned = new Set(previousDate === date && Array.isArray(previousUniverse?.scanned_today_symbols)
+    ? previousUniverse.scanned_today_symbols
+    : []);
+  for (const symbol of symbols) {
+    const normalized = String(symbol || '').trim().toUpperCase();
+    if (normalized) scanned.add(normalized);
+  }
+  return {
+    date,
+    symbols: [...scanned].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+function buildUniverseStatus({ universe, rotation, fastLane = null, mergedSymbols = null, displayedTopLimit, scannedToday, freshDataCount = 0 } = {}) {
+  return {
+    source: universe?.source || null,
+    full_eligible_count: universe?.symbols?.length || 0,
+    current_batch_size: rotation?.symbols?.length || 0,
+    rotation_batch_size: rotation?.symbols?.length || 0,
+    fast_lane_enabled: Boolean(fastLane?.enabled),
+    fast_lane_candidate_count: fastLane?.count || 0,
+    fast_lane_limit: fastLane?.limit || 0,
+    fast_lane_sources: fastLane?.sources || {},
+    merged_scan_size: Array.isArray(mergedSymbols) ? mergedSymbols.length : (rotation?.symbols?.length || 0),
+    displayed_top_limit: displayedTopLimit,
+    scanned_today_date: scannedToday?.date || null,
+    scanned_today_count: scannedToday?.symbols?.length || 0,
+    scanned_today_symbols: scannedToday?.symbols || [],
+    fresh_data_count: freshDataCount,
+    warning: universe?.warning || null,
+    rotation: {
+      offset: rotation?.offset || 0,
+      next_offset: rotation?.next_offset || 0,
+      batch_size: rotation?.batch_size || 0,
+      full_eligible_count: rotation?.full_eligible_count || universe?.symbols?.length || 0,
+      wrapped: Boolean(rotation?.wrapped),
+    },
+  };
+}
+
+async function fetchAlpacaMarketSignalsBatched({ env, fetchImpl, repoRoot, symbols = [], timeoutMs } = {}) {
+  const batchSize = Math.max(1, Number(env.REGULAR_WATCH_MARKET_DATA_BATCH_SIZE || 100) || 100);
+  const batches = chunk(symbols, batchSize);
+  const merged = {
+    sourceStatus: null,
+    symbols: [],
+  };
+  for (const batch of batches) {
+    const result = await fetchAlpacaMarketSignals({ env, fetchImpl, repoRoot, symbols: batch, timeoutMs });
+    merged.symbols.push(...(result.symbols || []));
+    merged.sourceStatus = mergeSourceStatus(merged.sourceStatus, result.sourceStatus, merged.symbols.length);
+    if (['rate_limited', 'error', 'timeout', 'missing_credentials'].includes(String(result.sourceStatus?.status || '').toLowerCase())) {
+      break;
+    }
+  }
+  merged.sourceStatus = merged.sourceStatus || inactiveSource('alpacaMarket').sourceStatus;
+  return merged;
+}
+
+function mergeSourceStatus(previous, next, symbolsDetected = 0) {
+  if (!previous) {
+    return { ...(next || {}), symbolsDetected };
+  }
+  const statusRank = { active: 1, warn: 2, inactive: 3, missing_credentials: 4, timeout: 5, rate_limited: 6, error: 7 };
+  const previousRank = statusRank[String(previous.status || '').toLowerCase()] || 0;
+  const nextRank = statusRank[String(next?.status || '').toLowerCase()] || 0;
+  const winner = nextRank > previousRank ? next : previous;
+  return {
+    ...previous,
+    ...winner,
+    symbolsDetected,
+    symbolsConfirmed: symbolsDetected,
+    lastRunAt: next?.lastRunAt || previous.lastRunAt || null,
+    lastScanAt: next?.lastScanAt || previous.lastScanAt || null,
+  };
+}
+
+function chunk(values = [], size = 100) {
+  const out = [];
+  for (let index = 0; index < values.length; index += size) {
+    out.push(values.slice(index, index + size));
+  }
+  return out;
+}
+
+function uniqueSymbols(values = []) {
+  return [...new Set(parseSymbolList(values, []))];
+}
+
+function alpacaHeaders(apiKeyId, apiSecretKey) {
+  return {
+    'APCA-API-KEY-ID': apiKeyId,
+    'APCA-API-SECRET-KEY': apiSecretKey,
+    'content-type': 'application/json',
+  };
+}
+
+function trimTrailingSlash(value) {
+  return String(value || '').replace(/\/+$/, '');
 }
 
 function buildSymbolEntries({ symbols, sourceSignals, sourceStatusMap, now } = {}) {
@@ -501,5 +815,7 @@ module.exports = {
   createTimedFetch,
   resolveRegularWatchSourceRuntime,
   resolveRegularWatchSymbols,
+  resolveRegularWatchUniverse,
+  selectRotatingSymbolBatch,
   runRegularWatchSources,
 };

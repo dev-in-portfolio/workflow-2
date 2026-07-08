@@ -4,10 +4,13 @@ const http = require('http');
 const { spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const { URL } = require('url');
+const { loadConfig } = require('./config');
 const { loadRuntimeEnv } = require('./runtime-env');
+const { AlpacaTradeAdapter } = require('./alpaca-adapter');
+const { syncLocalStateFromBroker } = require('./broker-sync-service');
+const { validateExecutionIntent } = require('./execution-mode');
 const { isRegularUsMarketHours, resolveMarketRegime } = require('./market-hours');
 const { nowIso, safeNumber, resolveRepoRoot, resolveDataPath } = require('./util');
-const { APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
 const { createLocalProcessController } = require('./local-process-controller');
 const { classifyExitProtection } = require('./exit-protection');
 const { readOperatorTimelineTail } = require('./operator-timeline');
@@ -35,6 +38,7 @@ const {
   saveRegularWatchStatus,
 } = require('./regular-watch/regular-watch-status');
 const { runRegularWatchSources } = require('./regular-watch/regular-watch-source-runner');
+const { createRegularWatchLoop } = require('./regular-watch/regular-watch-loop');
 const { redactSourceMessage } = require('./source-fetch');
 
 const DEFAULT_DASHBOARD_PORT = 1111;
@@ -43,7 +47,7 @@ const DEFAULT_TRADER_PORTS = [3001, 3000, 3002, 3003, 3004, 3005, 3006, 3007, 30
 const DEFAULT_REFRESH_MAX_AGE_MS = 2_000;
 const DEFAULT_RECENT_ENTRY_LIMIT = 12;
 const DEFAULT_LOG_LINE_LIMIT = 20;
-const DASHBOARD_RUNTIME_VERSION = '2026-07-01.live-market-watch-intelligence.1';
+const DASHBOARD_RUNTIME_VERSION = '2026-07-06.broker-authoritative-positions.1';
 const execFileAsync = (file, args, options = {}) => {
   if (process.platform === 'win32') {
     const tempDir = process.env.TEMP || 'C:\\Windows\\Temp';
@@ -82,6 +86,7 @@ function createDashboardServer(options = {}) {
     cache: null,
     cacheAtMs: 0,
     dashboardPort: options.port || DEFAULT_DASHBOARD_PORT,
+    brokerSyncInFlight: false,
   };
   const dashboardDir = resolveDashboardDir(options.dashboardDir);
   const dataDir = resolveDataDir(options.dataDir);
@@ -89,7 +94,7 @@ function createDashboardServer(options = {}) {
     repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
     env: options.env || process.env,
     fetchImpl: options.fetchImpl || globalThis.fetch,
-    traderPort: Number(options.traderPort || DEFAULT_TRADER_CONTROL_PORT),
+    traderPort: Number(options.traderPort || options.env?.TRADER_PORT || options.env?.PORT || DEFAULT_TRADER_CONTROL_PORT),
   });
   const memeMonitor = options.memeMonitor || createMemeMonitorLoop({
     repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
@@ -97,6 +102,13 @@ function createDashboardServer(options = {}) {
     env: options.env || process.env,
     fetchImpl: options.fetchImpl || globalThis.fetch,
     refreshIntervalMs: options.memeRefreshIntervalMs || 5 * 60_000,
+  });
+  const regularWatchLoop = options.regularWatchLoop || createRegularWatchLoop({
+    repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+    dataDir,
+    env: options.env || process.env,
+    fetchImpl: options.fetchImpl || globalThis.fetch,
+    refreshIntervalMs: options.regularWatchRefreshIntervalMs,
   });
   const assetIndex = {
     '/': path.join(dashboardDir, 'index.html'),
@@ -114,6 +126,7 @@ function createDashboardServer(options = {}) {
     '/control': path.join(dashboardDir, 'control.html'),
     '/control.html': path.join(dashboardDir, 'control.html'),
     '/app.js': path.join(dashboardDir, 'app.js'),
+    '/request.js': path.join(dashboardDir, 'request.js'),
     '/status.js': path.join(dashboardDir, 'status.js'),
     '/policy.js': path.join(dashboardDir, 'policy.js'),
     '/exit-rules.js': path.join(dashboardDir, 'exit-rules.js'),
@@ -156,6 +169,62 @@ function createDashboardServer(options = {}) {
       }
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/home-summary') {
+      try {
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildHomeSummary(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'home_summary_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/watch-snapshot') {
+      try {
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildWatchSnapshotResponse(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'watch_snapshot_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/control-summary') {
+      try {
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildControlSummary(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'control_summary_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/source-health-summary') {
+      try {
+        const snapshot = await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor });
+        return sendJson(res, 200, buildSourceHealthSummary(snapshot));
+      } catch (error) {
+        return sendJson(res, 500, {
+          status: 'error',
+          error: 'source_health_summary_failed',
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      }
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/control/state') {
       try {
         if (controlManager?.refresh) {
@@ -184,6 +253,8 @@ function createDashboardServer(options = {}) {
         if (controlManager?.refresh) {
           await controlManager.refresh();
         }
+        state.cache = null;
+        state.cacheAtMs = 0;
         const afterState = controlManager?.getState?.() || null;
         return sendJson(res, result.ok ? 200 : 400, {
           status: result.ok ? 'ok' : 'error',
@@ -201,6 +272,57 @@ function createDashboardServer(options = {}) {
           message: error.message,
           timestamp: nowIso(),
         });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/broker/sync') {
+      if (state.brokerSyncInFlight) {
+        return sendJson(res, 409, {
+          ok: false,
+          status: 'error',
+          error: 'broker_sync_already_running',
+          reason_codes: ['BROKER_SYNC_ALREADY_RUNNING'],
+          message: 'Broker sync is already running. Wait for it to finish before starting another sync.',
+          timestamp: nowIso(),
+        });
+      }
+      state.brokerSyncInFlight = true;
+      try {
+        await readJsonBody(req, { maxBytes: 4096 });
+        const env = options.runtimeEnv || loadRuntimeEnv(options.env || process.env, options.repoRoot || path.resolve(__dirname, '..'));
+        const config = loadConfig(env);
+        if (String(config.TRADING_MODE || '').trim().toLowerCase() === 'live') {
+          validateExecutionIntent(config, env, { action: 'broker-sync' });
+        }
+        const adapter = options.brokerSyncAdapter || new AlpacaTradeAdapter({
+          baseUrl: config.ALPACA_API_BASE_URL || undefined,
+          apiKeyId: config.ALPACA_API_KEY_ID || undefined,
+          apiSecretKey: config.ALPACA_API_SECRET_KEY || undefined,
+          paperTrading: !(config.TRADING_MODE === 'live' && config.LIVE_TRADING_ENABLED),
+        });
+        const result = await syncLocalStateFromBroker({
+          env,
+          repoRoot: options.repoRoot || path.resolve(__dirname, '..'),
+          dataDir,
+          executionAdapter: adapter,
+          controlManager,
+          maxOpenPositions: config.MAX_OPEN_POSITIONS,
+          source: 'dashboard_broker_sync',
+        });
+        state.cache = null;
+        state.cacheAtMs = 0;
+        return sendJson(res, result.ok ? 200 : 503, result);
+      } catch (error) {
+        return sendJson(res, error?.code === 'LIVE_EXECUTION_BLOCKED' ? 400 : 500, {
+          ok: false,
+          status: 'error',
+          error: error?.code === 'LIVE_EXECUTION_BLOCKED' ? 'live_execution_blocked' : 'broker_sync_failed',
+          reason_codes: error?.reason_codes || [error?.code || 'BROKER_SYNC_FAILED'],
+          message: error.message,
+          timestamp: nowIso(),
+        });
+      } finally {
+        state.brokerSyncInFlight = false;
       }
     }
 
@@ -436,7 +558,26 @@ function createDashboardServer(options = {}) {
     }
 
     if (req.method === 'GET' && assetIndex[url.pathname]) {
-      return sendFile(res, assetIndex[url.pathname], getContentType(assetIndex[url.pathname]));
+      const filePath = assetIndex[url.pathname];
+      if (filePath.endsWith('.html')) {
+        try {
+          const bootstrap = url.pathname === '/' || url.pathname === '/index.html'
+            ? buildDashboardBootstrap(url.pathname, null)
+            : buildDashboardBootstrap(
+              url.pathname,
+              await getSummarySnapshot(state, options, { dashboardDir, dataDir, controlManager, memeMonitor }),
+            );
+          return sendDashboardPage(res, filePath, getContentType(filePath), bootstrap);
+        } catch (error) {
+          return sendJson(res, 500, {
+            status: 'error',
+            error: 'page_bootstrap_failed',
+            message: error.message,
+            timestamp: nowIso(),
+          });
+        }
+      }
+      return sendFile(res, filePath, getContentType(filePath));
     }
 
     return sendJson(res, 404, {
@@ -446,8 +587,40 @@ function createDashboardServer(options = {}) {
     });
   });
   server.dashboardState = state;
+  server.regularWatchLoop = regularWatchLoop;
+
+  let regularWatchLoopStartRequested = false;
+  server.on('listening', () => {
+    if (!shouldAutoStartRegularWatchLoop(options, options.env || process.env) || regularWatchLoopStartRequested) return;
+    regularWatchLoopStartRequested = true;
+    regularWatchLoop.start().catch((error) => {
+      state.regularWatchLoopLastError = error.message || String(error);
+    });
+  });
+
+  server.on('close', () => {
+    if (regularWatchLoop?.isRunning?.()) {
+      regularWatchLoop.stop().catch(() => {});
+    }
+  });
 
   return server;
+}
+
+function shouldAutoStartRegularWatchLoop(options = {}, env = process.env) {
+  if (options.regularWatchAutoStart !== undefined) {
+    return parseDashboardBool(options.regularWatchAutoStart, false);
+  }
+  return parseDashboardBool(env.REGULAR_WATCH_AUTO_START, false);
+}
+
+function parseDashboardBool(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
 }
 
 async function getCachedSnapshot(state, options, context) {
@@ -459,6 +632,151 @@ async function getCachedSnapshot(state, options, context) {
   state.cache = snapshot;
   state.cacheAtMs = nowMs;
   return snapshot;
+}
+
+function buildDashboardBootstrap(page, snapshot = {}) {
+  const hasSnapshot = Boolean(snapshot && typeof snapshot === 'object');
+  const normalizedPage = String(page || '/').toLowerCase();
+  return {
+    page: normalizedPage,
+    generated_at: hasSnapshot ? (snapshot.generated_at || snapshot.timestamp || nowIso()) : nowIso(),
+    timestamp: hasSnapshot ? (snapshot.timestamp || snapshot.generated_at || nowIso()) : nowIso(),
+    homeSummary: hasSnapshot ? buildHomeSummary(snapshot) : null,
+    watchSnapshot: hasSnapshot ? buildWatchSnapshotResponse(snapshot) : null,
+    controlSummary: hasSnapshot ? buildControlSummary(snapshot) : null,
+    sourceHealthSummary: hasSnapshot ? buildSourceHealthSummary(snapshot) : null,
+  };
+}
+
+async function getSummarySnapshot(state, options, context) {
+  return getCachedSnapshot(state, options, context);
+}
+
+function buildLocalSummarySnapshot(options = {}, context = {}, state = {}) {
+  const dataDir = context.dataDir || options.dataDir || path.resolve(resolveRepoRoot(), 'data');
+  const dashboardRuntime = readJsonFileIfPresent(path.join(dataDir, 'runtime', 'dashboard-runtime.json')) || {};
+  const scannerRuntime = readJsonFileIfPresent(path.join(dataDir, 'state', 'scanner-runtime.json')) || {};
+  const memeMonitorState = loadMemeMonitorState({ env: options.runtimeEnv || options.env || process.env, repoRoot: resolveRepoRoot() });
+  const memeMonitorStatus = loadMemeMonitorStatus({ statusPath: resolveMemeMonitorStatusPath(resolveRepoRoot()) });
+  const regularWatchState = loadRegularWatchState({ statePath: resolveRegularWatchStatePath(resolveRepoRoot()) });
+  const regularWatchStatus = loadRegularWatchStatus({ dataDir });
+  const dynamicHotList = loadDynamicHotList({ storePath: resolveDynamicHotListPath(resolveRepoRoot()) });
+  const watch = buildWatchSnapshot({
+    approvedSymbols: scannerRuntime.active_symbols || scannerRuntime.approved_symbols || [],
+    scannerRuntime,
+    memeMonitorState,
+    memeMonitorStatus,
+    regularWatchState,
+    regularWatchStatus,
+    dynamicHotList,
+  });
+  const sourceHealth = buildLocalSourceHealthSummary({
+    scannerRuntime,
+    memeMonitorStatus,
+    regularWatchStatus,
+  });
+  const now = nowIso();
+  return {
+    status: 'ok',
+    generated_at: now,
+    timestamp: now,
+    dashboard: {
+      port: state.dashboardPort || dashboardRuntime.dashboard_port || options.port || DEFAULT_DASHBOARD_PORT,
+      base_url: dashboardRuntime.dashboard_base_url || `http://127.0.0.1:${state.dashboardPort || dashboardRuntime.dashboard_port || options.port || DEFAULT_DASHBOARD_PORT}`,
+      trader_base_url: options.runtimeEnv?.DASHBOARD_TRADER_BASE_URL || options.runtimeEnv?.TRADER_BASE_URL || null,
+      runtime_version: DASHBOARD_RUNTIME_VERSION,
+      frontend_version: DASHBOARD_RUNTIME_VERSION,
+      pid: process.pid,
+      refresh_max_age_ms: options.cacheMaxAgeMs || DEFAULT_REFRESH_MAX_AGE_MS,
+    },
+    summary: {
+      workflow_state: 'running',
+      approved_count: scannerRuntime.approved_count ?? 0,
+      blocked_count: scannerRuntime.rejected_count ?? 0,
+      open_positions_count: scannerRuntime.portfolio?.open_positions_count ?? null,
+      open_positions_count_source: scannerRuntime.portfolio ? 'scanner-runtime' : null,
+      last_trade_at: scannerRuntime.last_order_submitted_at || null,
+    },
+    live: {
+      status: null,
+      report: null,
+      scanner_runtime: scannerRuntime,
+      meme_monitor_state: memeMonitorState,
+      meme_monitor_runtime: buildCompactMemeMonitorSummary({
+        enabled: Boolean(memeMonitorState?.summary?.master_enabled),
+        source: memeMonitorState?.summary?.source || memeMonitorState?.source || 'env + runtime state',
+        redditScanner: memeMonitorStatus?.redditScanner || null,
+        phaseA: memeMonitorStatus?.phaseA || null,
+        phaseB: memeMonitorStatus?.phaseB || null,
+        hotList: memeMonitorStatus?.hotList || null,
+        hotHotScoring: memeMonitorStatus?.hotHotScoring || null,
+        dynamicWatchlist: watch.memeMonitor?.dynamicWatchlist || null,
+        priorityOverride: watch.memeMonitor?.priorityOverride || null,
+        hotSlotRotation: watch.hotSlotRotation || null,
+        hotListPayload: dynamicHotList || null,
+      }),
+      regular_watch_intelligence: watch.regularWatchIntelligence || null,
+      regular_watch_runtime: regularWatchStatus || null,
+    },
+    control: context.controlManager?.getState?.() || null,
+    regime: {},
+    automation: {},
+    alerts: [],
+    watch,
+    memeMonitor: buildCompactMemeMonitorSummary({
+      enabled: Boolean(memeMonitorState?.summary?.master_enabled),
+      source: memeMonitorState?.summary?.source || memeMonitorState?.source || 'env + runtime state',
+      redditScanner: memeMonitorStatus?.redditScanner || null,
+      phaseA: memeMonitorStatus?.phaseA || null,
+      phaseB: memeMonitorStatus?.phaseB || null,
+      hotList: memeMonitorStatus?.hotList || null,
+      hotHotScoring: memeMonitorStatus?.hotHotScoring || null,
+      dynamicWatchlist: watch.memeMonitor?.dynamicWatchlist || null,
+      priorityOverride: watch.memeMonitor?.priorityOverride || null,
+      hotSlotRotation: watch.hotSlotRotation || null,
+      hotListPayload: dynamicHotList || null,
+    }),
+    regularWatchIntelligence: watch.regularWatchIntelligence || null,
+    regularWatchStatus,
+    source_health: sourceHealth,
+  };
+}
+
+function buildLocalSourceHealthSummary({ scannerRuntime = {}, memeMonitorStatus = {}, regularWatchStatus = {} } = {}) {
+  const sources = [];
+  const addSource = (entry) => {
+    if (!entry || !entry.source) return;
+    sources.push(entry);
+  };
+  for (const source of memeMonitorStatus?.redditScanner?.sources || []) {
+    addSource({
+      ...source,
+      group: 'reddit',
+      scope: 'meme',
+      source: source.source,
+      ok: ['active', 'ok'].includes(String(source.status || '').toLowerCase()),
+    });
+  }
+  for (const source of regularWatchStatus?.sources || regularWatchStatus?.regularWatchIntelligence?.sources || []) {
+    addSource({
+      ...source,
+      group: 'regular_watch',
+      scope: 'watch',
+      source: source.source,
+      ok: ['active', 'ok', 'read'].includes(String(source.status || '').toLowerCase()),
+    });
+  }
+  addSource({
+    source: 'scanner-runtime',
+    group: 'scanner',
+    scope: 'runtime',
+    status: scannerRuntime?.updated_at ? 'read' : 'missing',
+    ok: Boolean(scannerRuntime?.updated_at),
+    lastScanAt: scannerRuntime?.last_scan_time || scannerRuntime?.updated_at || null,
+    lastError: scannerRuntime?.last_scan_error || null,
+    symbolsDetected: scannerRuntime?.active_source_count || 0,
+  });
+  return sources;
 }
 
 async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
@@ -473,12 +791,22 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const nowProvider = options.nowProvider || (() => new Date());
   const currentDate = nowProvider();
   const now = nowIso();
-  const dashboardPort = options.port || state.dashboardPort || DEFAULT_DASHBOARD_PORT;
+  const dashboardPort = state.dashboardPort || options.port || DEFAULT_DASHBOARD_PORT;
+  const refreshedControlState = context.controlManager?.refresh
+    ? await context.controlManager.refresh()
+    : undefined;
+  const controlState = refreshedControlState ?? (context.controlManager?.getState?.() || null);
+  const controlTraderBaseUrl = controlState?.trader?.status === 'running'
+    ? controlState.trader.base_url
+    : null;
   const traderDiscovery = await resolveTraderBaseUrl({
     env: runtimeEnv,
     fetchImpl,
-    preferredBaseUrl: options.traderBaseUrl || runtimeEnv.DASHBOARD_TRADER_BASE_URL || runtimeEnv.TRADER_BASE_URL || null,
-    candidatePorts: parsePortList(runtimeEnv.DASHBOARD_TRADER_PORTS, DEFAULT_TRADER_PORTS),
+    preferredBaseUrl: options.traderBaseUrl || runtimeEnv.DASHBOARD_TRADER_BASE_URL || runtimeEnv.TRADER_BASE_URL || controlTraderBaseUrl || null,
+    candidatePorts: uniqueNumbers([
+      controlState?.trader?.port,
+      ...parsePortList(runtimeEnv.DASHBOARD_TRADER_PORTS, DEFAULT_TRADER_PORTS),
+    ]),
   });
   const processDiscovery = await discoverRepoProcesses();
 
@@ -564,9 +892,6 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const timeline = buildOperatorTimeline(operatorTimeline, recentEntries, scannerRuntimeFile);
   const recentPolicyChanges = summarizePolicyHistory(policyHistory.entries);
   const livePositionSummary = normalizeLivePositions(livePositions);
-  const controlState = context.controlManager?.refresh
-    ? await context.controlManager.refresh()
-    : context.controlManager?.getState?.() || null;
   const exitProtection = classifyExitProtection({
     positions: livePositionSummary.positions,
     openOrders: liveOpenOrders.orders,
@@ -1152,10 +1477,17 @@ async function fetchEndpointJson(fetchImpl, baseUrl, pathname) {
   }
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, options = {}) {
+  const maxBytes = Math.max(1, Number(options.maxBytes || 64 * 1024) || 64 * 1024);
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > maxBytes) {
+      throw new Error('Request body is too large');
+    }
+    chunks.push(buffer);
   }
   if (!chunks.length) return {};
   const raw = Buffer.concat(chunks).toString('utf8').trim();
@@ -1332,6 +1664,12 @@ function parsePortList(raw, fallback) {
     .map((part) => Number(part.trim()))
     .filter((part) => Number.isFinite(part) && part > 0);
   return values.length ? [...new Set(values)] : fallback.slice();
+}
+
+function uniqueNumbers(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0))];
 }
 
 function readJsonFileIfPresent(filePath) {
@@ -1974,6 +2312,7 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
   const liveOpenPositionsCount = livePositions?.available && Number.isFinite(Number(livePositions?.count))
     ? Number(livePositions.count)
     : null;
+  const brokerPositionsAuthoritative = liveOpenPositionsCount !== null;
   const accountEquity = safeNumber(liveAccount?.data?.equity ?? liveAccount?.data?.portfolio_value ?? null, null);
   const accountLastEquity = safeNumber(liveAccount?.data?.last_equity ?? null, null);
   const accountChangeToday = Number.isFinite(accountEquity) && Number.isFinite(accountLastEquity)
@@ -2067,10 +2406,12 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     recent_activity_count: recentEntries.paperOutcomes.length + recentEntries.riskDecisions.length + recentEntries.signals.length,
     total_trades_today: totalTradesToday,
     average_trades_per_hour: Number.isFinite(totalTradesToday) && Number.isFinite(uptimeHours) && uptimeHours > 0 ? totalTradesToday / uptimeHours : null,
-    open_positions_count: liveOpenPositionsCount ?? derivedOpenPositions,
+    open_positions_count: brokerPositionsAuthoritative ? liveOpenPositionsCount : derivedOpenPositions,
     live_open_positions_count: liveOpenPositionsCount,
-    open_positions_count_source: liveOpenPositionsCount !== null ? 'alpaca' : 'derived',
+    open_positions_count_source: brokerPositionsAuthoritative ? 'alpaca' : 'derived',
+    broker_positions_authoritative: brokerPositionsAuthoritative,
     derived_open_positions_count: derivedOpenPositions,
+    stale_derived_open_positions_count: brokerPositionsAuthoritative ? derivedOpenPositions : 0,
     daily_change: accountChangeToday,
     daily_change_source: Number.isFinite(accountEquity) && Number.isFinite(accountLastEquity) ? 'alpaca' : 'report',
     account_equity: accountEquity,
@@ -2131,7 +2472,13 @@ function buildWatchSnapshot({
   const livePositionMap = buildLivePositionMap(livePositions);
   const liveOrderMap = buildLiveOpenOrderMap(liveOpenOrders);
 
-  const regularWatchList = approved.map((symbol) => buildRegularWatchEntry(symbol, {
+  const regularWatchSymbols = [...new Set([
+    ...approved,
+    ...(Array.isArray(runtime?.active_symbols) ? runtime.active_symbols.map((symbol) => normalizeWatchSymbol(symbol)).filter(Boolean) : []),
+    ...regularWatchStatusEntries.map((entry) => normalizeWatchSymbol(entry?.symbol)).filter(Boolean),
+  ])];
+
+  const regularWatchList = regularWatchSymbols.map((symbol) => buildRegularWatchEntry(symbol, {
     candidate: candidateBySymbol.get(symbol) || null,
     recentSkip: recentSkipBySymbol.get(symbol) || null,
     regularWatchEntry: regularWatchEntryBySymbol.get(symbol) || null,
@@ -2156,6 +2503,10 @@ function buildWatchSnapshot({
   const dynamicEnabled = Boolean(memeMonitorStatus?.hotList?.enabled);
   const hotHotEnabled = Boolean(memeMonitorStatus?.hotHotScoring?.enabled);
   const watchedSymbols = new Set(approvedSet);
+  for (const symbol of Array.isArray(runtime?.active_symbols) ? runtime.active_symbols : []) {
+    const normalized = normalizeWatchSymbol(symbol);
+    if (normalized) watchedSymbols.add(normalized);
+  }
   for (const entry of [...(dynamicPayload?.dynamicHotList || []), ...(dynamicPayload?.hotHotList || [])]) {
     const symbol = normalizeWatchSymbol(entry?.symbol);
     if (symbol) watchedSymbols.add(symbol);
@@ -2179,6 +2530,8 @@ function buildWatchSnapshot({
   return {
     regularWatchList,
     regularWatchMovers,
+    scannerSource: summarizeScannerSource(runtime),
+    scannerPreview: summarizeScannerPreview(runtime),
     dynamicHotList: {
       enabled: dynamicEnabled,
       status: dynamicEnabled ? (memeMonitorStatus?.hotList?.status || 'shadow') : 'disabled',
@@ -2232,6 +2585,477 @@ function buildWatchSnapshot({
   };
 }
 
+function buildHomeSummary(snapshot = {}) {
+  const dynamicTopSymbols = buildDynamicTopSymbols(snapshot);
+  return {
+    status: snapshot.status || 'ok',
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    dashboard: snapshot.dashboard || null,
+    summary: snapshot.summary || {},
+    live: buildCompactLiveSummary(snapshot.live || {}),
+    control: buildCompactControlSummary(snapshot.control || {}),
+    regime: snapshot.regime || {},
+    alerts: Array.isArray(snapshot.alerts) ? snapshot.alerts.slice(0, 20) : [],
+    memeMonitor: buildCompactMemeMonitorSummary(snapshot.memeMonitor || {}),
+    hotListStatus: buildHomeHotListStatus(snapshot),
+    dynamicTopSymbols,
+    dynamicTopFreshness: buildDynamicTopFreshness(snapshot, dynamicTopSymbols),
+    source_health_summary: buildSourceHealthSummary(snapshot),
+  };
+}
+
+function buildControlSummary(snapshot = {}) {
+  return {
+    status: snapshot.status || 'ok',
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    dashboard: snapshot.dashboard || null,
+    summary: snapshot.summary || {},
+    live: buildCompactLiveSummary(snapshot.live || {}),
+    control: buildCompactControlSummary(snapshot.control || {}),
+    regime: snapshot.regime || {},
+    automation: snapshot.automation || {},
+    alerts: Array.isArray(snapshot.alerts) ? snapshot.alerts.slice(0, 20) : [],
+    memeMonitor: buildCompactMemeMonitorSummary(snapshot.memeMonitor || {}),
+    regularWatchIntelligence: buildCompactRegularWatchSummary(snapshot.regularWatchIntelligence || {}),
+    regularWatchStatus: buildCompactRegularWatchStatus(snapshot.regularWatchStatus || {}),
+    source_health_summary: buildSourceHealthSummary(snapshot),
+  };
+}
+
+function buildWatchSnapshotResponse(snapshot = {}) {
+  return {
+    status: snapshot.status || 'ok',
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    dashboard: snapshot.dashboard || null,
+    watch: snapshot.watch || null,
+    source_health_summary: buildSourceHealthSummary(snapshot),
+  };
+}
+
+function buildCompactLiveSummary(live = {}) {
+  return {
+    status: live.status || null,
+    report: live.report || null,
+    scanner_runtime: buildCompactScannerRuntime(live.scanner_runtime || {}),
+    exit_management: {
+      ...(live.exit_management || {}),
+      positions: Array.isArray(live.exit_management?.positions) ? live.exit_management.positions.slice(0, 4) : [],
+    },
+    session_guards: live.session_guards || null,
+    setup_fatigue_summary: live.setup_fatigue_summary || null,
+    candidate_lifecycle_summary: compactCandidateLifecycleSummary(live.candidate_lifecycle_summary || live.scanner_runtime?.candidate_lifecycle_summary || null),
+    execution_quality_summary: compactExecutionQualitySummary(live.execution_quality_summary || live.scanner_runtime?.execution_quality_summary || live.execution_quality_state || null),
+    meme_monitor_state: buildCompactMemeFeatureState(live.meme_monitor_state || {}),
+    meme_monitor_runtime: buildCompactMemeMonitorSummary(live.meme_monitor_runtime || {}),
+    regular_watch_intelligence: buildCompactRegularWatchSummary(live.regular_watch_intelligence || {}),
+    regular_watch_runtime: buildCompactRegularWatchStatus(live.regular_watch_runtime || {}),
+  };
+}
+
+function buildCompactScannerRuntime(runtime = {}) {
+  return {
+    updated_at: runtime.updated_at || null,
+    last_scan_time: runtime.last_scan_time || runtime.updated_at || null,
+    last_scan_error: runtime.last_scan_error || null,
+    scanner_symbol_source: runtime.scanner_symbol_source || null,
+    active_source_count: runtime.active_source_count ?? runtime.source_counts?.active_source_count ?? null,
+    approved_source_count: runtime.approved_source_count ?? runtime.source_counts?.approved_source_count ?? null,
+    regular_watch_source_count: runtime.source_counts?.regular_watch_source_count ?? null,
+    regular_watch_movers_source_count: runtime.source_counts?.regular_watch_movers_source_count ?? null,
+    candidate_count: runtime.candidate_count ?? null,
+    approved_count: runtime.approved_count ?? null,
+    rejected_count: runtime.rejected_count ?? null,
+    posted_count: runtime.posted_count ?? null,
+    preview_candidate_count: runtime.preview_candidate_count ?? null,
+    top_preview_candidates: Array.isArray(runtime.top_preview_candidates) ? runtime.top_preview_candidates.slice(0, 10) : [],
+    preview_reason_codes: Array.isArray(runtime.preview_reason_codes) ? runtime.preview_reason_codes.slice(0, 20) : [],
+    market_closed_execution_block: Boolean(runtime.market_closed_execution_block),
+    skip_summary: runtime.skip_summary || null,
+    waiting_for_buy: runtime.waiting_for_buy || null,
+    portfolio: runtime.portfolio ? {
+      open_positions_count: runtime.portfolio.open_positions_count ?? null,
+      remaining_position_slots: runtime.portfolio.remaining_position_slots ?? null,
+      buying_power: runtime.portfolio.buying_power ?? null,
+      cash: runtime.portfolio.cash ?? null,
+    } : null,
+    broker_truth: runtime.broker_truth || null,
+    position_sizing: runtime.position_sizing ? {
+      mode: runtime.position_sizing.mode || null,
+      max_buying_power_deployment_pct: runtime.position_sizing.max_buying_power_deployment_pct ?? null,
+      buying_power_market_order_buffer_pct: runtime.position_sizing.buying_power_market_order_buffer_pct ?? null,
+      buying_power_cash_reserve: runtime.position_sizing.buying_power_cash_reserve ?? null,
+      latest_candidates: Array.isArray(runtime.position_sizing.latest_candidates)
+        ? runtime.position_sizing.latest_candidates.slice(0, 5)
+        : [],
+    } : null,
+    candidate_lifecycle_summary: compactCandidateLifecycleSummary(runtime.candidate_lifecycle_summary || null),
+    execution_quality_summary: compactExecutionQualitySummary(runtime.execution_quality_summary || null),
+  };
+}
+
+function compactCandidateLifecycleSummary(summary = null) {
+  if (!summary || typeof summary !== 'object') return null;
+  return {
+    eligible_count: summary.eligible_count ?? 0,
+    blocked_count: summary.blocked_count ?? 0,
+    watched_count: summary.watched_count ?? 0,
+    expired_count: summary.expired_count ?? 0,
+    watched_candidates: Array.isArray(summary.watched_candidates) ? summary.watched_candidates.slice(0, 4) : [],
+    eligible_candidates: Array.isArray(summary.eligible_candidates) ? summary.eligible_candidates.slice(0, 4) : [],
+    blocked_candidates: Array.isArray(summary.blocked_candidates) ? summary.blocked_candidates.slice(0, 4) : [],
+    expired_candidates: Array.isArray(summary.expired_candidates) ? summary.expired_candidates.slice(0, 4) : [],
+  };
+}
+
+function compactExecutionQualitySummary(summary = null) {
+  if (!summary || typeof summary !== 'object') return null;
+  return {
+    total_trades: summary.total_trades ?? 0,
+    average_quality_score: summary.average_quality_score ?? null,
+    average_execution_penalty_points: summary.average_execution_penalty_points ?? null,
+    partial_fill_rate: summary.partial_fill_rate ?? null,
+    rejection_rate: summary.rejection_rate ?? null,
+    cancellation_rate: summary.cancellation_rate ?? null,
+    by_symbol: Array.isArray(summary.by_symbol) ? summary.by_symbol.slice(0, 5) : [],
+    by_setup: Array.isArray(summary.by_setup) ? summary.by_setup.slice(0, 5) : [],
+    recent_bad_fills: Array.isArray(summary.recent_bad_fills) ? summary.recent_bad_fills.slice(0, 5) : [],
+  };
+}
+
+function buildCompactControlSummary(control = {}) {
+  return {
+    status: control.status || null,
+    trader: control.trader || null,
+    scanner: control.scanner || null,
+    workflow: control.workflow || null,
+  };
+}
+
+function buildCompactMemeFeatureState(state = {}) {
+  return {
+    source: state.source || null,
+    summary: state.summary || {},
+    features: state.features || {},
+  };
+}
+
+function buildCompactMemeMonitorSummary(memeMonitor = {}) {
+  return {
+    enabled: memeMonitor.enabled,
+    source: memeMonitor.source,
+    redditScanner: memeMonitor.redditScanner ? {
+      enabled: memeMonitor.redditScanner.enabled,
+      status: memeMonitor.redditScanner.status,
+      lastRunAt: memeMonitor.redditScanner.lastRunAt,
+      lastError: memeMonitor.redditScanner.lastError,
+      sources: Array.isArray(memeMonitor.redditScanner.sources) ? memeMonitor.redditScanner.sources.slice(0, 20) : [],
+      symbolsDetected: memeMonitor.redditScanner.symbolsDetected,
+    } : null,
+    phaseA: compactSourceRuntime(memeMonitor.phaseA),
+    phaseB: compactSourceRuntime(memeMonitor.phaseB),
+    hotList: memeMonitor.hotList || null,
+    hotHotScoring: memeMonitor.hotHotScoring || null,
+    dynamicWatchlist: memeMonitor.dynamicWatchlist || null,
+    priorityOverride: memeMonitor.priorityOverride || null,
+    hotSlotRotation: memeMonitor.hotSlotRotation || null,
+    hotListPayload: memeMonitor.hotListPayload ? {
+      generatedAt: memeMonitor.hotListPayload.generatedAt || memeMonitor.hotListPayload.generated_at || null,
+      lastScoredAt: memeMonitor.hotListPayload.lastScoredAt || memeMonitor.hotListPayload.last_scored_at || null,
+      status: memeMonitor.hotListPayload.status || null,
+      stale: Boolean(memeMonitor.hotListPayload.stale),
+      summary: memeMonitor.hotListPayload.summary || null,
+      expired: Array.isArray(memeMonitor.hotListPayload.expired) ? memeMonitor.hotListPayload.expired.slice(0, 10) : [],
+    } : null,
+  };
+}
+
+function compactSourceRuntime(runtime = null) {
+  if (!runtime || typeof runtime !== 'object') return null;
+  return {
+    enabled: runtime.enabled,
+    status: runtime.status,
+    lastRunAt: runtime.lastRunAt,
+    lastError: runtime.lastError,
+    sources: runtime.sources || {},
+    symbols: Array.isArray(runtime.symbols) ? runtime.symbols.slice(0, 20) : [],
+  };
+}
+
+function buildCompactRegularWatchSummary(regularWatch = {}) {
+  return {
+    enabled: regularWatch.enabled,
+    status: regularWatch.status,
+    source: regularWatch.source,
+    lastRunAt: regularWatch.lastRunAt,
+    lastError: regularWatch.lastError,
+    symbolsChecked: regularWatch.symbolsChecked,
+    moversFound: regularWatch.moversFound,
+    blockedSymbols: regularWatch.blockedSymbols,
+    features: regularWatch.features || {},
+    featureState: regularWatch.featureState || regularWatch.feature_state || null,
+    scannerRanking: regularWatch.scannerRanking || null,
+    positionAwareness: regularWatch.positionAwareness || null,
+    sources: Array.isArray(regularWatch.sources) ? regularWatch.sources.slice(0, 20) : [],
+  };
+}
+
+function buildCompactRegularWatchStatus(status = {}) {
+  return {
+    regularWatchIntelligence: status.regularWatchIntelligence || null,
+    scannerRanking: status.scannerRanking || null,
+    positionAwareness: status.positionAwareness || null,
+    sources: Array.isArray(status.sources) ? status.sources.slice(0, 20) : [],
+  };
+}
+
+function buildSourceHealthSummary(snapshot = {}) {
+  const sourceHealth = Array.isArray(snapshot?.source_health) ? snapshot.source_health : [];
+  const sources = prioritizeSourceHealthSummary(sourceHealth.map((entry) => summarizeSourceHealthEntry(entry)));
+  const counts = sources.reduce((acc, entry) => {
+    acc.total += 1;
+    acc[entry.health_status] += 1;
+    if (!entry.ok) acc.unhealthy += 1;
+    return acc;
+  }, {
+    total: 0,
+    active: 0,
+    inactive: 0,
+    error: 0,
+    unhealthy: 0,
+  });
+  return {
+    status: counts.error > 0 ? 'degraded' : (counts.inactive > 0 ? 'warn' : 'ok'),
+    generated_at: snapshot.generated_at || snapshot.timestamp || nowIso(),
+    timestamp: snapshot.timestamp || snapshot.generated_at || nowIso(),
+    counts,
+    sources,
+  };
+}
+
+function prioritizeSourceHealthSummary(sources = []) {
+  const disabledSources = new Set(sources
+    .filter((entry) => entry.health_status === 'inactive' && ['source_disabled', 'disabled', 'off'].includes(String(entry.blockedReason || '').toLowerCase()))
+    .map((entry) => String(entry.source || '').toLowerCase())
+    .filter(Boolean));
+  return sources.map((entry) => {
+    if (!disabledSources.has(String(entry.source || '').toLowerCase())) return entry;
+    return {
+      ...entry,
+      status: entry.status === 'error' ? 'inactive' : entry.status,
+      health_status: 'inactive',
+      ok: false,
+      blockedReason: entry.blockedReason || 'source_disabled',
+    };
+  });
+}
+
+function summarizeSourceHealthEntry(entry = {}) {
+  const rawStatus = String(entry.status || 'inactive').toLowerCase();
+  const healthStatus = normalizeSourceHealthStatus(rawStatus, entry.ok, entry.blockedReason);
+  return {
+    source: entry.source || null,
+    group: entry.group || null,
+    scope: entry.scope || null,
+    tier: entry.tier || null,
+    status: rawStatus,
+    health_status: healthStatus,
+    ok: healthStatus === 'active',
+    blockedReason: entry.blockedReason || null,
+    lastScanAt: entry.lastScanAt || null,
+    lastRunAt: entry.lastRunAt || null,
+    lastError: entry.lastError || entry.error || null,
+    symbolsDetected: Number.isFinite(Number(entry.symbolsDetected)) ? Number(entry.symbolsDetected) : 0,
+  };
+}
+
+function normalizeSourceHealthStatus(status = '', ok = null, blockedReason = null) {
+  const normalized = String(status || '').toLowerCase();
+  const normalizedBlockedReason = String(blockedReason || '').toLowerCase();
+  if (['source_disabled', 'disabled', 'off'].includes(normalizedBlockedReason)) return 'inactive';
+  if (['off', 'disabled', 'source_disabled', 'inactive', 'missing'].includes(normalized)) return 'inactive';
+  if (['active', 'shadow', 'reused_records', 'ok', 'read'].includes(normalized)) return 'active';
+  if (ok === true) return 'active';
+  return 'error';
+}
+
+function buildDynamicTopFreshness(snapshot = {}, dynamicTopSymbols = []) {
+  const runtime = snapshot?.live?.scanner_runtime || snapshot?.scannerRuntime || {};
+  const watch = snapshot?.watch || {};
+  const dynamicHotAt = watch?.dynamicHotList?.lastScoredAt || watch?.dynamicHotList?.generatedAt || null;
+  const hotHotAt = watch?.hotHotList?.lastScoredAt || watch?.hotHotList?.generatedAt || null;
+  const scannerAt = runtime?.last_scan_time || runtime?.updated_at || null;
+  const regularWatchAt = snapshot?.regularWatchStatus?.regularWatchIntelligence?.lastRunAt
+    || snapshot?.regularWatchStatus?.lastRunAt
+    || snapshot?.live?.regular_watch_runtime?.regularWatchIntelligence?.lastRunAt
+    || null;
+  const contributors = new Set((Array.isArray(dynamicTopSymbols) ? dynamicTopSymbols : [])
+    .map((item) => String(item?.source || '').toLowerCase()));
+  const candidates = [];
+  const addCandidate = (source, timestamp) => {
+    if (!timestamp) return;
+    candidates.push({ source, timestamp });
+  };
+
+  if (contributors.has('hot hot list')) addCandidate('Hot Hot List', hotHotAt || dynamicHotAt);
+  if (contributors.has('dynamic hot list')) addCandidate('Dynamic Hot List', dynamicHotAt);
+  if (contributors.has('scanner preview')) addCandidate('Scanner Preview', scannerAt);
+  if (contributors.has('regular watch movers')) addCandidate('Regular Watch Movers', scannerAt || regularWatchAt);
+  if (contributors.has('regular watch')) addCandidate('Regular Watch', regularWatchAt || scannerAt);
+  if (!candidates.length) {
+    addCandidate('Scanner Runtime', scannerAt);
+    addCandidate('Regular Watch', regularWatchAt);
+    addCandidate('Dynamic Hot List', dynamicHotAt);
+  }
+
+  const valid = candidates
+    .map((entry) => ({ ...entry, ms: Date.parse(entry.timestamp) }))
+    .filter((entry) => Number.isFinite(entry.ms))
+    .sort((a, b) => b.ms - a.ms);
+  const newest = valid[0] || null;
+  return {
+    source: newest?.source || null,
+    source_timestamp: newest?.timestamp || null,
+    scanner_timestamp: scannerAt,
+    regular_watch_timestamp: regularWatchAt,
+    dynamic_hot_timestamp: dynamicHotAt,
+    hot_hot_timestamp: hotHotAt,
+    item_count: Array.isArray(dynamicTopSymbols) ? dynamicTopSymbols.length : 0,
+  };
+}
+
+function buildHomeHotListStatus(snapshot = {}) {
+  const summary = snapshot.summary || {};
+  const memeMonitor = snapshot.memeMonitor || {};
+  const watch = snapshot.watch || {};
+  const hotList = memeMonitor.hotList || watch.dynamicHotList || {};
+  const hotHotScoring = memeMonitor.hotHotScoring || watch.hotHotList || {};
+  const payload = memeMonitor.hotListPayload || {};
+  const dynamicCount = safeNumber(
+    hotList.dynamicCount
+      ?? hotList.dynamic_count
+      ?? payload.summary?.dynamicCount
+      ?? payload.dynamicHotList?.length
+      ?? summary.meme_monitor_hot_list_dynamic_count,
+    0,
+  );
+  const hotHotCount = safeNumber(
+    hotList.hotHotCount
+      ?? hotList.hot_hot_count
+      ?? payload.summary?.hotHotCount
+      ?? payload.hotHotList?.length
+      ?? summary.meme_monitor_hot_list_hot_hot_count,
+    0,
+  );
+  const lastScoredAt = hotList.lastScoredAt
+    || hotList.last_scored_at
+    || hotHotScoring.lastScoredAt
+    || payload.lastScoredAt
+    || payload.generatedAt
+    || null;
+  const enabled = Boolean(hotList.enabled ?? watch.dynamicHotList?.enabled ?? memeMonitor.enabled);
+  const rawStatus = String(hotList.status || summary.meme_monitor_hot_list_status || '').toLowerCase();
+  const watchStatus = String(watch.dynamicHotList?.status || '').toLowerCase();
+  const status = rawStatus && rawStatus !== 'off' && rawStatus !== 'disabled'
+    ? rawStatus
+    : (watchStatus || rawStatus || (enabled ? 'unknown' : 'off'));
+  const stale = Boolean(hotList.stale ?? hotHotScoring.stale ?? payload.stale ?? summary.meme_monitor_hot_list_stale);
+
+  return {
+    enabled,
+    status,
+    stale,
+    dynamicCount,
+    hotHotCount,
+    lastScoredAt,
+    lastError: hotList.lastError || hotHotScoring.lastError || null,
+  };
+}
+
+function buildDynamicTopSymbols({ watch = null, scannerRuntime = null, limit = 10 } = {}) {
+  const sourceListsBySymbol = scanSourceListsBySymbol(watch, scannerRuntime);
+  const seen = new Set();
+  const results = [];
+  const groups = [
+    { source: 'Hot Hot List', rank: 1, entries: Array.isArray(watch?.hotHotList?.symbols) ? watch.hotHotList.symbols : [] },
+    { source: 'Dynamic Hot List', rank: 2, entries: Array.isArray(watch?.dynamicHotList?.symbols) ? watch.dynamicHotList.symbols : [] },
+    { source: 'Scanner Preview', rank: 3, entries: Array.isArray(watch?.scannerPreview?.topPreviewCandidates) && watch.scannerPreview.topPreviewCandidates.length ? watch.scannerPreview.topPreviewCandidates : (Array.isArray(watch?.scannerPreview?.previewCandidates) ? watch.scannerPreview.previewCandidates : []) },
+    { source: 'Regular Watch Movers', rank: 4, entries: Array.isArray(watch?.regularWatchMovers) ? watch.regularWatchMovers : [] },
+    { source: 'Regular Watch', rank: 5, entries: Array.isArray(watch?.regularWatchList) ? watch.regularWatchList : [] },
+  ];
+
+  for (const group of groups) {
+    for (const entry of group.entries) {
+      const symbol = normalizeWatchSymbol(entry?.symbol);
+      if (!symbol || seen.has(symbol)) continue;
+      seen.add(symbol);
+      const sourceLists = resolveSourceListsForSymbol(symbol, group.source, sourceListsBySymbol);
+      results.push({
+        symbol,
+        rank: results.length + 1,
+        source: group.source,
+        source_rank: group.rank,
+        score: resolveTopSymbolScore(entry, group.source),
+        source_lists: sourceLists,
+        reason_codes: normalizeReasonList(entry?.reasonCodes || entry?.reason_codes || entry?.riskWarnings || entry?.risk_warnings),
+        status: String(entry?.status || entry?.lastDecision || 'active'),
+      });
+      if (results.length >= limit) return results;
+    }
+  }
+
+  return results;
+}
+
+function scanSourceListsBySymbol(watch = null, scannerRuntime = null) {
+  const scannerSource = watch?.scannerSource || summarizeScannerSource(scannerRuntime);
+  const sourceListsBySymbol = scannerSource?.sourceListsBySymbol && typeof scannerSource.sourceListsBySymbol === 'object'
+    ? scannerSource.sourceListsBySymbol
+    : {};
+  return sourceListsBySymbol;
+}
+
+function resolveSourceListsForSymbol(symbol, sourceLabel, sourceListsBySymbol = {}) {
+  const sourceEntry = sourceListsBySymbol?.[symbol];
+  const sourceLists = Array.isArray(sourceEntry?.source_lists) ? sourceEntry.source_lists.slice() : [];
+  if (!sourceLists.includes(sourceLabel)) sourceLists.unshift(sourceLabel);
+  return [...new Set(sourceLists.filter(Boolean))];
+}
+
+function resolveTopSymbolScore(entry = {}, sourceLabel = '') {
+  const source = String(sourceLabel || '').toLowerCase();
+  if (source.includes('hot hot')) {
+    return safeNumber(entry?.memeHeatScore ?? entry?.finalMemeScore ?? entry?.marketConfirmationScore ?? entry?.rank_score ?? entry?.score, null);
+  }
+  if (source.includes('dynamic hot')) {
+    return safeNumber(entry?.memeHeatScore ?? entry?.finalMemeScore ?? entry?.rank_score ?? entry?.score, null);
+  }
+  if (source.includes('scanner preview')) {
+    return safeNumber(entry?.adjusted_rank_score ?? entry?.rank_score ?? entry?.scannerScore ?? entry?.score, null);
+  }
+  if (source.includes('regular watch movers')) {
+    return resolveRegularWatchDisplayedScore(entry);
+  }
+  if (source.includes('regular watch')) {
+    return resolveRegularWatchDisplayedScore(entry);
+  }
+  return safeNumber(entry?.score ?? entry?.scannerScore ?? entry?.regularWatchScore ?? entry?.rank_score, null);
+}
+
+function resolveRegularWatchDisplayedScore(entry = {}) {
+  const regularScore = safeNumber(entry?.regularWatchScore, null);
+  const scannerScore = safeNumber(entry?.scannerScore, null);
+  const genericScore = safeNumber(entry?.score, null);
+  const rankScore = safeNumber(entry?.rank_score, null);
+  if (Number.isFinite(regularScore) && Math.abs(regularScore) > 1e-9) return regularScore;
+  if (Number.isFinite(scannerScore)) return scannerScore;
+  if (Number.isFinite(regularScore)) return regularScore;
+  if (Number.isFinite(genericScore)) return genericScore;
+  return rankScore;
+}
+
 function buildRegularWatchIntelligenceSnapshot({
   regularWatchState = null,
   regularWatchStatus = null,
@@ -2282,9 +3106,69 @@ function buildRegularWatchIntelligenceSnapshot({
     regularWatchList: Array.isArray(runtime.regularWatchList) ? runtime.regularWatchList.slice() : [],
     regularWatchMovers: Array.isArray(runtime.regularWatchMovers) ? runtime.regularWatchMovers.slice() : [],
     sources: Array.isArray(runtime.sources) ? runtime.sources.slice() : [],
+    scannerPreview: summarizeScannerPreview(runtime),
     generatedAt: runtime.generatedAt || null,
     stale: Boolean(runtime.stale),
     runtime,
+  };
+}
+
+function summarizeScannerPreview(runtime = null) {
+  const sourceListsBySymbol = runtime?.source_lists_by_symbol && typeof runtime.source_lists_by_symbol === 'object'
+    ? runtime.source_lists_by_symbol
+    : {};
+  const enrichPreviewCandidate = (candidate = {}) => {
+    const symbol = normalizeWatchSymbol(candidate?.symbol);
+    const sourceLists = symbol && sourceListsBySymbol?.[symbol] && Array.isArray(sourceListsBySymbol[symbol].source_lists)
+      ? sourceListsBySymbol[symbol].source_lists.slice()
+      : [];
+    if (sourceLists.length && !sourceLists.includes('Scanner Preview')) {
+      sourceLists.unshift('Scanner Preview');
+    }
+    return {
+      ...candidate,
+      symbol,
+      source_lists: sourceLists,
+      source_list: sourceLists.join(', '),
+    };
+  };
+  const previewCandidates = Array.isArray(runtime?.preview_candidates) ? runtime.preview_candidates.map(enrichPreviewCandidate) : [];
+  const topPreviewCandidates = Array.isArray(runtime?.top_preview_candidates)
+    ? runtime.top_preview_candidates.map(enrichPreviewCandidate)
+    : previewCandidates.slice(0, 5);
+  const previewReasonCodes = Array.isArray(runtime?.preview_reason_codes)
+    ? runtime.preview_reason_codes.slice()
+    : [];
+  return {
+    enabled: Boolean(previewCandidates.length),
+    status: previewCandidates.length ? 'preview_only' : 'off',
+    marketClosedExecutionBlock: Boolean(runtime?.market_closed_execution_block),
+    previewCandidateCount: Number(runtime?.preview_candidate_count ?? previewCandidates.length ?? 0),
+    previewCandidates: previewCandidates.slice(),
+    topPreviewCandidates: topPreviewCandidates.slice(),
+    previewReasonCodes,
+    waitingForBuy: runtime?.waiting_for_buy || null,
+    brokerTruth: runtime?.broker_truth || runtime?.broker_state || null,
+  };
+}
+
+function summarizeScannerSource(runtime = null) {
+  const sourceCounts = runtime?.source_counts || {};
+  const sourceListsBySymbol = runtime?.source_lists_by_symbol && typeof runtime.source_lists_by_symbol === 'object'
+    ? runtime.source_lists_by_symbol
+    : {};
+  return {
+    mode: String(runtime?.scanner_symbol_source || 'approved').toLowerCase(),
+    dynamicSourceEmpty: Boolean(runtime?.dynamic_source_empty),
+    activeSymbolCount: Number(runtime?.active_source_count ?? sourceCounts.active_source_count ?? 0),
+    approvedSourceCount: Number(runtime?.approved_source_count ?? sourceCounts.approved_source_count ?? 0),
+    regularWatchSourceCount: Number(sourceCounts.regular_watch_source_count ?? 0),
+    regularWatchMoversSourceCount: Number(sourceCounts.regular_watch_movers_source_count ?? 0),
+    dynamicHotSourceCount: Number(sourceCounts.dynamic_hot_source_count ?? 0),
+    hotHotSourceCount: Number(sourceCounts.hot_hot_source_count ?? 0),
+    dynamicSourceCount: Number(sourceCounts.dynamic_source_count ?? 0),
+    sourceCounts,
+    sourceListsBySymbol,
   };
 }
 
@@ -2369,6 +3253,10 @@ function buildRegularWatchEntry(symbol, { candidate = null, recentSkip = null, r
     spreadPct: safeNumber(candidate?.spread_pct, null),
     volumeMultiple,
     scannerScore: safeNumber(candidate?.adjusted_rank_score ?? candidate?.rank_score, null),
+    displayedRankScore: safeNumber(candidate?.rank_score, null),
+    executionStatus: candidate?.execution_status || null,
+    waitingReason: candidate?.waiting_reason || recentSkip?.reason || null,
+    sizingExplanation: candidate?.sizing_explanation || null,
     regularWatchScore: safeNumber(regularWatchEntry?.score, null),
     status,
     reason: hasCandidate ? null : recentSkip?.reason || 'market_data_unavailable',
@@ -2718,6 +3606,11 @@ function normalizeReasonList(value) {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [String(value)].filter(Boolean);
 }
 
+function formatReasonList(value) {
+  const items = normalizeReasonList(value);
+  return items.length ? items.join(', ') : '—';
+}
+
 function normalizeWatchReason(reason) {
   const value = String(reason || '').toUpperCase();
   if (!value) return 'stale';
@@ -2753,7 +3646,7 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
     minBuyNotional: safeNumber(runtimeEnv.MIN_BUY_NOTIONAL, null),
-    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || APPROVED_LIVE_MARKET_SYMBOLS.join(',')),
+    approvedSymbols: parseCsvForDrift(runtimeEnv.STOCK_SCANNER_SYMBOLS || ''),
     positionStopLossDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_DOLLARS, null),
     positionStopLossNotionalPct: safeNumber(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT, null),
     positionStopLossMaxDollars: safeNumber(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS, null),
@@ -2827,13 +3720,24 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
     positions: positions.map((position) => {
       const marketValue = safeNumber(position.market_value ?? position.marketValue, null);
       const unrealized = safeNumber(position.unrealized_pl ?? position.unrealizedPnl ?? position.unrealized_intraday_pl, null);
+      const quantity = safeNumber(position.net_quantity ?? position.qty ?? null, null);
+      const avgEntryPrice = safeNumber(position.avg_entry_price, null);
+      const currentPrice = safeNumber(position.current_price, null);
       const runtimeState = runtimeBySymbol.get(String(position.symbol || '').toUpperCase()) || {};
       const effectiveStopLoss = safeNumber(runtimeState.stop_loss_dollars, calculateEffectiveStopLossDollars({
         baseStopLossDollars: rules.stop_loss_dollars,
         stopLossNotionalPct: rules.stop_loss_notional_pct,
         stopLossMaxDollars: rules.stop_loss_max_dollars,
         positionMarketValue: marketValue,
+        positionQuantity: quantity,
       }));
+      const stopLossPerShare = Math.abs(quantity) > 0 ? effectiveStopLoss / Math.abs(quantity) : null;
+      const hardStopPrice = Number.isFinite(avgEntryPrice) && Number.isFinite(stopLossPerShare)
+        ? Math.max(0.01, avgEntryPrice - stopLossPerShare)
+        : null;
+      const distanceToStopPerShare = Number.isFinite(currentPrice) && Number.isFinite(hardStopPrice)
+        ? currentPrice - hardStopPrice
+        : null;
       const distanceToStop = Number.isFinite(unrealized) ? unrealized + effectiveStopLoss : null;
       const trailingPeak = safeNumber(runtimeState.trailing_peak_unrealized_pl ?? scannerRuntime?.trailing_state?.positions?.[position.symbol]?.peak_unrealized_pl, null);
       const trailingActive = Boolean(runtimeState.trailing_active ?? (Number.isFinite(trailingPeak) && trailingPeak >= rules.trailing_profit_start_dollars));
@@ -2843,16 +3747,20 @@ function buildExitManagementState({ scannerRuntime, control, livePositionSummary
       return {
         symbol: position.symbol || null,
         market_value: marketValue,
-        quantity: safeNumber(position.net_quantity ?? position.qty ?? null, null),
-        avg_entry_price: safeNumber(position.avg_entry_price, null),
-        current_price: safeNumber(position.current_price, null),
+        quantity,
+        avg_entry_price: avgEntryPrice,
+        current_price: currentPrice,
         unrealized_pl: unrealized,
         stop_loss_dollars: effectiveStopLoss,
         effective_stop_loss_dollars: effectiveStopLoss,
+        stop_loss_total_dollars: effectiveStopLoss,
+        stop_loss_per_share: Number.isFinite(stopLossPerShare) ? Number(stopLossPerShare.toFixed(4)) : null,
+        hard_stop_price: Number.isFinite(hardStopPrice) ? Number(hardStopPrice.toFixed(4)) : null,
         base_stop_loss_dollars: rules.stop_loss_dollars,
         stop_loss_notional_pct: rules.stop_loss_notional_pct,
         stop_loss_max_dollars: rules.stop_loss_max_dollars,
         distance_to_stop_dollars: Number.isFinite(distanceToStop) ? Number(distanceToStop.toFixed(4)) : null,
+        distance_to_stop_per_share: Number.isFinite(distanceToStopPerShare) ? Number(distanceToStopPerShare.toFixed(4)) : null,
         trailing_active: trailingActive,
         trailing_peak_unrealized_pl: Number.isFinite(trailingPeak) ? trailingPeak : null,
         trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? trailingSellAt : null,
@@ -2942,9 +3850,7 @@ function resolveLiveMarketRules(env = {}, policySnapshot = null) {
   const policy = policySnapshot?.policy || {};
   return {
     workflow: 'Live Market',
-    approved_symbols: Array.isArray(policy.approvedSymbols) && policy.approvedSymbols.length
-      ? policy.approvedSymbols
-      : APPROVED_LIVE_MARKET_SYMBOLS.slice(),
+    approved_symbols: Array.isArray(policy.approvedSymbols) ? policy.approvedSymbols : [],
     excluded_buy_symbols: parseCsvForDrift(env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS || ''),
     max_open_positions: safeNumber(policy.maxOpenPositions, safeNumber(env.MAX_OPEN_POSITIONS, 2)),
     buy_notional_target: safeNumber(policy.buyNotionalTarget, safeNumber(env.BUY_NOTIONAL_TARGET, 150)),
@@ -2956,6 +3862,13 @@ function resolveLiveMarketRules(env = {}, policySnapshot = null) {
     trailing_profit_giveback_dollars: safeNumber(policy.trailingProfitGivebackDollars, safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 0.3)),
     sell_profit_threshold_pct: safeNumber(policy.sellProfitThresholdPct, resolveProfitExitThresholdPct(env, 'stocks')),
     sell_net_profit_floor_dollars: resolveProfitExitFloorDollars(policySnapshot, env),
+    position_sizing: {
+      mode: String(env.POSITION_SIZING_MODE || (parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED) ? 'risk_budget' : 'fixed_notional')).trim().toLowerCase(),
+      max_buying_power_deployment_pct: safeNumber(env.MAX_BUYING_POWER_DEPLOYMENT_PCT, 100),
+      buying_power_market_order_buffer_pct: safeNumber(env.BUYING_POWER_MARKET_ORDER_BUFFER_PCT, 0),
+      buying_power_cash_reserve: safeNumber(env.BUYING_POWER_CASH_RESERVE ?? env.CASH_RESERVE_DOLLARS, 0),
+      allow_buying_power_fractional_shares: parseBoolForDrift(env.ALLOW_BUYING_POWER_FRACTIONAL_SHARES),
+    },
     risk_budget_sizing: {
       enabled: parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED),
       max_risk_per_trade_dollars: safeNumber(env.MAX_RISK_PER_TRADE_DOLLARS, 0),
@@ -3039,6 +3952,25 @@ function sendJson(res, statusCode, payload) {
   res.end(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
+function sendDashboardPage(res, filePath, contentType, bootstrap = null) {
+  try {
+    let body = fs.readFileSync(filePath, 'utf8');
+    if (bootstrap) {
+      try {
+        body = injectDashboardBootstrap(body, bootstrap);
+      } catch (error) {
+        process.stderr.write(`Dashboard bootstrap injection failed: ${error.message || String(error)}\n`);
+      }
+    }
+    res.statusCode = 200;
+    res.setHeader('content-type', contentType);
+    res.setHeader('cache-control', 'no-store');
+    res.end(body);
+  } catch {
+    sendJson(res, 404, { status: 'error', error: 'asset_not_found', filePath });
+  }
+}
+
 function sendFile(res, filePath, contentType) {
   try {
     const body = fs.readFileSync(filePath);
@@ -3049,6 +3981,90 @@ function sendFile(res, filePath, contentType) {
   } catch {
     sendJson(res, 404, { status: 'error', error: 'asset_not_found', filePath });
   }
+}
+
+function injectDashboardBootstrap(html, bootstrap = null) {
+  if (!bootstrap || typeof html !== 'string') return html;
+  const script = `<script>window.__DASHBOARD_BOOTSTRAP__=${serializeInlineJson(bootstrap)};</script>`;
+  if (html.includes('</head>')) {
+    return html.replace('</head>', `${script}\n  </head>`);
+  }
+  if (html.includes('</body>')) {
+    return html.replace('</body>', `${script}\n  </body>`);
+  }
+  return `${script}\n${html}`;
+}
+
+function injectBootstrapHomePreviewMarkup(html, bootstrap = null) {
+  if (!bootstrap || typeof html !== 'string') return html;
+  const dynamicTopSymbols = Array.isArray(bootstrap?.homeSummary?.dynamicTopSymbols)
+    ? bootstrap.homeSummary.dynamicTopSymbols
+    : [];
+  if (!dynamicTopSymbols.length) return html;
+  const previewMarkup = renderCompactDynamicTopSymbolsMarkup(dynamicTopSymbols);
+  const metaOpen = '<span class="subtle" id="dynamicTopMeta">';
+  const listOpen = '<div id="dynamicTopList" class="dynamic-top-list">';
+  const metaStart = html.indexOf(metaOpen);
+  const metaClose = metaStart >= 0 ? html.indexOf('</span>', metaStart) : -1;
+  const listStart = html.indexOf(listOpen);
+  const listClose = listStart >= 0 ? html.indexOf('</div>', listStart) : -1;
+  let nextHtml = html;
+  if (metaStart >= 0 && metaClose > metaStart) {
+    const freshness = bootstrap?.homeSummary?.dynamicTopFreshness || {};
+    const sourceCopy = freshness.source ? `${freshness.source} data` : 'Dynamic data';
+    const timestampCopy = freshness.source_timestamp ? ` from ${freshness.source_timestamp}` : ' ready';
+    nextHtml = `${nextHtml.slice(0, metaStart + metaOpen.length)}${escapeHtml(`${sourceCopy}${timestampCopy}`)}${nextHtml.slice(metaClose)}`;
+  }
+  if (listStart >= 0 && listClose > listStart) {
+    const insertAt = listStart + listOpen.length;
+    nextHtml = `${nextHtml.slice(0, insertAt)}\n${previewMarkup}\n          ${nextHtml.slice(listClose)}`;
+  }
+  return nextHtml;
+}
+
+function renderDynamicTopSymbolsMarkup(items = []) {
+  return items.slice(0, 10).map((item, index) => {
+    const provenance = Array.isArray(item?.source_lists) ? item.source_lists : [];
+    const provenanceText = provenance.length ? provenance.join(' · ') : (item?.source || 'unknown');
+    return `          <article class="top-symbol-card">
+            <div class="top-symbol-card-head">
+              <span class="top-symbol-rank">${String(index + 1).padStart(2, '0')}</span>
+              <strong><code>${escapeHtml(item?.symbol || '-')}</code></strong>
+              <span class="tag cyan">${escapeHtml(item?.source || 'unknown')}</span>
+            </div>
+            <div class="top-symbol-card-grid">
+              <span><b>Score</b> ${escapeHtml(formatNumber(item?.score, 1))}</span>
+              <span><b>Source rank</b> ${escapeHtml(formatCount(item?.source_rank))}</span>
+              <span class="top-symbol-provenance"><b>Provenance</b> ${escapeHtml(provenanceText)}</span>
+              <span><b>Reason codes</b> ${escapeHtml(formatReasonList(item?.reason_codes))}</span>
+            </div>
+          </article>`;
+  }).join('\n');
+}
+
+function renderCompactDynamicTopSymbolsMarkup(items = []) {
+  const rows = items.slice(0, 10).map((item, index) => `          <article class="top-symbol-card">
+            <div class="top-symbol-card-head">
+              <span class="top-symbol-rank">${String(index + 1).padStart(2, '0')}</span>
+              <strong><code>${escapeHtml(item?.symbol || '-')}</code></strong>
+              <span class="top-symbol-score">${escapeHtml(formatNumber(item?.score, 1))}</span>
+            </div>
+          </article>`).join('\n');
+  return `          <div class="top-symbol-header" aria-hidden="true">
+            <span>Rank</span>
+            <span>Symbol</span>
+            <span>Score</span>
+          </div>
+${rows}`;
+}
+
+function serializeInlineJson(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 function getContentType(filePath) {
@@ -3073,6 +4089,20 @@ function formatSignedNumber(value, decimals = 2) {
   if (!Number.isFinite(Number(value))) return '—';
   const formatted = formatNumber(Math.abs(Number(value)), decimals);
   return Number(value) >= 0 ? `+${formatted}` : `-${formatted}`;
+}
+
+function formatCount(value) {
+  if (!Number.isFinite(Number(value))) return '—';
+  return Number(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function resolveTraderBaseUrlFromEnv(env = process.env) {
@@ -3382,6 +4412,9 @@ async function handleRegularWatchAction(body = {}, context = {}) {
 module.exports = {
   DEFAULT_DASHBOARD_PORT,
   buildDashboardSnapshot,
+  buildControlSummary,
+  buildDynamicTopSymbols,
+  buildHomeSummary,
   createDashboardServer,
   fetchEndpointJson,
   fetchWithTimeout,
@@ -3399,6 +4432,8 @@ module.exports = {
   resolveDashboardDir,
   resolveDashboardSnapshotPath,
   resolveDashboardPort: resolvePreferredDashboardPort,
+  buildSourceHealthSummary,
+  buildWatchSnapshotResponse,
   resolveLossExitThresholdPct,
   resolveProfitExitThresholdPct,
   resolveTraderBaseUrl,

@@ -45,6 +45,7 @@ function main(env = process.env) {
     dashboardDir: path.join(resolveRepoRoot(), 'dashboard'),
     dataDir: resolveDataPath(),
     cacheMaxAgeMs: 2_000,
+    regularWatchAutoStart: true,
   });
 
   listenWithFallback(server, dashboardPort, { hostname: '127.0.0.1' });

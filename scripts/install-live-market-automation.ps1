@@ -18,4 +18,8 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances 
 Register-ScheduledTask -TaskName "$taskPrefix Daily Start" -Action $startAction -Trigger $weekdayTrigger -Principal $principal -Settings $settings -Description 'Starts the live-market workflow at 8:30 AM ET on market weekdays.'
 Register-ScheduledTask -TaskName "$taskPrefix Daily Stop" -Action $stopAction -Trigger $weekdayTriggerStop -Principal $principal -Settings $settings -Description 'Stops the live-market workflow at 4:15 PM ET on market weekdays.'
 
+$startTask = Get-ScheduledTask -TaskName "$taskPrefix Daily Start"
+$stopTask = Get-ScheduledTask -TaskName "$taskPrefix Daily Stop"
 Write-Host "Registered scheduled tasks for the live-market workflow."
+Write-Host "Start task: $($startTask.TaskName) -> $scriptPath @ 8:30 AM weekdays"
+Write-Host "Stop task: $($stopTask.TaskName) -> $scriptPath @ 4:15 PM weekdays"

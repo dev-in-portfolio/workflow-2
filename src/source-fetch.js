@@ -130,7 +130,7 @@ async function fetchTextWithTimeout(fetchImpl, url, options = {}) {
   };
 }
 
-async function fetchWithTimeout(fetchImpl, url, { timeoutMs = 5000, headers = {}, ...init } = {}) {
+async function fetchWithTimeout(fetchImpl, url, { timeoutMs = 5000, headers = {}, cache: _cache, ...init } = {}) {
   const controller = new AbortController();
   const resolvedTimeoutMs = Math.max(1000, Number(timeoutMs) || 5000);
   const timer = setTimeout(() => controller.abort(), resolvedTimeoutMs);

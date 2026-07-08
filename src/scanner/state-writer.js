@@ -31,6 +31,11 @@ function writeRuntimeSnapshot(state, closureVars) {
     maxStopDistanceDollars,
     allowRiskBudgetFractionalShares,
     riskBudgetRequireBrokerEquity,
+    positionSizingMode,
+    maxBuyingPowerDeploymentPct,
+    buyingPowerMarketOrderBufferPct,
+    buyingPowerCashReserve,
+    allowBuyingPowerFractionalShares,
     executionQualityDecayPerHour,
     minAdjustedRankScore,
     env,
@@ -63,6 +68,17 @@ function writeRuntimeSnapshot(state, closureVars) {
     session_guards: sessionGuards || null,
     candidate_lifecycle_state: candidateLifecycleState || null,
     candidate_lifecycle_summary: candidateLifecycleSummary || summarizeCandidateLifecycleState(candidateLifecycleState || {}),
+    preview_candidate_count: Number(state.preview_candidate_count ?? state.previewCandidates?.length ?? 0),
+    preview_candidates: Array.isArray(state.preview_candidates) ? state.preview_candidates : (Array.isArray(state.previewCandidates) ? state.previewCandidates : []),
+    top_preview_candidates: Array.isArray(state.top_preview_candidates) ? state.top_preview_candidates : (Array.isArray(state.previewCandidates) ? state.previewCandidates.slice(0, 5) : []),
+    preview_reason_codes: Array.isArray(state.preview_reason_codes) ? state.preview_reason_codes : [],
+    market_closed_execution_block: Boolean(state.market_closed_execution_block),
+    scanner_symbol_source: state.scanner_symbol_source || state.scannerSymbolSource || null,
+    active_symbols: Array.isArray(state.active_symbols) ? state.active_symbols : (Array.isArray(state.activeSymbols) ? state.activeSymbols : []),
+    approved_symbols: Array.isArray(state.approved_symbols) ? state.approved_symbols : (Array.isArray(state.approvedSymbols) ? state.approvedSymbols : []),
+    source_counts: state.source_counts || state.sourceCounts || null,
+    source_lists_by_symbol: state.source_lists_by_symbol || state.sourceListsBySymbol || null,
+    dynamic_source_empty: Boolean(state.dynamic_source_empty ?? state.dynamicSourceEmpty),
     candidate_rank_details: candidates
       .filter((candidate) => candidate.payload?.side === 'buy')
       .map((candidate) => ({
@@ -79,6 +95,8 @@ function writeRuntimeSnapshot(state, closureVars) {
         min_adjusted_rank_score: roundScore(minAdjustedRankScore),
         recent_trade_at: candidate.recentTradePenalty?.last_traded_at || null,
         sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+        sizing_explanation: candidate.payload?.sizing_explanation || null,
+        buying_power_sizing: candidate.payload?.buying_power_sizing || null,
         risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
         structure_stop: candidate.payload?.structure_stop || null,
         execution_quality: candidate.payload?.execution_quality || null,
@@ -86,6 +104,11 @@ function writeRuntimeSnapshot(state, closureVars) {
         candidate_lifecycle_status: candidate.payload?.market_context?.scanner?.candidate_lifecycle_status || null,
         candidate_lifecycle_reason_codes: candidate.payload?.market_context?.scanner?.candidate_lifecycle_reason_codes || [],
         candidate_lifecycle_decayed_rank: candidate.payload?.market_context?.scanner?.candidate_lifecycle_decayed_rank || null,
+        source_mode: candidate.payload?.market_context?.scanner?.source_mode || null,
+        source_list: candidate.payload?.market_context?.scanner?.source_list || null,
+        source_lists: Array.isArray(candidate.payload?.market_context?.scanner?.source_lists)
+          ? candidate.payload.market_context.scanner.source_lists.slice()
+          : [],
         anti_churn_recent_winner_protected: Boolean(candidate.payload?.market_context?.scanner?.anti_churn_recent_winner_protected),
         dynamic_watchlist_member: Boolean(candidate.payload?.market_context?.scanner?.dynamic_watchlist_member),
         priority_override_eligible: Boolean(candidate.payload?.market_context?.scanner?.priority_override_eligible),
@@ -129,6 +152,23 @@ function writeRuntimeSnapshot(state, closureVars) {
       execution_quality_size_multiplier_enabled: Boolean(executionQualitySizeMultiplierEnabled),
       execution_quality_cooldown_enabled: Boolean(executionQualityCooldownEnabled),
       risk_budget_sizing_enabled: Boolean(riskBudgetSizingEnabled),
+      position_sizing_mode: positionSizingMode || (riskBudgetSizingEnabled ? 'risk_budget' : 'fixed_notional'),
+    },
+    position_sizing: {
+      mode: positionSizingMode || (riskBudgetSizingEnabled ? 'risk_budget' : 'fixed_notional'),
+      max_buying_power_deployment_pct: maxBuyingPowerDeploymentPct ?? null,
+      buying_power_market_order_buffer_pct: buyingPowerMarketOrderBufferPct ?? null,
+      buying_power_cash_reserve: buyingPowerCashReserve ?? null,
+      allow_buying_power_fractional_shares: Boolean(allowBuyingPowerFractionalShares),
+      latest_candidates: candidates
+        .filter((candidate) => candidate.payload?.side === 'buy')
+        .map((candidate) => ({
+          symbol: candidate.symbol,
+          sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+          sizing_explanation: candidate.payload?.sizing_explanation || null,
+          buying_power_sizing: candidate.payload?.buying_power_sizing || null,
+          risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
+        })),
     },
     risk_budget_sizing: {
       enabled: Boolean(riskBudgetSizingEnabled),
@@ -149,6 +189,8 @@ function writeRuntimeSnapshot(state, closureVars) {
         .map((candidate) => ({
           symbol: candidate.symbol,
           sizing_method: candidate.payload?.sizing_method || 'fixed_notional',
+          sizing_explanation: candidate.payload?.sizing_explanation || null,
+          buying_power_sizing: candidate.payload?.buying_power_sizing || null,
           risk_budget_sizing: candidate.payload?.risk_budget_sizing || null,
           structure_stop: candidate.payload?.structure_stop || null,
           execution_quality: candidate.payload?.execution_quality || null,
@@ -159,7 +201,6 @@ function writeRuntimeSnapshot(state, closureVars) {
       min_adjusted_rank_score: roundScore(minAdjustedRankScore),
       skip_reason: 'ADJUSTED_RANK_BELOW_FLOOR',
     },
-    approved_symbols: symbols,
     excluded_buy_symbols: excludedBuySymbols,
     exit_rules: {
       stop_loss_dollars: stopLossDollars,

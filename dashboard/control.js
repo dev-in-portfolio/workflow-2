@@ -2,8 +2,11 @@
 const state = {
   snapshot: null,
   control: null,
+  sourceHealthSummary: null,
   loading: true,
   error: null,
+  detailLoading: false,
+  detailError: null,
   actionMessage: null,
   actionKind: null,
   pendingAction: null,
@@ -22,6 +25,51 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const dashboardRequest = createDashboardRequest();
+const bootstrapSnapshot = getDashboardSnapshotForPage('control');
+
+if (bootstrapSnapshot) {
+  state.snapshot = bootstrapSnapshot;
+  state.control = bootstrapSnapshot.control || null;
+  state.sourceHealthSummary = bootstrapSnapshot.sourceHealthSummary || bootstrapSnapshot.source_health_summary || null;
+  state.error = null;
+  state.loading = false;
+}
+
+function createDashboardRequest() {
+  if (typeof fetch !== 'function' && typeof XMLHttpRequest === 'undefined') {
+    return null;
+  }
+  return async function request(url, options = {}) {
+    if (typeof fetch === 'function') {
+      return fetch(url, options);
+    }
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(options.method || 'GET', url, true);
+      if (options.headers) {
+        for (const [key, value] of Object.entries(options.headers)) {
+          xhr.setRequestHeader(key, value);
+        }
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) return;
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status || 0,
+          async json() {
+            return JSON.parse(xhr.responseText || 'null');
+          },
+          async text() {
+            return xhr.responseText || '';
+          },
+        });
+      };
+      xhr.onerror = () => reject(new Error(`Request failed for ${url}`));
+      xhr.send(options.body || null);
+    });
+  };
+}
 
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -43,63 +91,107 @@ function escapeHtml(value) {
   })[char]);
 }
 
-async function refreshAll() {
+async function refreshAll({ eagerDetails = false } = {}) {
+  if (!dashboardRequest) {
+    render();
+    return;
+  }
   state.loading = true;
+  state.detailError = null;
   render();
-  const [snapshotResult, controlResult, memeResult, memeStatusResult, regularWatchResult, regularWatchStatusResult] = await Promise.allSettled([
-    fetch('/api/snapshot', { cache: 'no-store' }).then(async (response) => {
+
+  const [controlSummaryResult, sourceHealthResult] = await Promise.allSettled([
+    dashboardRequest('/api/control-summary', { cache: 'no-store' }).then(async (response) => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
       return payload;
     }),
-    fetch('/api/control/state', { cache: 'no-store' }).then(async (response) => {
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
-      return payload.control;
-    }),
-    fetch('/api/meme/features', { cache: 'no-store' }).then(async (response) => {
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
-      return payload;
-    }),
-    fetch('/api/meme/status', { cache: 'no-store' }).then(async (response) => {
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
-      return payload;
-    }),
-    fetch('/api/regular-watch/features', { cache: 'no-store' }).then(async (response) => {
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
-      return payload;
-    }),
-    fetch('/api/regular-watch/status', { cache: 'no-store' }).then(async (response) => {
+    dashboardRequest('/api/source-health-summary', { cache: 'no-store' }).then(async (response) => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
       return payload;
     }),
   ]);
 
-  state.snapshot = snapshotResult.status === 'fulfilled' ? snapshotResult.value : null;
-  state.control = controlResult.status === 'fulfilled' ? controlResult.value : null;
-  state.meme = memeResult.status === 'fulfilled' ? memeResult.value : null;
-  state.memeStatus = memeStatusResult.status === 'fulfilled' ? memeStatusResult.value : null;
-  state.regularWatch = regularWatchResult.status === 'fulfilled' ? regularWatchResult.value : null;
-  state.regularWatchStatus = regularWatchStatusResult.status === 'fulfilled' ? regularWatchStatusResult.value : null;
-  state.memeError = memeResult.status === 'rejected'
-    ? memeResult.reason?.message || 'Meme feature state unavailable'
+  state.snapshot = controlSummaryResult.status === 'fulfilled' ? controlSummaryResult.value : null;
+  state.control = state.snapshot?.control || null;
+  state.sourceHealthSummary = sourceHealthResult.status === 'fulfilled'
+    ? sourceHealthResult.value
     : null;
-  state.regularWatchError = regularWatchResult.status === 'rejected'
-    ? regularWatchResult.reason?.message || 'Regular watch feature state unavailable'
-    : (regularWatchStatusResult.status === 'rejected'
-      ? regularWatchStatusResult.reason?.message || 'Regular watch status unavailable'
-      : null);
-  state.error = snapshotResult.status === 'rejected'
-    ? snapshotResult.reason?.message || 'Snapshot unavailable'
-    : (controlResult.status === 'rejected'
-      ? controlResult.reason?.message || 'Control state unavailable'
-      : null);
+  state.error = controlSummaryResult.status === 'rejected'
+    ? controlSummaryResult.reason?.message || 'Control summary unavailable'
+    : null;
   state.loading = false;
   render();
+
+  const detailPromise = loadDetailedState();
+  if (eagerDetails) {
+    await detailPromise;
+  }
+}
+
+async function loadDetailedState() {
+  if (!dashboardRequest) {
+    return;
+  }
+  state.detailLoading = true;
+  try {
+    const [snapshotResult, controlResult, memeResult, memeStatusResult, regularWatchResult, regularWatchStatusResult] = await Promise.allSettled([
+      dashboardRequest('/api/snapshot', { cache: 'no-store' }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
+        return payload;
+      }),
+      dashboardRequest('/api/control/state', { cache: 'no-store' }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
+        return payload.control;
+      }),
+      dashboardRequest('/api/meme/features', { cache: 'no-store' }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
+        return payload;
+      }),
+      dashboardRequest('/api/meme/status', { cache: 'no-store' }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
+        return payload;
+      }),
+      dashboardRequest('/api/regular-watch/features', { cache: 'no-store' }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
+        return payload;
+      }),
+      dashboardRequest('/api/regular-watch/status', { cache: 'no-store' }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
+        return payload;
+      }),
+    ]);
+
+    state.snapshot = snapshotResult.status === 'fulfilled' ? snapshotResult.value : state.snapshot;
+    state.control = controlResult.status === 'fulfilled' ? controlResult.value : state.control;
+    state.meme = memeResult.status === 'fulfilled' ? memeResult.value : state.meme;
+    state.memeStatus = memeStatusResult.status === 'fulfilled' ? memeStatusResult.value : state.memeStatus;
+    state.regularWatch = regularWatchResult.status === 'fulfilled' ? regularWatchResult.value : state.regularWatch;
+    state.regularWatchStatus = regularWatchStatusResult.status === 'fulfilled' ? regularWatchStatusResult.value : state.regularWatchStatus;
+    state.memeError = memeResult.status === 'rejected'
+      ? memeResult.reason?.message || 'Meme feature state unavailable'
+      : null;
+    state.regularWatchError = regularWatchResult.status === 'rejected'
+      ? regularWatchResult.reason?.message || 'Regular watch feature state unavailable'
+      : (regularWatchStatusResult.status === 'rejected'
+        ? regularWatchStatusResult.reason?.message || 'Regular watch status unavailable'
+        : null);
+    state.detailError = snapshotResult.status === 'rejected'
+      ? snapshotResult.reason?.message || 'Snapshot unavailable'
+      : (controlResult.status === 'rejected'
+        ? controlResult.reason?.message || 'Control state unavailable'
+        : null);
+  } finally {
+    state.detailLoading = false;
+    render();
+  }
 }
 
 async function runAction(action, profile) {
@@ -109,7 +201,7 @@ async function runAction(action, profile) {
   state.actionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/control/action', {
+    const response = await dashboardRequest('/api/control/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action, profile }),
@@ -120,7 +212,7 @@ async function runAction(action, profile) {
     }
     state.actionMessage = `${payload.message || payload.action || 'Action complete'}${payload.verified ? ' Verified.' : ''}`;
     state.actionKind = payload.ok ? 'ok' : 'warn';
-    await refreshAll();
+    await refreshAll({ eagerDetails: true });
   } catch (error) {
     state.actionMessage = error.message;
     state.actionKind = 'error';
@@ -138,7 +230,7 @@ async function runMemeAction(featureKey, enabled) {
   state.memeActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/meme/features', {
+    const response = await dashboardRequest('/api/meme/features', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -154,7 +246,7 @@ async function runMemeAction(featureKey, enabled) {
     }
     state.memeActionMessage = `${payload.message || payload.action || 'Meme feature updated'}${payload.blocked_reason ? ` (${payload.blocked_reason})` : ''}`;
     state.memeActionKind = payload.ok ? 'ok' : 'warn';
-    await refreshAll();
+    await refreshAll({ eagerDetails: true });
   } catch (error) {
     state.memeActionMessage = error.message;
     state.memeActionKind = 'error';
@@ -171,7 +263,7 @@ async function runMemeRuntimeAction(action) {
   state.memeActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/meme/action', {
+    const response = await dashboardRequest('/api/meme/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -185,7 +277,7 @@ async function runMemeRuntimeAction(action) {
     }
     state.memeActionMessage = payload.message || 'Meme monitor action complete';
     state.memeActionKind = payload.ok ? 'ok' : 'warn';
-    await refreshAll();
+    await refreshAll({ eagerDetails: true });
   } catch (error) {
     state.memeActionMessage = error.message;
     state.memeActionKind = 'error';
@@ -203,7 +295,7 @@ async function runRegularWatchFeatureAction(featureKey, enabled) {
   state.regularWatchActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/regular-watch/features', {
+    const response = await dashboardRequest('/api/regular-watch/features', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -219,7 +311,7 @@ async function runRegularWatchFeatureAction(featureKey, enabled) {
     }
     state.regularWatchActionMessage = `${payload.message || payload.action || 'Regular watch feature updated'}${payload.blocked_reason ? ` (${payload.blocked_reason})` : ''}`;
     state.regularWatchActionKind = payload.ok ? 'ok' : 'warn';
-    await refreshAll();
+    await refreshAll({ eagerDetails: true });
   } catch (error) {
     state.regularWatchActionMessage = error.message;
     state.regularWatchActionKind = 'error';
@@ -236,7 +328,7 @@ async function runRegularWatchRuntimeAction(action) {
   state.regularWatchActionKind = 'pending';
   render();
   try {
-    const response = await fetch('/api/regular-watch/action', {
+    const response = await dashboardRequest('/api/regular-watch/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -250,7 +342,7 @@ async function runRegularWatchRuntimeAction(action) {
     }
     state.regularWatchActionMessage = payload.message || 'Regular watch action complete';
     state.regularWatchActionKind = payload.ok ? 'ok' : 'warn';
-    await refreshAll();
+    await refreshAll({ eagerDetails: true });
   } catch (error) {
     state.regularWatchActionMessage = error.message;
     state.regularWatchActionKind = 'error';
@@ -276,6 +368,7 @@ function render() {
   const memeStatus = state.memeStatus || snapshot?.memeMonitor || snapshot?.live?.meme_monitor_runtime || {};
   const regularWatch = state.regularWatch || snapshot?.regularWatchIntelligence || snapshot?.live?.regular_watch_intelligence || {};
   const regularWatchStatus = state.regularWatchStatus || snapshot?.regularWatchStatus || snapshot?.live?.regular_watch_runtime || {};
+  const sourceHealthSummary = state.sourceHealthSummary || snapshot?.source_health_summary || {};
   const memeHotList = memeStatus?.memeMonitor?.hotList || memeStatus?.hotList || {};
   const memeHotHotScoring = memeStatus?.memeMonitor?.hotHotScoring || memeStatus?.hotHotScoring || {};
   const memeDynamicWatchlist = memeStatus?.memeMonitor?.dynamicWatchlist || memeStatus?.dynamicWatchlist || {};
@@ -342,8 +435,13 @@ function render() {
     ['last scan', formatTime(scannerRuntime.last_scan_time)],
     ['posted / approved', scannerRuntime.posted_count !== undefined ? `${formatCount(scannerRuntime.posted_count)} / ${formatCount(scannerRuntime.approved_count)}` : '-'],
     ['scan error', scannerRuntime.last_scan_error || 'none'],
+    ['source health', formatSourceHealthSummary(sourceHealthSummary)],
     ['last action', formatTime(scanner.last_action_at)],
   ]);
+  $('sourceHealthHint').textContent = state.detailError
+    ? `${formatSourceHealthSummary(sourceHealthSummary)} | details pending`
+    : formatSourceHealthSummary(sourceHealthSummary);
+  $('sourceHealthState').innerHTML = renderStateRows(buildSourceHealthRows(sourceHealthSummary.sources || []));
 
   $('memeMonitorPill').textContent = statusLabel(memeFeatures.MEME_MONITOR_ENABLED?.status || 'off');
   $('memeMonitorPill').className = `pill ${['blocked', 'missing_credentials', 'error'].includes(String(memeFeatures.MEME_MONITOR_ENABLED?.status || '').toLowerCase()) ? 'critical' : ['active', 'shadow'].includes(String(memeFeatures.MEME_MONITOR_ENABLED?.status || '').toLowerCase()) ? 'ok' : String(memeFeatures.MEME_MONITOR_ENABLED?.status || '').toLowerCase() === 'locked' ? 'warn' : 'warn'}`;
@@ -549,6 +647,38 @@ function formatSourceStatusList(value) {
     const lastScanAt = entry?.lastScanAt ? ` @ ${formatTime(entry.lastScanAt)}` : '';
     return `${source}${tier}:${status}${reason}${lastScanAt}`;
   }).join(', ');
+}
+
+function formatSourceHealthSummary(summary = {}) {
+  const counts = summary?.counts || {};
+  const total = Number.isFinite(Number(counts.total)) ? Number(counts.total) : 0;
+  const active = Number.isFinite(Number(counts.active)) ? Number(counts.active) : 0;
+  const inactive = Number.isFinite(Number(counts.inactive)) ? Number(counts.inactive) : 0;
+  const error = Number.isFinite(Number(counts.error)) ? Number(counts.error) : 0;
+  if (!total) return 'no sources';
+  return `${active} active / ${inactive} inactive / ${error} error of ${total}`;
+}
+
+function buildSourceHealthRows(value) {
+  const list = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? Object.values(value)
+      : [];
+  if (!list.length) {
+    return [['Sources', 'none']];
+  }
+  return list.map((entry) => {
+    const label = `${entry?.source || 'unknown'}${entry?.tier ? ` (${entry.tier})` : ''}`;
+    const status = String(entry?.health_status || entry?.status || 'inactive').toUpperCase();
+    const detailBits = [
+      entry?.blockedReason ? `blocked: ${entry.blockedReason}` : null,
+      entry?.lastError ? `error: ${entry.lastError}` : null,
+      entry?.lastScanAt ? `scanned: ${formatTime(entry.lastScanAt)}` : null,
+      Number.isFinite(Number(entry?.symbolsDetected)) ? `symbols: ${formatCount(entry.symbolsDetected)}` : null,
+    ].filter(Boolean);
+    return [label, [status, ...detailBits].join(' | ')];
+  });
 }
 
 function buildRegularWatchSourceRows(value) {
@@ -806,5 +936,8 @@ document.querySelectorAll('[data-regular-watch-action]').forEach((button) => {
   });
 });
 
-refreshAll();
-setInterval(refreshAll, 5000);
+render();
+if (dashboardRequest) {
+  refreshAll();
+  setInterval(refreshAll, 5000);
+}

@@ -107,6 +107,31 @@ test('risk gate respects a widened live-market spread ceiling', () => {
   assert.equal(looseDecision.warnings.includes('MAX_SPREAD_SLIPPAGE_EXCEEDED'), false);
 });
 
+test('risk gate allows explicit single-source momentum override for stock buys', () => {
+  const signal = baseSignal({
+    symbol: 'VRM',
+    asset_type: 'stock',
+    provider_confirmation_score: 20,
+    single_source_momentum_override: true,
+  });
+  const decision = evaluateRiskGate(signal, {
+    available: true,
+    open_positions_count: 0,
+  }, basePolicy(), {
+    single_source_momentum_override: {
+      enabled: true,
+      reason_code: 'SINGLE_SOURCE_MOMENTUM_OVERRIDE',
+      rank_score: 1135.536,
+      min_rank_score: 500,
+    },
+    provider_confirmation: { confirmed: false, discrepancy_score: 15 },
+  });
+
+  assert.equal(decision.pass, true);
+  assert.equal(decision.reason_codes.includes('LOW_PROVIDER_CONFIRMATION'), false);
+  assert.equal(decision.reason_codes.includes('MULTI_SOURCE_CONFIRMATION_FAILED'), false);
+});
+
 test('risk gate does not emit volatility warnings when the threshold is removed', () => {
   const decision = evaluateRiskGate(
     baseSignal({ symbol: 'MARA', asset_type: 'stock' }),
@@ -118,7 +143,7 @@ test('risk gate does not emit volatility warnings when the threshold is removed'
   assert.equal(decision.warnings.includes('VOLATILITY_THRESHOLD_EXCEEDED'), false);
 });
 
-test('risk gate allows scanner exit sells to bypass entry reward-risk math only', () => {
+test('risk gate allows scanner exit sells to bypass entry-only confirmation and reward-risk math', () => {
   const signal = baseSignal({
     symbol: 'NVDA',
     asset_type: 'stock',
@@ -127,7 +152,7 @@ test('risk gate allows scanner exit sells to bypass entry reward-risk math only'
     entry_price: 144,
     stop_loss: 145,
     take_profit: 143,
-    provider_confirmation_score: 90,
+    provider_confirmation_score: 35,
     volume: 1000000,
   });
   const portfolio = {
@@ -149,13 +174,20 @@ test('risk gate allows scanner exit sells to bypass entry reward-risk math only'
       net_pnl: -1.25,
       real_gain: false,
     },
+    provider_confirmation: {
+      confirmed: false,
+      discrepancy_score: 50,
+    },
   };
 
   const exitDecision = evaluateRiskGate(signal, portfolio, policy, marketContext);
   assert.equal(exitDecision.pass, true);
   assert.equal(exitDecision.reason_codes.includes('INVALID_REWARD_RISK'), false);
+  assert.equal(exitDecision.reason_codes.includes('LOW_PROVIDER_CONFIRMATION'), false);
+  assert.equal(exitDecision.reason_codes.includes('MULTI_SOURCE_CONFIRMATION_FAILED'), false);
 
   const nonExitDecision = evaluateRiskGate(signal, portfolio, policy, {});
   assert.equal(nonExitDecision.pass, false);
   assert(nonExitDecision.reason_codes.includes('INVALID_REWARD_RISK'));
+  assert(nonExitDecision.reason_codes.includes('LOW_PROVIDER_CONFIRMATION'));
 });

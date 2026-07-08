@@ -102,7 +102,9 @@ class AlpacaTradeAdapter {
     const isFractionalStockOrder = !isCryptoOrder
       && (request.supports_fractional_shares === true
         || (Number.isFinite(quantity) && quantity > 0 && !Number.isInteger(quantity)));
-    const executionRequest = this.paperTrading && request.allow_bracket !== true
+    const executionRequest = request.allow_bracket === false
+      ? { ...request, stop_loss: null, take_profit: null }
+      : this.paperTrading && request.allow_bracket !== true
       ? { ...request, stop_loss: null, take_profit: null }
       : isCryptoOrder || isFractionalStockOrder
         ? { ...request, stop_loss: null, take_profit: null }
@@ -239,6 +241,26 @@ class AlpacaTradeAdapter {
       throw error;
     }
     return Array.isArray(body) ? body : body?.positions || body?.data || [];
+  }
+
+  async getAsset(symbol) {
+    this.#ensureConfigured();
+    const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+    if (!normalizedSymbol) {
+      throw new Error('Alpaca asset lookup requires a symbol');
+    }
+    const response = await this.#fetchWithTimeout(`${this.baseUrl}/v2/assets/${encodeURIComponent(normalizedSymbol)}`, {
+      method: 'GET',
+      headers: this.#headers(),
+    });
+    const { body } = await this.#readResponseBody(response);
+    if (!response.ok) {
+      const error = new Error(`Alpaca asset lookup failed (${response.status})`);
+      error.status = response.status;
+      error.response = body;
+      throw error;
+    }
+    return body;
   }
 
   async getOrderByClientOrderId(clientOrderId) {

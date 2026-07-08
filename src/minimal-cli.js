@@ -1,30 +1,32 @@
+const fs = require('fs');
 const path = require('path');
 const { loadConfig } = require('./config');
 const { AlpacaTradeAdapter } = require('./alpaca-adapter');
 const { PaperTradeAdapter } = require('./paper-adapter');
 const { createMinimalTradingServer } = require('./minimal-server');
-const { nowIso } = require('./util');
+const { nowIso, resolveRepoRoot } = require('./util');
 const { loadRuntimeEnv } = require('./runtime-env');
-const { parseSymbolList, APPROVED_LIVE_MARKET_SYMBOLS } = require('./volatile-stock-universe');
+const { validateExecutionIntent } = require('./execution-mode');
+const { parseSymbolList } = require('./volatile-stock-universe');
 
 function resolvePerformanceHistoryPath(env = process.env) {
   const configuredPath = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
-  return configuredPath ? path.resolve(configuredPath) : path.resolve('data', 'performance-history.jsonl');
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'performance-history.jsonl');
 }
 
 function resolvePolicyPath(env = process.env) {
   const configuredPath = String(env.LIVE_POLICY_PATH || '').trim();
-  return configuredPath ? path.resolve(configuredPath) : path.resolve('data', 'live-policy.json');
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'live-policy.json');
 }
 
 function resolvePolicyHistoryPath(env = process.env) {
   const configuredPath = String(env.POLICY_HISTORY_PATH || '').trim();
-  return configuredPath ? path.resolve(configuredPath) : path.resolve('data', 'policy-history.jsonl');
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'policy-history.jsonl');
 }
 
 function resolveStatusSnapshotPath(env = process.env) {
   const configuredPath = String(env.OVERNIGHT_STATUS_PATH || env.STATUS_SNAPSHOT_PATH || '').trim();
-  return configuredPath ? path.resolve(configuredPath) : path.resolve('data', 'logs', 'overnight-status.json');
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'logs', 'overnight-status.json');
 }
 
 function resolveStatusHeartbeatIntervalMs(env = process.env) {
@@ -32,10 +34,22 @@ function resolveStatusHeartbeatIntervalMs(env = process.env) {
   return Number.isFinite(raw) && raw >= 0 ? raw : 300000;
 }
 
+function readExistingPolicySnapshot(policyPath) {
+  if (!policyPath) return null;
+  try {
+    if (!fs.existsSync(policyPath)) return null;
+    const raw = fs.readFileSync(policyPath, 'utf8');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildExecutionAdapter(env = process.env, config = loadConfig(env), options = {}) {
   if (options.executionAdapter) {
     return options.executionAdapter;
   }
+  validateExecutionIntent(config, env, { action: 'build-execution-adapter' });
   if (!config.ALPACA_EXECUTION_ENABLED) {
     return options.paperAdapter || new PaperTradeAdapter({ dryRun: true });
   }
@@ -57,7 +71,9 @@ function startMinimalTradingServer(env = process.env, options = {}) {
   const config = options.config || loadConfig(runtimeEnv);
   const executionAdapter = buildExecutionAdapter(runtimeEnv, config, options);
   const startedAt = nowIso();
-  const startupPolicyPatch = options.startupPolicyPatch || {
+  const policyPath = options.policyPath || resolvePolicyPath(runtimeEnv);
+  const existingPolicySnapshot = options.startupPolicyPatch ? null : readExistingPolicySnapshot(policyPath);
+  const startupPolicyPatch = options.startupPolicyPatch || (!existingPolicySnapshot ? {
     source: 'startup-config',
     captured_at: nowIso(),
     report_date: nowIso().slice(0, 10),
@@ -87,7 +103,7 @@ function startMinimalTradingServer(env = process.env, options = {}) {
       buyNotionalTarget: config.BUY_NOTIONAL_TARGET,
       minBuyNotional: config.MIN_BUY_NOTIONAL,
       volatilityThresholdPct: null,
-      approvedSymbols: parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS),
+      approvedSymbols: parseSymbolList(runtimeEnv.STOCK_SCANNER_SYMBOLS, []),
       positionStopLossDollars: Number(runtimeEnv.POSITION_STOP_LOSS_DOLLARS || config.POSITION_STOP_LOSS_DOLLARS || 1),
       positionStopLossNotionalPct: Number(runtimeEnv.POSITION_STOP_LOSS_NOTIONAL_PCT || config.POSITION_STOP_LOSS_NOTIONAL_PCT || 0.75),
       positionStopLossMaxDollars: Number(runtimeEnv.POSITION_STOP_LOSS_MAX_DOLLARS || config.POSITION_STOP_LOSS_MAX_DOLLARS || 2.5),
@@ -96,12 +112,12 @@ function startMinimalTradingServer(env = process.env, options = {}) {
       sellProfitThresholdPct: Number(runtimeEnv.OVERNIGHT_SCANNER_SELL_PROFIT_THRESHOLD_PCT || runtimeEnv.STOCK_SCANNER_SELL_PROFIT_THRESHOLD_PCT || 5),
       sellNetProfitFloorDollars: Number(runtimeEnv.SELL_NET_PROFIT_FLOOR_DOLLARS || runtimeEnv.OVERNIGHT_SCANNER_SELL_NET_PROFIT_FLOOR_DOLLARS || 1),
     },
-  };
+  } : null);
   const server = createMinimalTradingServer({
     ...options.serverOptions,
     executionAdapter,
     performanceHistoryPath: options.performanceHistoryPath || resolvePerformanceHistoryPath(runtimeEnv),
-    policyPath: options.policyPath || resolvePolicyPath(runtimeEnv),
+    policyPath,
     policyHistoryPath: options.policyHistoryPath || resolvePolicyHistoryPath(runtimeEnv),
     statusSnapshotPath: options.statusSnapshotPath || resolveStatusSnapshotPath(runtimeEnv),
     statusHeartbeatIntervalMs: options.statusHeartbeatIntervalMs ?? resolveStatusHeartbeatIntervalMs(runtimeEnv),

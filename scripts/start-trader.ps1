@@ -34,8 +34,8 @@ function Import-EnvFile {
   }
 }
 
-Import-EnvFile (Join-Path $repoRoot '.env.local')
 Import-EnvFile (Join-Path $repoRoot '.env')
+Import-EnvFile (Join-Path $repoRoot '.env.local')
 
 $logDir = Join-Path $repoRoot 'data\logs'
 if (-not (Test-Path $logDir)) {

@@ -612,6 +612,26 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall-live-market-automatio
 ```
 
 The automation skips US market holidays when the holiday helper is available and does not manually trade. However, because it uses dashboard/control APIs, those APIs must be treated as privileged automation surfaces. Automated start/stop scripts must preserve operator-selected runtime mode and must never convert one selected mode into another.
+If `TRADING_MODE=live` is selected but live execution prerequisites are not satisfied, startup now fails closed with explicit reason codes instead of silently using paper behavior.
+
+## Regular Stock Workflow Automation
+
+This repo also includes a repo-local weekday automation for the regular stock workflow. It starts the trader plus stock scanner at `5:00 AM America/New_York` and stops them at `5:00 PM America/New_York`.
+
+To register the Windows scheduled tasks:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-regular-stock-automation.ps1
+```
+
+To remove them later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-regular-stock-automation.ps1
+```
+
+The morning start skips US market holidays, but the stop task still runs so an already-active workflow can be shut down safely.
+This regular-stock workflow automation is separate from the meme-monitor hot list. The watch UI now distinguishes displayed rank from execution score and shows the current live "waiting on" reason when no buy is placed.
 
 ---
 

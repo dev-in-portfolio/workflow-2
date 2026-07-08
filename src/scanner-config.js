@@ -1,6 +1,6 @@
 const { parseBool, parseNumber, parseCsvList } = require('./config');
 const { safeNumber } = require('./util');
-const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
+const { parseSymbolList } = require('./volatile-stock-universe');
 
 const SCANNER_CONFIG_KEYS = [
   'apiKeyId', 'apiSecretKey', 'baseUrl', 'twelveDataApiKey', 'twelveDataBaseUrl',
@@ -8,8 +8,15 @@ const SCANNER_CONFIG_KEYS = [
   'intervalMs', 'maxCandidatesPerRun', 'notional', 'minBuyNotional', 'maxOpenPositions',
   'stopLossDollars', 'stopLossNotionalPct', 'stopLossMaxDollars',
   'trailingProfitStartDollars', 'trailingProfitGivebackDollars',
+  'stalePositionExitEnabled', 'stalePositionMaxHoldMinutes',
+  'stalePositionMinPeakProfitDollars', 'stalePositionMaxExitPnlDollars',
+  'stalledWinnerExitEnabled', 'stalledWinnerMaxHoldMinutes',
+  'stalledWinnerMaxMinutesSincePeak', 'stalledWinnerMinProfitDollars',
   'sellNetProfitFloorDollars',
   'requireMultiSourceConfirmation', 'allowContrarianEntries', 'blockBuys', 'sellMaxPriceDiffPct',
+  'singleSourceMomentumEnabled', 'singleSourceMomentumMinRankScore',
+  'minMovePct', 'requireRecentMomentum', 'minRecentMovePct', 'minRecentRangePct',
+  'minRecentCloseLocationPct',
   'recentTradePenaltyMinutes', 'recentTradeRankPenalty',
   'recentLossPenaltyMinutes', 'recentLossRankPenalty',
   'recentStopExitPenaltyMinutes', 'recentStopExitRankPenalty',
@@ -40,6 +47,8 @@ const SCANNER_CONFIG_KEYS = [
   'riskBudgetSizingEnabled', 'maxRiskPerTradeDollars', 'maxRiskPerTradePctEquity',
   'maxTradeNotional', 'minStopDistanceDollars', 'maxStopDistanceDollars',
   'allowRiskBudgetFractionalShares', 'riskBudgetRequireBrokerEquity',
+  'positionSizingMode', 'maxBuyingPowerDeploymentPct', 'buyingPowerCashReserve',
+  'allowBuyingPowerFractionalShares',
   'candidateLifecycleEnabled', 'candidateMinScansBeforeEntry', 'candidateMinSecondsBeforeEntry',
   'candidateMaxAgeSeconds', 'candidateConfirmationRequired', 'candidateQueueMaxSize',
   'rankConfidenceDecayEnabled', 'rankConfidenceHalfLifeSeconds', 'rankConfidenceMaxStaleSeconds',
@@ -49,7 +58,7 @@ const SCANNER_CONFIG_KEYS = [
   'hotSlotRotationEnabled', 'hotSlotRotationMinHeatScore', 'hotSlotRotationMinMarketScore',
   'rotationRequireBreakevenOrBetter', 'rotationAllowTinyLoss', 'rotationMaxAllowedLossDollars',
   'rotationProtectStrongRunners', 'rotationRecheckAfterExit', 'rotationExitTimeoutSeconds',
-  'rotationEntryRecheckMaxAgeSeconds',
+  'rotationEntryRecheckMaxAgeSeconds', 'scannerSymbolSource',
 ];
 
 function buildScannerConfig(env = process.env) {
@@ -61,7 +70,7 @@ function buildScannerConfig(env = process.env) {
     twelveDataBaseUrl: trimTrailingSlash(env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com'),
     localBaseUrl: trimTrailingSlash(env.STOCK_SCANNER_LOCAL_BASE_URL || env.LOCAL_BASE_URL || ''),
     enabled: true,
-    symbols: parseSymbolList(env.STOCK_SCANNER_SYMBOLS, APPROVED_LIVE_MARKET_SYMBOLS),
+    symbols: parseSymbolList(env.STOCK_SCANNER_SYMBOLS, []),
     excludedBuySymbols: parseSymbolList(env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS, []),
     intervalMs: Math.max(15_000, Number(env.STOCK_SCANNER_INTERVAL_SECONDS || 60) * 1000 || 60_000),
     maxCandidatesPerRun: Math.max(1, Number(env.STOCK_SCANNER_MAX_CANDIDATES ?? 2) || 2),
@@ -73,8 +82,23 @@ function buildScannerConfig(env = process.env) {
     stopLossMaxDollars: Math.max(1, safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5)),
     trailingProfitStartDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_START_DOLLARS ?? 0.5) || 0.5),
     trailingProfitGivebackDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? 0.3) || 0.3),
+    stalePositionExitEnabled: parseBool(env.STOCK_SCANNER_STALE_POSITION_EXIT_ENABLED, false),
+    stalePositionMaxHoldMinutes: Math.max(1, safeNumber(env.STOCK_SCANNER_STALE_POSITION_MAX_HOLD_MINUTES, 12)),
+    stalePositionMinPeakProfitDollars: Math.max(0, safeNumber(env.STOCK_SCANNER_STALE_POSITION_MIN_PEAK_PROFIT_DOLLARS, 0.25)),
+    stalePositionMaxExitPnlDollars: safeNumber(env.STOCK_SCANNER_STALE_POSITION_MAX_EXIT_PNL_DOLLARS, 0),
+    stalledWinnerExitEnabled: parseBool(env.STOCK_SCANNER_STALLED_WINNER_EXIT_ENABLED, false),
+    stalledWinnerMaxHoldMinutes: Math.max(1, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MAX_HOLD_MINUTES, 18)),
+    stalledWinnerMaxMinutesSincePeak: Math.max(1, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MAX_MINUTES_SINCE_PEAK, 8)),
+    stalledWinnerMinProfitDollars: Math.max(0, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MIN_PROFIT_DOLLARS, 1)),
     sellNetProfitFloorDollars: Math.max(0, safeNumber(env.SELL_NET_PROFIT_FLOOR_DOLLARS, 1)),
     requireMultiSourceConfirmation: Boolean(env.TWELVE_DATA_API_KEY || env.TWELVEDATA_API_KEY),
+    singleSourceMomentumEnabled: parseBool(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_ENABLED, false),
+    singleSourceMomentumMinRankScore: Math.max(0, safeNumber(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_MIN_RANK_SCORE, 500)),
+    minMovePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_MOVE_PCT, 0)),
+    requireRecentMomentum: parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, false),
+    minRecentMovePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, 0.03)),
+    minRecentRangePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, 0.05)),
+    minRecentCloseLocationPct: Math.max(0, Math.min(100, safeNumber(env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, 60))),
     allowContrarianEntries: true,
     blockBuys: parseBool(env.BLOCK_BUYS, false),
     sellMaxPriceDiffPct: safeNumber(env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, 0.75),
@@ -140,6 +164,11 @@ function buildScannerConfig(env = process.env) {
     badFillThresholdPct: Math.max(0, safeNumber(env.BAD_FILL_THRESHOLD_PCT, 2)),
     executionQualityDecayPerHour: Math.max(0, safeNumber(env.EXECUTION_QUALITY_DECAY_PER_HOUR, 0)),
     riskBudgetSizingEnabled: parseBool(env.RISK_BUDGET_SIZING_ENABLED, false),
+    positionSizingMode: String(env.POSITION_SIZING_MODE || (parseBool(env.RISK_BUDGET_SIZING_ENABLED, false) ? 'risk_budget' : 'fixed_notional')).trim().toLowerCase(),
+    maxBuyingPowerDeploymentPct: Math.max(0, Math.min(100, safeNumber(env.MAX_BUYING_POWER_DEPLOYMENT_PCT, 100))),
+    buyingPowerMarketOrderBufferPct: Math.max(0, Math.min(50, safeNumber(env.BUYING_POWER_MARKET_ORDER_BUFFER_PCT, 0))),
+    buyingPowerCashReserve: Math.max(0, safeNumber(env.BUYING_POWER_CASH_RESERVE, safeNumber(env.CASH_RESERVE_DOLLARS, 0))),
+    allowBuyingPowerFractionalShares: parseBool(env.ALLOW_BUYING_POWER_FRACTIONAL_SHARES, false),
     maxRiskPerTradeDollars: Math.max(0, safeNumber(env.MAX_RISK_PER_TRADE_DOLLARS, 0)),
     maxRiskPerTradePctEquity: Math.max(0, safeNumber(env.MAX_RISK_PER_TRADE_PCT_EQUITY, 0)),
     maxTradeNotional: Math.max(0, safeNumber(env.MAX_TRADE_NOTIONAL, 0)),
@@ -173,6 +202,7 @@ function buildScannerConfig(env = process.env) {
     rotationRecheckAfterExit: parseBool(env.MEME_ROTATION_RECHECK_AFTER_EXIT, true),
     rotationExitTimeoutSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_EXIT_TIMEOUT_SECONDS, 30))),
     rotationEntryRecheckMaxAgeSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_ENTRY_RECHECK_MAX_AGE_SECONDS, 30))),
+    scannerSymbolSource: String(env.SCANNER_SYMBOL_SOURCE || 'dynamic').trim().toLowerCase(),
   };
 }
 

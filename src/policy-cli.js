@@ -1,18 +1,21 @@
 const path = require('path');
 const { PerformanceStore } = require('./feedback-loop');
-const { nowIso } = require('./util');
+const { nowIso, resolveRepoRoot } = require('./util');
 const { loadRuntimeEnv } = require('./runtime-env');
 
 function resolveHistoryPath(env = process.env) {
-  return path.resolve(String(env.PERFORMANCE_HISTORY_PATH || 'data/performance-history.jsonl'));
+  const configuredPath = String(env.PERFORMANCE_HISTORY_PATH || '').trim();
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'performance-history.jsonl');
 }
 
 function resolvePolicyPath(env = process.env) {
-  return path.resolve(String(env.LIVE_POLICY_PATH || 'data/live-policy.json'));
+  const configuredPath = String(env.LIVE_POLICY_PATH || '').trim();
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'live-policy.json');
 }
 
 function resolvePolicyHistoryPath(env = process.env) {
-  return path.resolve(String(env.POLICY_HISTORY_PATH || 'data/policy-history.jsonl'));
+  const configuredPath = String(env.POLICY_HISTORY_PATH || '').trim();
+  return configuredPath ? path.resolve(resolveRepoRoot(), configuredPath) : path.resolve(resolveRepoRoot(), 'data', 'policy-history.jsonl');
 }
 
 function refreshPolicySnapshot(env = process.env, options = {}) {

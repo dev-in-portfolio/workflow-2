@@ -1,6 +1,5 @@
 const { normalizeMarketData } = require('../market-data');
 const { safeNumber, nowIso } = require('../util');
-const { APPROVED_LIVE_MARKET_SYMBOLS } = require('../volatile-stock-universe');
 
 async function readJsonResponse(response) {
   const text = await response.text();
@@ -19,7 +18,8 @@ function chunkSymbols(symbols, size) {
   return chunks;
 }
 
-function filterApprovedPositions(positions = [], approvedSymbols = APPROVED_LIVE_MARKET_SYMBOLS) {
+function filterApprovedPositions(positions = [], approvedSymbols = []) {
+  if (!Array.isArray(approvedSymbols) || !approvedSymbols.length) return Array.isArray(positions) ? positions : [];
   const approved = new Set(approvedSymbols.map((symbol) => String(symbol).toUpperCase()));
   return (Array.isArray(positions) ? positions : []).filter((position) => approved.has(String(position.symbol || '').toUpperCase()));
 }
@@ -134,12 +134,15 @@ function buildScannerBrokerState({ accountState, positionsState, openOrdersState
   }
   return {
     available: !strictBuyBlocked,
+    source_of_truth: 'alpaca',
     strict_buy_blocked: strictBuyBlocked,
     reason_codes: [...new Set(reasonCodes)],
     account_available: Boolean(accountState?.available),
     positions_available: Boolean(positionsState?.available),
     open_orders_available: Boolean(openOrdersState?.available),
     buying_power_available: Number.isFinite(buyingPower),
+    freshness: strictBuyBlocked ? 'stale_or_unavailable' : 'fresh',
+    checked_at: nowIso(),
     account_status: accountState?.status || null,
     positions_status: positionsState?.status || null,
     open_orders_status: openOrdersState?.status || null,

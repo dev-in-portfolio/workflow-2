@@ -209,10 +209,7 @@ function buildPartialFillMetadata(paperResult = {}) {
 }
 
 async function executeOrder(paperOrderRequest, signal, options = {}) {
-  const paperOrder = await options.executionAdapter.submitOrder(paperOrderRequest, {
-    market: options.reconciledMarketContext,
-    requireHumanApproval: options.policy?.requireHumanApproval,
-  });
+  const paperOrder = await submitOrderWithWholeShareFallback(paperOrderRequest, signal, options);
   assertExecutionResult(paperOrder);
 
   const confirmation = await confirmBrokerOrder(options.executionAdapter, paperOrder.order_id, {
@@ -256,6 +253,259 @@ async function executeOrder(paperOrderRequest, signal, options = {}) {
   };
 }
 
+async function submitOrderWithWholeShareFallback(paperOrderRequest, signal, options = {}) {
+  const adapter = options.executionAdapter;
+  const submitOptions = {
+    market: options.reconciledMarketContext,
+    requireHumanApproval: options.policy?.requireHumanApproval,
+  };
+  const preflightRequest = await maybeSelectWholeShareFromAssetMetadata(paperOrderRequest, signal, options);
+  if (preflightRequest !== paperOrderRequest) {
+    return await submitFallbackRequest(adapter, preflightRequest, submitOptions, {
+      reason_codes: ['WHOLE_SHARE_FALLBACK_SELECTED', 'WHOLE_SHARE_FALLBACK_SUBMITTED'],
+      source: 'asset_metadata',
+    });
+  }
+
+  try {
+    return await adapter.submitOrder(paperOrderRequest, submitOptions);
+  } catch (error) {
+    if (!isRecoverableFractionalShareError(error) || !isBuyStockOrder(paperOrderRequest)) {
+      throw error;
+    }
+    const existingOriginal = await findExistingOrder(adapter, paperOrderRequest);
+    if (existingOriginal) {
+      return {
+        order_id: existingOriginal.id || existingOriginal.order_id || paperOrderRequest.request_id || paperOrderRequest.signal_id || null,
+        status: existingOriginal.status || 'accepted',
+        external_order: existingOriginal,
+        request: paperOrderRequest,
+        whole_share_fallback: {
+          attempted: false,
+          reason_codes: ['FRACTIONAL_ORDER_NOT_SUPPORTED', 'WHOLE_SHARE_FALLBACK_DUPLICATE_PREVENTED'],
+          original_rejection: error.message,
+        },
+      };
+    }
+    const fallbackRequest = buildWholeShareFallbackRequest(paperOrderRequest, signal, options, {
+      originalError: error,
+    });
+    await validateWholeShareFallback(fallbackRequest, paperOrderRequest, signal, options);
+    return await submitFallbackRequest(adapter, fallbackRequest, submitOptions, {
+      reason_codes: ['FRACTIONAL_ORDER_NOT_SUPPORTED', 'WHOLE_SHARE_FALLBACK_SELECTED', 'WHOLE_SHARE_FALLBACK_SUBMITTED'],
+      source: 'broker_rejection',
+      original_rejection: error.message,
+    });
+  }
+}
+
+async function maybeSelectWholeShareFromAssetMetadata(paperOrderRequest, signal, options = {}) {
+  const adapter = options.executionAdapter;
+  if (!isBuyStockOrder(paperOrderRequest)) return paperOrderRequest;
+  if (!isFractionalRequest(paperOrderRequest)) return paperOrderRequest;
+  if (!adapter || typeof adapter.getAsset !== 'function') return paperOrderRequest;
+  try {
+    const asset = await adapter.getAsset(paperOrderRequest.symbol);
+    if (asset && asset.fractionable === false) {
+      const fallbackRequest = buildWholeShareFallbackRequest(paperOrderRequest, signal, options, {
+        originalError: null,
+      });
+      await validateWholeShareFallback(fallbackRequest, paperOrderRequest, signal, options);
+      fallbackRequest.whole_share_fallback = {
+        ...(fallbackRequest.whole_share_fallback || {}),
+        reason_codes: ['WHOLE_SHARE_FALLBACK_SELECTED'],
+        source: 'asset_metadata',
+      };
+      return fallbackRequest;
+    }
+  } catch {
+    // Metadata is a preference, not a dependency; rejection fallback still protects the path.
+  }
+  return paperOrderRequest;
+}
+
+function buildWholeShareFallbackRequest(paperOrderRequest, signal, options = {}, context = {}) {
+  const approvedNotional = resolveApprovedNotional(paperOrderRequest, signal);
+  const validatedPrice = resolveValidatedPrice(paperOrderRequest, signal, options);
+  const originalQuantity = safeNumber(paperOrderRequest.quantity, null);
+  const wholeShareQuantity = Number.isFinite(approvedNotional) && Number.isFinite(validatedPrice) && validatedPrice > 0
+    ? Math.floor(approvedNotional / validatedPrice)
+    : 0;
+  if (wholeShareQuantity < 1) {
+    const error = new Error('Whole-share fallback cannot buy at least one share within the approved notional.');
+    error.code = 'WHOLE_SHARE_FALLBACK_BELOW_ONE_SHARE';
+    error.reason_codes = ['WHOLE_SHARE_FALLBACK_BELOW_ONE_SHARE'];
+    error.fallback = {
+      symbol: paperOrderRequest.symbol,
+      approved_notional: approvedNotional,
+      validated_price: validatedPrice,
+      original_fractional_quantity: originalQuantity,
+      calculated_whole_share_quantity: wholeShareQuantity,
+      estimated_whole_share_notional: 0,
+      original_broker_rejection: context.originalError?.message || null,
+    };
+    throw error;
+  }
+  const estimatedNotional = wholeShareQuantity * validatedPrice;
+  return {
+    ...paperOrderRequest,
+    quantity: wholeShareQuantity,
+    notional: null,
+    supports_fractional_shares: false,
+    request_id: appendWholeShareSuffix(paperOrderRequest.request_id || paperOrderRequest.signal_id || signal.signal_id),
+    client_order_id: appendWholeShareSuffix(paperOrderRequest.client_order_id || paperOrderRequest.idempotency_key || null),
+    idempotency_key: appendWholeShareSuffix(paperOrderRequest.idempotency_key || null),
+    whole_share_fallback: {
+      symbol: paperOrderRequest.symbol,
+      approved_notional: roundCurrency(approvedNotional),
+      validated_price: validatedPrice,
+      original_fractional_quantity: originalQuantity,
+      calculated_whole_share_quantity: wholeShareQuantity,
+      estimated_whole_share_notional: roundCurrency(estimatedNotional),
+      original_broker_rejection: context.originalError?.message || null,
+      reason_codes: ['WHOLE_SHARE_FALLBACK_SELECTED'],
+    },
+  };
+}
+
+async function validateWholeShareFallback(fallbackRequest, originalRequest, signal, options = {}) {
+  if (typeof options.validateWholeShareFallback === 'function') {
+    const result = await options.validateWholeShareFallback(fallbackRequest, {
+      originalRequest,
+      signal,
+      market: options.reconciledMarketContext,
+    });
+    if (result === false || result?.pass === false || result?.accepted === false) {
+      const error = new Error(result?.message || 'Whole-share fallback was blocked by safety validation.');
+      error.code = 'WHOLE_SHARE_FALLBACK_RISK_BLOCKED';
+      error.reason_codes = ['WHOLE_SHARE_FALLBACK_RISK_BLOCKED', ...(result?.reason_codes || [])];
+      error.fallback = fallbackRequest.whole_share_fallback || null;
+      throw error;
+    }
+  }
+  return true;
+}
+
+async function submitFallbackRequest(adapter, fallbackRequest, submitOptions, fallbackMetadata = {}) {
+  const existingFallback = await findExistingOrder(adapter, fallbackRequest);
+  if (existingFallback) {
+    return {
+      order_id: existingFallback.id || existingFallback.order_id || fallbackRequest.request_id || fallbackRequest.signal_id || null,
+      status: existingFallback.status || 'accepted',
+      external_order: existingFallback,
+      request: fallbackRequest,
+      whole_share_fallback: {
+        ...(fallbackRequest.whole_share_fallback || {}),
+        ...fallbackMetadata,
+        reason_codes: mergeCodes(
+          fallbackRequest.whole_share_fallback?.reason_codes,
+          fallbackMetadata.reason_codes,
+          ['WHOLE_SHARE_FALLBACK_DUPLICATE_PREVENTED'],
+        ),
+      },
+    };
+  }
+  try {
+    const result = await adapter.submitOrder(fallbackRequest, submitOptions);
+    return {
+      ...result,
+      request: fallbackRequest,
+      whole_share_fallback: {
+        ...(fallbackRequest.whole_share_fallback || {}),
+        ...fallbackMetadata,
+        reason_codes: mergeCodes(
+          fallbackRequest.whole_share_fallback?.reason_codes,
+          fallbackMetadata.reason_codes,
+          ['WHOLE_SHARE_FALLBACK_ACCEPTED'],
+        ),
+      },
+    };
+  } catch (error) {
+    error.code = error.code || 'WHOLE_SHARE_FALLBACK_REJECTED';
+    error.reason_codes = mergeCodes(error.reason_codes, ['WHOLE_SHARE_FALLBACK_REJECTED']);
+    error.fallback = {
+      ...(fallbackRequest.whole_share_fallback || {}),
+      ...fallbackMetadata,
+    };
+    throw error;
+  }
+}
+
+async function findExistingOrder(adapter, request) {
+  if (!adapter || typeof adapter.findExistingOrderForRequest !== 'function') return null;
+  try {
+    return await adapter.findExistingOrderForRequest(request);
+  } catch {
+    return null;
+  }
+}
+
+function isRecoverableFractionalShareError(error) {
+  const text = String(error?.message || error?.response?.message || error?.response?.error || '').toLowerCase();
+  if (!text) return false;
+  if (/(insufficient|buying power|not tradable|non-tradable|halted|suspended|market closed|wash trade)/.test(text)) return false;
+  return /(fraction|fractionable|whole number|whole share|qty must be integer|quantity must be integer|time[_ -]?in[_ -]?force.*fraction)/.test(text);
+}
+
+function isBuyStockOrder(request = {}) {
+  const side = String(request.side || '').toLowerCase();
+  const assetType = String(request.asset_type || request.assetType || 'stock').toLowerCase();
+  const symbol = String(request.symbol || '');
+  return side === 'buy' && assetType !== 'crypto' && !symbol.includes('/');
+}
+
+function isFractionalRequest(request = {}) {
+  const quantity = safeNumber(request.quantity, null);
+  const notional = safeNumber(request.notional, null);
+  return (Number.isFinite(quantity) && quantity > 0 && !Number.isInteger(quantity))
+    || (Number.isFinite(notional) && notional > 0 && !Number.isFinite(quantity));
+}
+
+function resolveApprovedNotional(request = {}, signal = {}) {
+  const quantity = safeNumber(request.quantity, null);
+  const price = resolveValidatedPrice(request, signal, {});
+  return safeNumber(
+    request.approved_notional
+      ?? request.approvedNotional
+      ?? request.submitted_notional
+      ?? request.notional
+      ?? signal.approved_notional
+      ?? signal.submitted_notional
+      ?? signal.notional
+      ?? (Number.isFinite(quantity) && Number.isFinite(price) ? quantity * price : null),
+    null,
+  );
+}
+
+function resolveValidatedPrice(request = {}, signal = {}, options = {}) {
+  return safeNumber(
+    options.reconciledMarketContext?.price
+      ?? options.reconciledMarketContext?.current_price
+      ?? request.current_price
+      ?? request.entry_price
+      ?? request.limit_price
+      ?? signal.current_price
+      ?? signal.entry_price
+      ?? signal.price,
+    null,
+  );
+}
+
+function appendWholeShareSuffix(value) {
+  const id = String(value || '').trim();
+  if (!id) return id;
+  return id.endsWith('-whole') ? id : `${id}-whole`;
+}
+
+function mergeCodes(...groups) {
+  return [...new Set(groups.flatMap((group) => Array.isArray(group) ? group : []).filter(Boolean))];
+}
+
+function roundCurrency(value) {
+  const numeric = safeNumber(value, 0);
+  return Math.round(numeric * 10000) / 10000;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -266,5 +516,7 @@ module.exports = {
   confirmBrokerOrder,
   detectOpenOrderConflict,
   executeOrder,
+  isRecoverableFractionalShareError,
+  submitOrderWithWholeShareFallback,
   sleep,
 };

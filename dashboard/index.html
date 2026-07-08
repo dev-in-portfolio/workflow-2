@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Live Market Cockpit</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260703m" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
   </head>
@@ -55,6 +55,10 @@
               <span>Open Positions</span>
               <strong id="openPositions">-</strong>
               <small id="openPositionsHint">Live broker count</small>
+              <div class="broker-sync-control">
+                <button id="syncBrokerStateButton" class="control-button primary" type="button">Sync Broker State</button>
+                <small id="brokerSyncStatus">Re-read Alpaca without restarting scanner.</small>
+              </div>
             </div>
             <div class="focus-card">
               <span>Buying Power</span>
@@ -66,15 +70,34 @@
               <strong id="lastTradeAge">-</strong>
               <small id="lastTradeHint">Recent local fill</small>
             </div>
-            <div class="focus-card">
-              <span>Workflow</span>
-              <strong id="workflowState">-</strong>
-              <small id="workflowHint">Local process state</small>
+            <div class="focus-card focus-card-split">
+              <div class="split-metric">
+                <span>Workflow</span>
+                <strong id="workflowState">-</strong>
+                <small id="workflowHint">Local process state</small>
+              </div>
+              <div class="split-metric hot-list-mini">
+                <span>Hot List</span>
+                <strong id="hotListState">-</strong>
+                <small id="hotListHint">Meme monitor state</small>
+              </div>
             </div>
           </div>
           <div class="profit-status-row">
             <span id="profitStatusPill" class="pill warn">Loading</span>
             <span class="profit-status-copy" id="profitStatusCopyAlt">Waiting for live performance data.</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel-grid wide">
+        <article class="panel dynamic-top-panel">
+          <div class="card-head">
+            <span class="card-title">Dynamic Top 10</span>
+            <span class="subtle" id="dynamicTopMeta">Waiting for dynamic source data</span>
+          </div>
+          <div id="dynamicTopList" class="dynamic-top-list">
+            <div class="empty-state">Waiting for dynamic source data.</div>
           </div>
         </article>
       </section>
@@ -132,7 +155,8 @@
         </article>
       </section>
     </main>
-    <script src="/app.js"></script>
-    <script src="/mobile.js"></script>
+    <script src="/request.js?v=20260703k"></script>
+    <script src="/app.js?v=20260703m"></script>
+    <script src="/mobile.js?v=20260703i"></script>
   </body>
 </html>

@@ -109,16 +109,20 @@ test('churn guard activates on rapid repeated exits', () => {
 test('anti-churn state persists and reloads cleanly', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-churn-state-'));
   const filePath = path.join(tempDir, 'anti-churn-state.json');
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const cleanWinAt = new Date(now.getTime() - 5 * 60_000).toISOString();
+  const stopoutAt = new Date(now.getTime() - 3 * 60_000).toISOString();
   const paperOutcomes = [
     {
       symbol: 'MU',
-      recorded_at: '2026-06-25T14:00:00.000Z',
+      recorded_at: cleanWinAt,
       net_pnl: 1.25,
       exit_reason: 'TARGET_HIT',
     },
     {
       symbol: 'NVDA',
-      recorded_at: '2026-06-25T14:02:00.000Z',
+      recorded_at: stopoutAt,
       net_pnl: -2.75,
       stopped_out: true,
       exit_reason: 'STOP_LOSS_DOLLARS',
@@ -126,7 +130,7 @@ test('anti-churn state persists and reloads cleanly', async () => {
   ];
   const reconciled = await reconcileAntiChurnState({
     paperOutcomes,
-    now: '2026-06-25T14:05:00.000Z',
+    now: nowIso,
     retentionHours: 24,
   });
   const saved = saveAntiChurnState(reconciled, filePath);

@@ -39,17 +39,32 @@ function updateTrailingSnapshot({ positions = [], startDollars = 5, givebackDoll
     const unrealized = safeNumber(position.unrealized_pl ?? position.unrealizedPnl ?? position.unrealized_intraday_pl, null);
     const previousPeak = safeNumber(previousPositions[symbol]?.peak_unrealized_pl, null);
     const active = Number.isFinite(unrealized) && unrealized >= startDollars;
+    const previousPeakUpdatedAt = previousPositions[symbol]?.peak_updated_at
+      || previousPositions[symbol]?.trailing_started_at
+      || previousPositions[symbol]?.opened_at
+      || previousPositions[symbol]?.first_seen_at
+      || null;
+    const peakImproved = Number.isFinite(unrealized)
+      && Number.isFinite(previousPeak)
+      && unrealized > previousPeak + 0.0001;
     const peak = Number.isFinite(unrealized)
       ? Math.max(unrealized, Number.isFinite(previousPeak) ? previousPeak : -Infinity)
       : (Number.isFinite(previousPeak) ? previousPeak : null);
     const trailingActive = Number.isFinite(peak) && peak >= startDollars;
     const sellAt = trailingActive ? peak - givebackDollars : null;
+    const brokerOpenedAt = position.opened_at || position.filled_at || null;
+    const openedAt = brokerOpenedAt || previousPositions[symbol]?.opened_at || previousPositions[symbol]?.first_seen_at || nowIso();
+    const firstSeenAt = previousPositions[symbol]?.first_seen_at || previousPositions[symbol]?.opened_at || brokerOpenedAt || nowIso();
+    const trailingStartedAt = previousPositions[symbol]?.trailing_started_at || (active ? openedAt : null);
     const record = {
       symbol,
+      opened_at: openedAt,
+      first_seen_at: firstSeenAt,
       peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
+      peak_updated_at: peakImproved ? nowIso() : (previousPeakUpdatedAt || trailingStartedAt || openedAt),
       current_unrealized_pl: Number.isFinite(unrealized) ? roundCurrency(unrealized) : null,
       trailing_active: trailingActive,
-      trailing_started_at: previousPositions[symbol]?.trailing_started_at || (active ? nowIso() : null),
+      trailing_started_at: trailingStartedAt,
       sell_if_unrealized_pl_at_or_below: Number.isFinite(sellAt) ? roundCurrency(sellAt) : null,
       updated_at: nowIso(),
     };
