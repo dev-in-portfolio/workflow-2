@@ -244,7 +244,7 @@ test('selection validation summarizes recorded decision data', () => {
   assert.equal(summary.old_new_top_pick_disagreements, 1);
   assert.equal(summary.old_model.positive_score_negative_move_count, 1);
   assert.equal(summary.new_model.qualified_count, 1);
-  assert.equal(summary.recommendation, 'CONTINUE_SHADOW_TEST_COLLECT_MORE_DATA');
+  assert.equal(summary.recommendation, 'COLLECT_MORE_DATA');
 });
 
 test('selection v2 missing volume baseline does not fabricate neutral relative volume', () => {
@@ -339,6 +339,80 @@ test('outcome updater writes separate idempotent records and preserves decisions
   assert.equal(outcomes[0].observed_price, 10.3);
   assert.equal(outcomes[0].maximum_favorable_price, 10.4);
   assert.equal(outcomes[0].maximum_adverse_price, 9.8);
+});
+
+test('outcome updater populates all windows once they are reachable', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-all-windows-'));
+  const decisionPath = path.join(tempDir, 'decisions.jsonl');
+  const outcomePath = path.join(tempDir, 'outcomes.jsonl');
+  recordScannerDecisionCycle({
+    filePath: decisionPath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [decisionCandidate('AAA', 50, 80, true, 2)],
+  });
+
+  await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-07T20:05:00.000Z',
+    barProvider: async () => [
+      { t: '2026-07-07T14:31:00.000Z', h: 10.2, l: 9.9, c: 10.1 },
+      { t: '2026-07-07T14:35:00.000Z', h: 10.3, l: 9.95, c: 10.2 },
+      { t: '2026-07-07T14:45:00.000Z', h: 10.4, l: 10, c: 10.3 },
+      { t: '2026-07-07T15:00:00.000Z', h: 10.5, l: 10.1, c: 10.4 },
+      { t: '2026-07-07T15:30:00.000Z', h: 10.6, l: 10.2, c: 10.5 },
+      { t: '2026-07-07T20:00:00.000Z', h: 10.7, l: 10.3, c: 10.6 },
+    ],
+  });
+  const outcomes = fs.readFileSync(outcomePath, 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+
+  assert.deepEqual(outcomes.map((outcome) => outcome.window), ['1m', '5m', '15m', '30m', '60m', 'eod']);
+  assert(outcomes.every((outcome) => outcome.status === 'complete'));
+  assert.equal(outcomes.find((outcome) => outcome.window === 'eod').observed_price, 10.6);
+});
+
+test('outcome updater keeps unreached windows pending and unpersisted', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-pending-window-'));
+  const decisionPath = path.join(tempDir, 'decisions.jsonl');
+  const outcomePath = path.join(tempDir, 'outcomes.jsonl');
+  recordScannerDecisionCycle({
+    filePath: decisionPath,
+    receivedAt: '2026-07-07T14:30:00.000Z',
+    candidates: [decisionCandidate('AAA', 50, 80, true, 2)],
+  });
+
+  const result = await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-07T14:30:30.000Z',
+    barProvider: async () => [{ t: '2026-07-07T14:31:00.000Z', h: 10.2, l: 9.9, c: 10.1 }],
+  });
+
+  assert.equal(result.written_outcomes, 0);
+  assert.equal(fs.existsSync(outcomePath), false);
+});
+
+test('outcome updater records market-closed windows as unavailable', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-v2-market-closed-'));
+  const decisionPath = path.join(tempDir, 'decisions.jsonl');
+  const outcomePath = path.join(tempDir, 'outcomes.jsonl');
+  recordScannerDecisionCycle({
+    filePath: decisionPath,
+    receivedAt: '2026-07-11T14:30:00.000Z',
+    candidates: [decisionCandidate('AAA', 50, 80, true, 2)],
+  });
+
+  await updateScannerCandidateOutcomes({
+    decisionFilePath: decisionPath,
+    outcomeFilePath: outcomePath,
+    now: '2026-07-11T15:40:00.000Z',
+    barProvider: async () => [{ t: '2026-07-11T14:31:00.000Z', h: 10.2, l: 9.9, c: 10.1 }],
+  });
+  const outcomes = fs.readFileSync(outcomePath, 'utf8').trim().split(/\r?\n/).map(JSON.parse);
+
+  assert.deepEqual(outcomes.map((outcome) => outcome.window), ['1m', '5m', '15m', '30m', '60m']);
+  assert(outcomes.every((outcome) => outcome.status === 'unavailable'));
+  assert(outcomes.every((outcome) => outcome.reason_codes.includes('OUTCOME_MARKET_CLOSED')));
 });
 
 test('outcome updater does not use a pre-decision bar for a future window', async () => {

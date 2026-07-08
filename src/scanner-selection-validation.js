@@ -179,7 +179,7 @@ function mapFunnelFailure(trace = {}) {
 }
 
 function chooseRecommendation({ records, multiCandidateCycles, completedOutcomeWindows, windowMetrics }) {
-  if (!records.length || completedOutcomeWindows < 20 || multiCandidateCycles.length < 10) return 'CONTINUE_SHADOW_TEST_COLLECT_MORE_DATA';
+  if (!records.length || completedOutcomeWindows < 20 || multiCandidateCycles.length < 10) return 'COLLECT_MORE_DATA';
   const fiveMinute = windowMetrics['5m'];
   if (!fiveMinute || fiveMinute.comparison.measurable_cycles < 10) return 'CONTINUE_SHADOW_TEST';
   if (fiveMinute.comparison.average_regret_improvement > 0) return 'V2_SHOWS_PROMISE_CONTINUE_SHADOW';
