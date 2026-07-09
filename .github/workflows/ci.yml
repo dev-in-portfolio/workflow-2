@@ -9,6 +9,8 @@ concurrency:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   test:
@@ -43,7 +45,21 @@ jobs:
         run: npm install
 
       - name: Run complete CI suite
-        run: npm run ci
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          npm run ci *> test-output.txt
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            "Strategy repair CI failure tail:" | Set-Content ci-failure-tail.txt
+            Get-Content test-output.txt -Tail 240 | Add-Content ci-failure-tail.txt
+            Get-Content ci-failure-tail.txt
+            gh pr comment $env:PR_NUMBER --body-file ci-failure-tail.txt
+            exit $exitCode
+          }
+          Remove-Item test-output.txt -ErrorAction SilentlyContinue
 
       - name: Commit repaired implementation
         shell: bash
