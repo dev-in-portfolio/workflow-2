@@ -1,21 +1,1710 @@
 
 > trading-automation-control-plane@0.1.0 ci
-> node scripts/check-case-sensitive-imports.js && eslint src/ scripts/ test/ --max-warnings 0 && node --test --test-concurrency=1 test/buy-sizing.test.js test/risk-budget-sizing.test.js test/structure-stops.test.js test/risk-gate.test.js test/broker-reconciliation.test.js test/broker-local-reconciliation.test.js test/broker-sync-service.test.js test/fractional-share-fallback.test.js test/dashboard-broker-sync.test.js test/partial-fill-state.test.js test/partial-fill-integration.test.js test/execution-quality-state.test.js test/setup-fatigue.test.js test/session-guards.test.js test/module-contracts.test.js test/alpaca-idempotency.test.js test/process-lock.test.js test/exit-protection.test.js test/live-preflight.test.js test/operator-timeline.test.js test/dashboard-control.test.js test/dashboard-source-health.test.js test/dashboard.test.js test/dashboard-watch.test.js test/dashboard-control-feature-toggles.test.js test/hot-slot-rotation.test.js test/market-hours.test.js test/scanner-selection-v2.test.js test/stock-scanner.test.js test/stock-scanner-launcher.test.js test/stock-scanner-dynamic-watchlist.test.js test/stock-scanner-regular-watch.test.js test/shadow-only-validation.test.js test/us-market-holidays.test.js test/minimal-v1.test.js test/overnight-scanner.test.js test/server-cli-port-fallback.test.js test/live-market-daily-automation.test.js test/live-market-schedule.test.js test/source-fetch.test.js test/meme-social-source-config.test.js test/reddit-collector.test.js test/meme-phase-a-source-runner.test.js test/meme-phase-b-source-runner.test.js test/hot-list-store.test.js test/hot-hot-classifier.test.js test/regular-watch-feature-state.test.js test/regular-watch-score.test.js test/regular-watch-source-runner.test.js test/meme-reddit-sources.test.js test/meme-phase-a-sources.test.js test/meme-phase-b-sources.test.js test/regular-watch-foundation.test.js test/market-confirmation-score.test.js test/anti-churn-engine.test.js test/feedback-loop.test.js test/dashboard-summary-routes.test.js test/trading-pipeline.test.js
+> node scripts/check-case-sensitive-imports.js && eslint src/ scripts/ test/ --max-warnings 0 && node --test --test-concurrency=1 test/buy-sizing.test.js test/risk-budget-sizing.test.js test/structure-stops.test.js test/risk-gate.test.js test/broker-reconciliation.test.js test/broker-local-reconciliation.test.js test/broker-sync-service.test.js test/fractional-share-fallback.test.js test/dashboard-broker-sync.test.js test/partial-fill-state.test.js test/partial-fill-integration.test.js test/execution-quality-state.test.js test/setup-fatigue.test.js test/session-guards.test.js test/module-contracts.test.js test/alpaca-idempotency.test.js test/process-lock.test.js test/exit-protection.test.js test/live-preflight.test.js test/operator-timeline.test.js test/dashboard-control.test.js test/dashboard-source-health.test.js test/dashboard.test.js test/dashboard-watch.test.js test/dashboard-control-feature-toggles.test.js test/hot-slot-rotation.test.js test/market-hours.test.js test/scanner-selection-v2.test.js test/stock-scanner.test.js test/stock-scanner-launcher.test.js test/stock-scanner-dynamic-watchlist.test.js test/stock-scanner-regular-watch.test.js test/shadow-only-validation.test.js test/us-market-holidays.test.js test/minimal-v1.test.js test/overnight-scanner.test.js test/server-cli-port-fallback.test.js test/live-market-daily-automation.test.js test/live-market-schedule.test.js test/source-fetch.test.js test/meme-social-source-config.test.js test/reddit-collector.test.js test/meme-phase-a-source-runner.test.js test/meme-phase-b-source-runner.test.js test/hot-list-store.test.js test/hot-hot-classifier.test.js test/regular-watch-feature-state.test.js test/regular-watch-score.test.js test/regular-watch-source-runner.test.js test/meme-reddit-sources.test.js test/meme-phase-a-sources.test.js test/meme-phase-b-sources.test.js test/regular-watch-foundation.test.js test/market-confirmation-score.test.js test/anti-churn-engine.test.js test/feedback-loop.test.js test/dashboard-summary-routes.test.js && npm run test:legacy
 
-
-D:\a\workflow-2\workflow-2\src\anti-churn-engine.js
-  1029:38  warning  Missing trailing comma  comma-dangle
-
-D:\a\workflow-2\workflow-2\src\dashboard-server.js
-  2942:38  warning  Missing trailing comma  comma-dangle
-  2948:12  warning  Missing trailing comma  comma-dangle
-
-D:\a\workflow-2\workflow-2\src\setup-fatigue.js
-  448:38  warning  Missing trailing comma  comma-dangle
-
-D:\a\workflow-2\workflow-2\src\stock-scanner.js
-  759:9  error  Duplicate key 'maxStalenessSeconds'  no-dupe-keys
-
-✖ 5 problems (1 error, 4 warnings)
-  0 errors and 4 warnings potentially fixable with the `--fix` option.
-
+TAP version 13
+# Subtest: Alpaca submit reuses an existing client order id
+ok 1 - Alpaca submit reuses an existing client order id
+  ---
+  duration_ms: 29.565
+  ...
+# Subtest: Alpaca duplicate client-order response looks up and reuses the existing order
+ok 2 - Alpaca duplicate client-order response looks up and reuses the existing order
+  ---
+  duration_ms: 2.5616
+  ...
+# Subtest: Alpaca submits normally without a client id
+ok 3 - Alpaca submits normally without a client id
+  ---
+  duration_ms: 0.8197
+  ...
+# Subtest: required Alpaca idempotency lookup failure fails safely
+ok 4 - required Alpaca idempotency lookup failure fails safely
+  ---
+  duration_ms: 1.362
+  ...
+# Subtest: Alpaca adapter times out account, position, order, and submit requests
+ok 5 - Alpaca adapter times out account, position, order, and submit requests
+  ---
+  duration_ms: 146.1585
+  ...
+# Subtest: anti-churn classifies clean wins, trailing wins, and small wins distinctly
+ok 6 - anti-churn classifies clean wins, trailing wins, and small wins distinctly
+  ---
+  duration_ms: 3.7332
+  ...
+# Subtest: anti-churn classifies execution losses and partial-fill problems
+ok 7 - anti-churn classifies execution losses and partial-fill problems
+  ---
+  duration_ms: 0.344
+  ...
+# Subtest: anti-churn does not classify completed fill metadata as a partial-fill problem
+ok 8 - anti-churn does not classify completed fill metadata as a partial-fill problem
+  ---
+  duration_ms: 0.2423
+  ...
+# Subtest: anti-churn reconciliation ignores buy fills that are not exits
+ok 9 - anti-churn reconciliation ignores buy fills that are not exits
+  ---
+  duration_ms: 1.7695
+  ...
+# Subtest: anti-churn gives hard stopouts stronger and capped cooldowns
+ok 10 - anti-churn gives hard stopouts stronger and capped cooldowns
+  ---
+  duration_ms: 0.7901
+  ...
+# Subtest: churn guard activates on rapid repeated exits
+ok 11 - churn guard activates on rapid repeated exits
+  ---
+  duration_ms: 0.505
+  ...
+# Subtest: anti-churn state persists and reloads cleanly
+ok 12 - anti-churn state persists and reloads cleanly
+  ---
+  duration_ms: 5.5975
+  ...
+# Subtest: broker/local reconciliation reports OK when Alpaca and local agree
+ok 13 - broker/local reconciliation reports OK when Alpaca and local agree
+  ---
+  duration_ms: 5.6891
+  ...
+# Subtest: broker/local reconciliation detects local phantom positions
+ok 14 - broker/local reconciliation detects local phantom positions
+  ---
+  duration_ms: 2.3633
+  ...
+# Subtest: broker/local reconciliation detects Alpaca position missing locally
+ok 15 - broker/local reconciliation detects Alpaca position missing locally
+  ---
+  duration_ms: 1.8213
+  ...
+# Subtest: broker/local reconciliation detects quantity and cost-basis mismatches
+ok 16 - broker/local reconciliation detects quantity and cost-basis mismatches
+  ---
+  duration_ms: 1.8974
+  ...
+# Subtest: broker/local reconciliation detects open buy and sell order mismatches
+ok 17 - broker/local reconciliation detects open buy and sell order mismatches
+  ---
+  duration_ms: 4.6143
+  ...
+# Subtest: broker/local reconciliation detects stale trailing and missing trailing state
+ok 18 - broker/local reconciliation detects stale trailing and missing trailing state
+  ---
+  duration_ms: 1.8085
+  ...
+# Subtest: broker/local reconciliation detects pnl mismatches beyond tolerance
+ok 19 - broker/local reconciliation detects pnl mismatches beyond tolerance
+  ---
+  duration_ms: 1.3273
+  ...
+# Subtest: broker/local reconciliation writes latest result to runtime file
+ok 20 - broker/local reconciliation writes latest result to runtime file
+  ---
+  duration_ms: 3.059
+  ...
+# Subtest: broker/local reconciliation CLI formatter redacts secrets
+ok 21 - broker/local reconciliation CLI formatter redacts secrets
+  ---
+  duration_ms: 0.9518
+  ...
+# Subtest: broker-held symbol blocks stale direct portfolio buys
+ok 22 - broker-held symbol blocks stale direct portfolio buys
+  ---
+  duration_ms: 9.3786
+  ...
+# Subtest: broker open buy order blocks stale direct portfolio buys
+ok 23 - broker open buy order blocks stale direct portfolio buys
+  ---
+  duration_ms: 1.2044
+  ...
+# Subtest: fresh broker truth clears stale local held-position gate after manual sell
+ok 24 - fresh broker truth clears stale local held-position gate after manual sell
+  ---
+  duration_ms: 8.4764
+  ...
+# Subtest: missing broker account fails closed for Alpaca-capable buy paths
+ok 25 - missing broker account fails closed for Alpaca-capable buy paths
+  ---
+  duration_ms: 1.7297
+  ...
+# Subtest: broker buying power overrides request cash sizing
+ok 26 - broker buying power overrides request cash sizing
+  ---
+  duration_ms: 3.6579
+  ...
+# Subtest: sell exits remain allowed through broker reconciliation when explainable
+ok 27 - sell exits remain allowed through broker reconciliation when explainable
+  ---
+  duration_ms: 2.2574
+  ...
+# Subtest: sell paper outcomes use scanner exit-state entry price instead of recording zero pnl
+ok 28 - sell paper outcomes use scanner exit-state entry price instead of recording zero pnl
+  ---
+  duration_ms: 1.2474
+  ...
+# Subtest: broker sync removes externally closed position state without clearing candidate queue
+ok 29 - broker sync removes externally closed position state without clearing candidate queue
+  ---
+  duration_ms: 22.4662
+  ...
+# Subtest: broker sync is idempotent after stale state is already repaired
+ok 30 - broker sync is idempotent after stale state is already repaired
+  ---
+  duration_ms: 13.0301
+  ...
+# Subtest: broker sync fails closed when Alpaca visibility is unavailable
+ok 31 - broker sync fails closed when Alpaca visibility is unavailable
+  ---
+  duration_ms: 5.7952
+  ...
+# Subtest: broker sync does not release buy capacity while an open sell order remains
+ok 32 - broker sync does not release buy capacity while an open sell order remains
+  ---
+  duration_ms: 8.2903
+  ...
+# Subtest: buy sizing targets about $150 for crypto and stays within budget
+ok 33 - buy sizing targets about $150 for crypto and stays within budget
+  ---
+  duration_ms: 2.1436
+  ...
+# Subtest: buy sizing floors whole-share stock orders and never exceeds the budget
+ok 34 - buy sizing floors whole-share stock orders and never exceeds the budget
+  ---
+  duration_ms: 1.5288
+  ...
+# Subtest: buy sizing applies the policy size multiplier to whole-share orders
+ok 35 - buy sizing applies the policy size multiplier to whole-share orders
+  ---
+  duration_ms: 0.3083
+  ...
+# Subtest: buy sizing uses fractional shares for stock orders when explicitly enabled
+ok 36 - buy sizing uses fractional shares for stock orders when explicitly enabled
+  ---
+  duration_ms: 0.5001
+  ...
+# Subtest: buy sizing preserves scanner-provided whole-share risk-budget quantity
+ok 37 - buy sizing preserves scanner-provided whole-share risk-budget quantity
+  ---
+  duration_ms: 0.3571
+  ...
+# Subtest: buy sizing ignores stale scanner quantity for buying-power orders
+ok 38 - buy sizing ignores stale scanner quantity for buying-power orders
+  ---
+  duration_ms: 0.3117
+  ...
+# Subtest: buy order requests retain the scale-in flag for broker-side conflict checks
+ok 39 - buy order requests retain the scale-in flag for broker-side conflict checks
+  ---
+  duration_ms: 0.3011
+  ...
+# Subtest: sell exit requests keep whole-share quantity unchanged
+ok 40 - sell exit requests keep whole-share quantity unchanged
+  ---
+  duration_ms: 0.3865
+  ...
+# Subtest: buy sizing blocks stock orders that cannot fit a single share inside the budget
+ok 41 - buy sizing blocks stock orders that cannot fit a single share inside the budget
+  ---
+  duration_ms: 0.4821
+  ...
+# Subtest: buy notional target is configurable with a sane default
+ok 42 - buy notional target is configurable with a sane default
+  ---
+  duration_ms: 1.6364
+  ...
+# Subtest: dashboard broker sync endpoint repairs stale broker state without process control action
+ok 43 - dashboard broker sync endpoint repairs stale broker state without process control action
+  ---
+  duration_ms: 76.7324
+  ...
+# Subtest: dashboard control exposes feature toggles without manual trade controls
+ok 44 - dashboard control exposes feature toggles without manual trade controls
+  ---
+  duration_ms: 1739.6091
+  ...
+# Subtest: dashboard meme actions treat active and shadow as successful monitor states
+ok 45 - dashboard meme actions treat active and shadow as successful monitor states
+  ---
+  duration_ms: 22.4216
+  ...
+# Subtest: dashboard meme actions reject off and missing credentials states and surface failures safely
+ok 46 - dashboard meme actions reject off and missing credentials states and surface failures safely
+  ---
+  duration_ms: 15.0078
+  ...
+# Subtest: dashboard meme actions surface thrown errors without pretending success
+ok 47 - dashboard meme actions surface thrown errors without pretending success
+  ---
+  duration_ms: 11.5353
+  ...
+# Subtest: dashboard server auto-starts regular watch loop only when requested
+ok 48 - dashboard server auto-starts regular watch loop only when requested
+  ---
+  duration_ms: 15.0943
+  ...
+# Subtest: dashboard control routes serve the operator tab and route actions locally
+ok 49 - dashboard control routes serve the operator tab and route actions locally
+  ---
+  duration_ms: 621.7194
+  ...
+# Subtest: operator workflow normalizes stale scanner profiles back to live market
+ok 50 - operator workflow normalizes stale scanner profiles back to live market
+  ---
+  duration_ms: 2.1366
+  ...
+# Subtest: meme monitor status reports missing credentials without crashing the server
+ok 51 - meme monitor status reports missing credentials without crashing the server
+  ---
+  duration_ms: 24.9467
+  ...
+# Subtest: dashboard source health includes runtime reddit and regular watch sources
+ok 52 - dashboard source health includes runtime reddit and regular watch sources
+  ---
+  duration_ms: 540.2754
+  ...
+# Subtest: buildDynamicTopSymbols keeps source precedence and dedupes by symbol
+ok 53 - buildDynamicTopSymbols keeps source precedence and dedupes by symbol
+  ---
+  duration_ms: 2.4002
+  ...
+# Subtest: home summary reports dynamic top freshness from source data, not dashboard generation time
+ok 54 - home summary reports dynamic top freshness from source data, not dashboard generation time
+  ---
+  duration_ms: 1.3227
+  ...
+# Subtest: home summary displays the score used for regular watch ranking
+ok 55 - home summary displays the score used for regular watch ranking
+  ---
+  duration_ms: 0.4218
+  ...
+# Subtest: source health summary treats explicit disabled sources as inactive even with legacy ok flag
+ok 56 - source health summary treats explicit disabled sources as inactive even with legacy ok flag
+  ---
+  duration_ms: 0.411
+  ...
+# Subtest: dashboard summary endpoints and page shells expose the lightweight views
+ok 57 - dashboard summary endpoints and page shells expose the lightweight views
+  ---
+  duration_ms: 585.3844
+  ...
+# Subtest: dashboard watch snapshot keeps the four fixed columns and stable watch payloads
+ok 58 - dashboard watch snapshot keeps the four fixed columns and stable watch payloads
+  ---
+  duration_ms: 532.7096
+  ...
+# Subtest: dashboard snapshot aggregates read-only endpoints and local files
+ok 59 - dashboard snapshot aggregates read-only endpoints and local files
+  ---
+  duration_ms: 568.05
+  ...
+# Subtest: dashboard snapshot reports resolved port and prefers controller trader
+ok 60 - dashboard snapshot reports resolved port and prefers controller trader
+  ---
+  duration_ms: 466.8419
+  ...
+# Subtest: dashboard snapshot includes watch data when watch fixtures exist
+ok 61 - dashboard snapshot includes watch data when watch fixtures exist
+  ---
+  duration_ms: 469.8775
+  ...
+# Subtest: dashboard snapshot surfaces regular watch position awareness tags
+ok 62 - dashboard snapshot surfaces regular watch position awareness tags
+  ---
+  duration_ms: 468.9179
+  ...
+# Subtest: dashboard snapshot prefers live alpaca positions when available
+ok 63 - dashboard snapshot prefers live alpaca positions when available
+  ---
+  duration_ms: 459.281
+  ...
+# Subtest: dashboard snapshot keeps forced broker flat state above stale local history
+ok 64 - dashboard snapshot keeps forced broker flat state above stale local history
+  ---
+  duration_ms: 453.7425
+  ...
+# Subtest: dashboard snapshot prefers Alpaca daily account change when available
+ok 65 - dashboard snapshot prefers Alpaca daily account change when available
+  ---
+  duration_ms: 445.0222
+  ...
+# Subtest: dashboard server serves local assets and api health
+ok 66 - dashboard server serves local assets and api health
+  ---
+  duration_ms: 10.2234
+  ...
+# Subtest: dashboard server serves the new Home, Status, and Policy tabs
+ok 67 - dashboard server serves the new Home, Status, and Policy tabs
+  ---
+  duration_ms: 1451.5953
+  ...
+# Subtest: dashboard launcher auto-open can be disabled explicitly
+ok 68 - dashboard launcher auto-open can be disabled explicitly
+  ---
+  duration_ms: 0.4455
+  ...
+# Subtest: dashboard port prefers TRADER_DASHBOARD_PORT over DASHBOARD_PORT
+ok 69 - dashboard port prefers TRADER_DASHBOARD_PORT over DASHBOARD_PORT
+  ---
+  duration_ms: 0.2527
+  ...
+# Subtest: dashboard server serves mobile shell assets and manifest
+ok 70 - dashboard server serves mobile shell assets and manifest
+  ---
+  duration_ms: 11.5246
+  ...
+# Subtest: execution quality classification and penalty math stay deterministic
+ok 71 - execution quality classification and penalty math stay deterministic
+  ---
+  duration_ms: 2.4776
+  ...
+# Subtest: execution quality state aggregates trade counts and penalty summaries
+ok 72 - execution quality state aggregates trade counts and penalty summaries
+  ---
+  duration_ms: 2.317
+  ...
+# Subtest: execution quality state saves and loads from disk
+ok 73 - execution quality state saves and loads from disk
+  ---
+  duration_ms: 2.703
+  ...
+# Subtest: broker protective sell order classifies a position as broker_native
+ok 74 - broker protective sell order classifies a position as broker_native
+  ---
+  duration_ms: 1.7809
+  ...
+# Subtest: fresh scanner runtime classifies a position as scanner_exit_manager
+ok 75 - fresh scanner runtime classifies a position as scanner_exit_manager
+  ---
+  duration_ms: 0.2749
+  ...
+# Subtest: stale scanner and no protective order triggers an exit-manager warning
+ok 76 - stale scanner and no protective order triggers an exit-manager warning
+  ---
+  duration_ms: 0.1797
+  ...
+# Subtest: performance store does not penalize fully filled orders as partial fills
+ok 77 - performance store does not penalize fully filled orders as partial fills
+  ---
+  duration_ms: 3.7791
+  ...
+# Subtest: fractional compatibility rejection retries once with whole shares
+ok 78 - fractional compatibility rejection retries once with whole shares
+  ---
+  duration_ms: 4.6785
+  ...
+# Subtest: asset metadata can select whole shares before a doomed fractional submit
+ok 79 - asset metadata can select whole shares before a doomed fractional submit
+  ---
+  duration_ms: 0.8545
+  ...
+# Subtest: whole-share fallback blocks when approved notional cannot buy one share
+ok 80 - whole-share fallback blocks when approved notional cannot buy one share
+  ---
+  duration_ms: 0.9673
+  ...
+# Subtest: whole-share fallback rounds down without exceeding approved notional
+ok 81 - whole-share fallback rounds down without exceeding approved notional
+  ---
+  duration_ms: 0.9779
+  ...
+# Subtest: generic broker rejection does not retry whole-share fallback
+ok 82 - generic broker rejection does not retry whole-share fallback
+  ---
+  duration_ms: 0.3101
+  ...
+# Subtest: hot hot classifier keeps tier 3 and ticker-specific context gated
+ok 83 - hot hot classifier keeps tier 3 and ticker-specific context gated
+  ---
+  duration_ms: 2.7691
+  ...
+# Subtest: hot list store saves and loads the dynamic hot list payload
+ok 84 - hot list store saves and loads the dynamic hot list payload
+  ---
+  duration_ms: 330.47
+  ...
+# {"level":"info","event":"hot_slot_rotation_requested","message":"Hot slot rotation requested for SOUN by evicting MARA","timestamp":"2026-07-09T21:59:06.605Z"}
+# {"level":"info","event":"rotation_exit_confirmed","message":"Rotation exit confirmed for MARA","timestamp":"2026-07-09T21:59:06.606Z"}
+# {"level":"info","event":"rotation_reconcile_after_exit_started","message":"Rechecking broker state after exiting MARA","timestamp":"2026-07-09T21:59:06.606Z"}
+# {"level":"info","event":"rotation_buy_recheck_started","message":"Revalidating SOUN after exiting MARA","timestamp":"2026-07-09T21:59:06.607Z"}
+# {"level":"info","event":"rotation_candidate_still_valid","message":"Rotation candidate SOUN remains valid","timestamp":"2026-07-09T21:59:06.607Z"}
+# {"level":"info","event":"rotation_candidate_promoted_to_risk_gate","message":"Posting rotation candidate SOUN through the normal risk gate","timestamp":"2026-07-09T21:59:06.607Z"}
+# {"level":"info","event":"rotation_complete","message":"Hot slot rotation completed for SOUN","timestamp":"2026-07-09T21:59:06.607Z"}
+# {"level":"info","event":"hot_slot_rotation_requested","message":"Hot slot rotation requested for SOUN by evicting MARA","timestamp":"2026-07-09T21:59:06.647Z"}
+# Subtest: hot slot rotation selects the strongest hot hot candidate
+ok 85 - hot slot rotation selects the strongest hot hot candidate
+  ---
+  duration_ms: 1.8137
+  ...
+# Subtest: hot slot rotation defaults to a shorter post-exit recheck window
+ok 86 - hot slot rotation defaults to a shorter post-exit recheck window
+  ---
+  duration_ms: 0.1548
+  ...
+# Subtest: hot slot rotation blocks losing positions, strong runners, open orders, and partial fills
+ok 87 - hot slot rotation blocks losing positions, strong runners, open orders, and partial fills
+  ---
+  duration_ms: 1.58
+  ...
+# Subtest: hot slot rotation selects the weakest eligible position
+ok 88 - hot slot rotation selects the weakest eligible position
+  ---
+  duration_ms: 0.675
+  ...
+# Subtest: hot slot rotation plan stays off when feature or dependency is disabled
+ok 89 - hot slot rotation plan stays off when feature or dependency is disabled
+  ---
+  duration_ms: 0.5838
+  ...
+# Subtest: hot slot rotation blocks when post-exit reconciliation is disabled
+ok 90 - hot slot rotation blocks when post-exit reconciliation is disabled
+  ---
+  duration_ms: 0.1954
+  ...
+# Subtest: hot slot rotation runtime flags the broker reconciliation wait state
+ok 91 - hot slot rotation runtime flags the broker reconciliation wait state
+  ---
+  duration_ms: 0.2557
+  ...
+# Subtest: scanner rotation sells a weak position, rechecks broker state, and promotes the candidate
+ok 92 - scanner rotation sells a weak position, rechecks broker state, and promotes the candidate
+  ---
+  duration_ms: 69.1756
+  ...
+# Subtest: scanner still posts normal buy candidates when rotation is enabled but no rotation is eligible
+ok 93 - scanner still posts normal buy candidates when rotation is enabled but no rotation is eligible
+  ---
+  duration_ms: 15.9218
+  ...
+# {"level":"info","event":"rotation_exit_confirmed","message":"Rotation exit confirmed for MARA","timestamp":"2026-07-09T21:59:08.850Z"}
+# {"level":"info","event":"rotation_reconcile_after_exit_started","message":"Rechecking broker state after exiting MARA","timestamp":"2026-07-09T21:59:08.850Z"}
+# {"level":"info","event":"rotation_buy_recheck_started","message":"Revalidating SOUN after exiting MARA","timestamp":"2026-07-09T21:59:08.851Z"}
+# {"level":"info","event":"rotation_candidate_still_valid","message":"Rotation candidate SOUN remains valid","timestamp":"2026-07-09T21:59:08.851Z"}
+# {"level":"info","event":"rotation_candidate_promoted_to_risk_gate","message":"Posting rotation candidate SOUN through the normal risk gate","timestamp":"2026-07-09T21:59:08.851Z"}
+# {"level":"info","event":"rotation_complete","message":"Hot slot rotation completed for SOUN","timestamp":"2026-07-09T21:59:08.851Z"}
+# {"level":"info","event":"hot_slot_rotation_requested","message":"Hot slot rotation requested for SOUN by evicting MARA","timestamp":"2026-07-09T21:59:08.869Z"}
+# Subtest: scanner rotation blocks a candidate that goes stale after the exit
+ok 94 - scanner rotation blocks a candidate that goes stale after the exit
+  ---
+  duration_ms: 2221.9452
+  ...
+# {"level":"info","event":"rotation_exit_confirmed","message":"Rotation exit confirmed for MARA","timestamp":"2026-07-09T21:59:10.071Z"}
+# {"level":"info","event":"rotation_reconcile_after_exit_started","message":"Rechecking broker state after exiting MARA","timestamp":"2026-07-09T21:59:10.071Z"}
+# {"level":"info","event":"rotation_buy_recheck_started","message":"Revalidating SOUN after exiting MARA","timestamp":"2026-07-09T21:59:10.071Z"}
+# {"level":"info","event":"rotation_candidate_replaced_with_fresh_candidate","message":"Rotation candidate SOUN aged out, promoting fresh candidate AAA","timestamp":"2026-07-09T21:59:10.071Z"}
+# {"level":"info","event":"rotation_candidate_promoted_to_risk_gate","message":"Posting rotation candidate AAA through the normal risk gate","timestamp":"2026-07-09T21:59:10.071Z"}
+# {"level":"info","event":"rotation_complete","message":"Hot slot rotation completed for AAA","timestamp":"2026-07-09T21:59:10.072Z"}
+# Subtest: scanner rotation falls back to the freshest current candidate after the exit
+ok 95 - scanner rotation falls back to the freshest current candidate after the exit
+  ---
+  duration_ms: 1221.5204
+  ...
+# Subtest: hot slot rotation blocks hot hot entries when tradability or halt status is unknown or risky
+ok 96 - hot slot rotation blocks hot hot entries when tradability or halt status is unknown or risky
+  ---
+  duration_ms: 0.3315
+  ...
+# Subtest: hot slot rotation rejects hot hot candidates that fail the blocker matrix
+ok 97 - hot slot rotation rejects hot hot candidates that fail the blocker matrix
+  ---
+  duration_ms: 0.5503
+  ...
+# Subtest: hot slot rotation selects a deterministic eviction candidate and blocks unsafe positions
+ok 98 - hot slot rotation selects a deterministic eviction candidate and blocks unsafe positions
+  ---
+  duration_ms: 1.0774
+  ...
+# Subtest: hot slot rotation plan covers feature, dependency, broker, account, and empty-eviction blockers
+ok 99 - hot slot rotation plan covers feature, dependency, broker, account, and empty-eviction blockers
+  ---
+  duration_ms: 0.6366
+  ...
+# Subtest: live-market automation treats market holidays as blocked start days
+ok 100 - live-market automation treats market holidays as blocked start days
+  ---
+  duration_ms: 21.5849
+  ...
+# Subtest: dashboard candidates start at the preferred dashboard port
+ok 101 - dashboard candidates start at the preferred dashboard port
+  ---
+  duration_ms: 0.2476
+  ...
+# Subtest: start automation skips US market holidays without touching the dashboard
+ok 102 - start automation skips US market holidays without touching the dashboard
+  ---
+  duration_ms: 2.3552
+  ...
+# Subtest: automation report formatter includes the key operator fields
+ok 103 - automation report formatter includes the key operator fields
+  ---
+  duration_ms: 0.4555
+  ...
+# Subtest: live market schedule shows same-day start and stop before open on a weekday
+ok 104 - live market schedule shows same-day start and stop before open on a weekday
+  ---
+  duration_ms: 24.7305
+  ...
+# Subtest: live market schedule skips holidays to the next market day
+ok 105 - live market schedule skips holidays to the next market day
+  ---
+  duration_ms: 2.0935
+  ...
+# Subtest: live preflight returns GO when mocked live state is healthy
+ok 106 - live preflight returns GO when mocked live state is healthy
+  ---
+  duration_ms: 7.8838
+  ...
+# Subtest: live preflight returns NO_GO when account is unavailable
+ok 107 - live preflight returns NO_GO when account is unavailable
+  ---
+  duration_ms: 3.2091
+  ...
+# Subtest: live preflight returns NO_GO when positions are unavailable
+ok 108 - live preflight returns NO_GO when positions are unavailable
+  ---
+  duration_ms: 3.5199
+  ...
+# Subtest: live preflight returns NO_GO when open orders are unavailable
+ok 109 - live preflight returns NO_GO when open orders are unavailable
+  ---
+  duration_ms: 2.8156
+  ...
+# Subtest: live preflight returns NO_GO when Alpaca credentials are missing
+ok 110 - live preflight returns NO_GO when Alpaca credentials are missing
+  ---
+  duration_ms: 2.832
+  ...
+# Subtest: live preflight returns NO_GO when live mode would fall back away from Alpaca execution
+ok 111 - live preflight returns NO_GO when live mode would fall back away from Alpaca execution
+  ---
+  duration_ms: 5.5008
+  ...
+# Subtest: live-intended server factories refuse implicit paper adapter fallback
+ok 112 - live-intended server factories refuse implicit paper adapter fallback
+  ---
+  duration_ms: 1.5284
+  ...
+# Subtest: live-intended server factories accept explicit broker-backed adapters
+ok 113 - live-intended server factories accept explicit broker-backed adapters
+  ---
+  duration_ms: 1.2753
+  ...
+# Subtest: live preflight warns when env local changed after runtime start
+ok 114 - live preflight warns when env local changed after runtime start
+  ---
+  duration_ms: 3.1725
+  ...
+# Subtest: policy health detects metadata, deprecated fields, zero thresholds, permissive spread, and stale blocklists
+ok 115 - policy health detects metadata, deprecated fields, zero thresholds, permissive spread, and stale blocklists
+  ---
+  duration_ms: 0.3911
+  ...
+# Subtest: live preflight writes latest result to runtime file
+ok 116 - live preflight writes latest result to runtime file
+  ---
+  duration_ms: 3.6179
+  ...
+# Subtest: live preflight CLI formatter redacts secrets
+ok 117 - live preflight CLI formatter redacts secrets
+  ---
+  duration_ms: 0.7241
+  ...
+# Subtest: live preflight formatter shows the active approved symbol list
+ok 118 - live preflight formatter shows the active approved symbol list
+  ---
+  duration_ms: 0.1987
+  ...
+# Subtest: market confirmation reason codes distinguish halted, not halted, and unknown states
+ok 119 - market confirmation reason codes distinguish halted, not halted, and unknown states
+  ---
+  duration_ms: 1.9318
+  ...
+# Subtest: market-hours helper returns stocks during regular US market hours
+ok 120 - market-hours helper returns stocks during regular US market hours
+  ---
+  duration_ms: 22.2427
+  ...
+# Subtest: market-hours helper returns crypto outside regular US market hours
+ok 121 - market-hours helper returns crypto outside regular US market hours
+  ---
+  duration_ms: 0.5316
+  ...
+# Subtest: market-aware scanner chooses stock path during market hours and crypto outside
+ok 122 - market-aware scanner chooses stock path during market hours and crypto outside
+  ---
+  duration_ms: 7.4039
+  ...
+# Subtest: phase A source runtime keeps sources off by default and falls back safely
+ok 123 - phase A source runtime keeps sources off by default and falls back safely
+  ---
+  duration_ms: 2.943
+  ...
+# Subtest: phase A adapters surface market, tradability, halt, and SEC signals
+ok 124 - phase A adapters surface market, tradability, halt, and SEC signals
+  ---
+  duration_ms: 17.6308
+  ...
+# Subtest: phase A alpaca market reports missing credentials before scanning
+ok 125 - phase A alpaca market reports missing credentials before scanning
+  ---
+  duration_ms: 0.23
+  ...
+# Subtest: phase A runtime marks inactive sources without crashing when feature flags are off
+ok 126 - phase A runtime marks inactive sources without crashing when feature flags are off
+  ---
+  duration_ms: 1.1166
+  ...
+# Subtest: phase A reuses collected Reddit records instead of recollecting when provided
+ok 127 - phase A reuses collected Reddit records instead of recollecting when provided
+  ---
+  duration_ms: 2.2388
+  ...
+# Subtest: phase A evaluates market and risk sources for seeded symbols even when reddit is disabled
+ok 128 - phase A evaluates market and risk sources for seeded symbols even when reddit is disabled
+  ---
+  duration_ms: 15.8214
+  ...
+# Subtest: phase B source runtime keeps market confirmation sources disabled by default
+ok 129 - phase B source runtime keeps market confirmation sources disabled by default
+  ---
+  duration_ms: 1.5082
+  ...
+# Subtest: phase B source runner degrades safely when sources are off
+ok 130 - phase B source runner degrades safely when sources are off
+  ---
+  duration_ms: 1.9957
+  ...
+# Subtest: phase B flags default off and runtime resolves them as disabled
+ok 131 - phase B flags default off and runtime resolves them as disabled
+  ---
+  duration_ms: 1.4993
+  ...
+# Subtest: phase B sources fail closed on missing credentials
+ok 132 - phase B sources fail closed on missing credentials
+  ---
+  duration_ms: 0.8727
+  ...
+# Subtest: phase B adapters contribute cross-source confirmation when enabled
+ok 133 - phase B adapters contribute cross-source confirmation when enabled
+  ---
+  duration_ms: 11.1722
+  ...
+# Subtest: phase B hard blocks remain blocked even with strong excitement
+ok 134 - phase B hard blocks remain blocked even with strong excitement
+  ---
+  duration_ms: 0.446
+  ...
+# Subtest: tiered meme source config keeps optional high-noise sources disabled by default
+ok 135 - tiered meme source config keeps optional high-noise sources disabled by default
+  ---
+  duration_ms: 2.1087
+  ...
+# Subtest: optional high-noise sources can be enabled through config
+ok 136 - optional high-noise sources can be enabled through config
+  ---
+  duration_ms: 0.4951
+  ...
+# Subtest: collector validates each subreddit and marks inaccessible sources inactive
+ok 137 - collector validates each subreddit and marks inaccessible sources inactive
+  ---
+  duration_ms: 11.6772
+  ...
+# Subtest: collector honors configured listing modes, dedupes posts, and carries listing weights
+ok 138 - collector honors configured listing modes, dedupes posts, and carries listing weights
+  ---
+  duration_ms: 5
+  ...
+# Subtest: collector marks missing credentials as missing_credentials without crashing
+ok 139 - collector marks missing credentials as missing_credentials without crashing
+  ---
+  duration_ms: 0.7351
+  ...
+# Subtest: tier 1 mentions carry more confidence than tier 2 mentions
+ok 140 - tier 1 mentions carry more confidence than tier 2 mentions
+  ---
+  duration_ms: 1.2685
+  ...
+# Subtest: tier 3 and ticker-specific communities do not auto-promote to hot hot without stronger confirmation
+ok 141 - tier 3 and ticker-specific communities do not auto-promote to hot hot without stronger confirmation
+  ---
+  duration_ms: 0.7076
+  ...
+# Subtest: meme social source config keeps tiered defaults and optional noise disabled
+ok 142 - meme social source config keeps tiered defaults and optional noise disabled
+  ---
+  duration_ms: 2.1316
+  ...
+# Subtest: minimal v1 config defaults stay simple
+ok 143 - minimal v1 config defaults stay simple
+  ---
+  duration_ms: 1.8998
+  ...
+# {"level":"info","event":"http_request","message":"POST /signal 200 11ms","timestamp":"2026-07-09T21:59:11.496Z"}
+# Subtest: minimal server accepts approved signals and records an outcome
+ok 144 - minimal server accepts approved signals and records an outcome
+  ---
+  duration_ms: 66.2107
+  ...
+# {"level":"warn","event":"http_request_error","message":"POST /signal 400 0ms - invalid_json","timestamp":"2026-07-09T21:59:11.514Z"}
+# Subtest: minimal server returns invalid_json for malformed payloads
+ok 145 - minimal server returns invalid_json for malformed payloads
+  ---
+  duration_ms: 10.4638
+  ...
+# {"level":"info","event":"http_request","message":"POST /market-ingest 400 1ms","timestamp":"2026-07-09T21:59:11.523Z"}
+# {"level":"info","event":"http_request","message":"POST /policy-refresh 200 5ms","timestamp":"2026-07-09T21:59:11.532Z"}
+# {"status":"listening","port":50517,"mode":"paper","alpaca_execution_enabled":false,"performance_history_path":"C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\minimal-policy-preserve-CqZq7l\\\\performance-history.jsonl","policy_path":"C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\minimal-policy-preserve-CqZq7l\\\\live-policy.json","policy_history_path":"C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\minimal-policy-preserve-CqZq7l\\\\policy-history.jsonl","status_snapshot_path":"C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\minimal-policy-preserve-CqZq7l\\\\overnight-status.json","status_heartbeat_ms":0,"started_at":"2026-07-09T21:59:11.538Z","request_count":0,"heartbeat_count":0,"last_request_at":null,"timestamp":"2026-07-09T21:59:11.541Z"}
+# Subtest: minimal server rejects stale data and legacy admin routes
+ok 146 - minimal server rejects stale data and legacy admin routes
+  ---
+  duration_ms: 18.7125
+  ...
+# {"level":"info","event":"http_request","message":"GET /risk-policy 200 0ms","timestamp":"2026-07-09T21:59:11.547Z"}
+# Subtest: minimal cli preserves an existing manual live policy snapshot on startup
+ok 147 - minimal cli preserves an existing manual live policy snapshot on startup
+  ---
+  duration_ms: 14.4461
+  ...
+# {"level":"info","event":"http_request","message":"GET /daily-live-results 200 1ms","timestamp":"2026-07-09T21:59:11.555Z"}
+# {"level":"info","event":"http_request","message":"GET /risk-policy 200 0ms","timestamp":"2026-07-09T21:59:11.559Z"}
+# {"level":"info","event":"http_request","message":"GET /performance/tuning 200 2ms","timestamp":"2026-07-09T21:59:11.562Z"}
+# {"level":"info","event":"http_request","message":"GET /overnight-status 200 2ms","timestamp":"2026-07-09T21:59:11.568Z"}
+# {"level":"info","event":"http_request","message":"POST /policy-refresh 200 1ms","timestamp":"2026-07-09T21:59:11.572Z"}
+# Subtest: minimal server exposes live report and policy tuning views
+ok 148 - minimal server exposes live report and policy tuning views
+  ---
+  duration_ms: 24.9629
+  ...
+# {"level":"info","event":"http_request","message":"GET /overnight-status 200 1ms","timestamp":"2026-07-09T21:59:11.582Z"}
+# Subtest: minimal server writes a durable overnight status snapshot
+ok 149 - minimal server writes a durable overnight status snapshot
+  ---
+  duration_ms: 10.979
+  ...
+# Subtest: minimal server writes a startup overnight snapshot immediately
+ok 150 - minimal server writes a startup overnight snapshot immediately
+  ---
+  duration_ms: 3.2878
+  ...
+# Subtest: minimal server refreshes the overnight snapshot while idle
+ok 151 - minimal server refreshes the overnight snapshot while idle
+  ---
+  duration_ms: 91.6721
+  ...
+# Subtest: overnight status cli reads the durable snapshot file
+ok 152 - overnight status cli reads the durable snapshot file
+  ---
+  duration_ms: 2.5232
+  ...
+# Subtest: overnight status cli flags stale snapshots
+ok 153 - overnight status cli flags stale snapshots
+  ---
+  duration_ms: 1.4131
+  ...
+# Subtest: trader cli launches the minimal server
+ok 154 - trader cli launches the minimal server
+  ---
+  duration_ms: 0.7807
+  ...
+# Subtest: contract validators accept valid objects
+ok 155 - contract validators accept valid objects
+  ---
+  duration_ms: 1.5389
+  ...
+# Subtest: contract validators reject malformed signal candidate
+ok 156 - contract validators reject malformed signal candidate
+  ---
+  duration_ms: 0.4972
+  ...
+# Subtest: contract validators reject malformed execution result
+ok 157 - contract validators reject malformed execution result
+  ---
+  duration_ms: 0.2492
+  ...
+# Subtest: operator timeline appends and reads local jsonl events
+ok 158 - operator timeline appends and reads local jsonl events
+  ---
+  duration_ms: 3.4603
+  ...
+# Subtest: overnight scanner builds real buy candidates from fresh bullish Alpaca data
+ok 159 - overnight scanner builds real buy candidates from fresh bullish Alpaca data
+  ---
+  duration_ms: 4.5991
+  ...
+# Subtest: overnight scanner posts candidates to the local paper order endpoint
+ok 160 - overnight scanner posts candidates to the local paper order endpoint
+  ---
+  duration_ms: 54.4977
+  ...
+# Subtest: overnight scanner respects cooldowns for repeated symbols
+ok 161 - overnight scanner respects cooldowns for repeated symbols
+  ---
+  duration_ms: 0.3364
+  ...
+# Subtest: overnight scanner reloads recent-symbol cooldown memory
+ok 162 - overnight scanner reloads recent-symbol cooldown memory
+  ---
+  duration_ms: 3.4594
+  ...
+# Subtest: overnight scanner skips symbols that already have open orders
+ok 163 - overnight scanner skips symbols that already have open orders
+  ---
+  duration_ms: 0.2945
+  ...
+# Subtest: overnight scanner skips buy candidates when buys are blocked
+ok 164 - overnight scanner skips buy candidates when buys are blocked
+  ---
+  duration_ms: 0.1702
+  ...
+# Subtest: overnight scanner emits a sell when a held position is down past the loss-exit threshold
+ok 165 - overnight scanner emits a sell when a held position is down past the loss-exit threshold
+  ---
+  duration_ms: 0.5463
+  ...
+# Subtest: overnight scanner start keeps the polling timer referenced for continuous operation
+ok 166 - overnight scanner start keeps the polling timer referenced for continuous operation
+  ---
+  duration_ms: 0.7233
+  ...
+# Subtest: overnight scanner can create a fresh contrarian buy when the move is down and activity mode is enabled
+ok 167 - overnight scanner can create a fresh contrarian buy when the move is down and activity mode is enabled
+  ---
+  duration_ms: 0.6881
+  ...
+# Subtest: overnight scanner reads the symbol list from environment configuration
+ok 168 - overnight scanner reads the symbol list from environment configuration
+  ---
+  duration_ms: 1.057
+  ...
+# Subtest: overnight scanner keeps the configured cooldown
+ok 169 - overnight scanner keeps the configured cooldown
+  ---
+  duration_ms: 0.7818
+  ...
+# Subtest: overnight scanner keeps the configured sell profit threshold
+ok 170 - overnight scanner keeps the configured sell profit threshold
+  ---
+  duration_ms: 0.4515
+  ...
+# Subtest: overnight scanner does not sell on a tiny gain below the exit floor
+ok 171 - overnight scanner does not sell on a tiny gain below the exit floor
+  ---
+  duration_ms: 0.1734
+  ...
+# Subtest: overnight scanner raises the sell target when the dollar floor is larger
+ok 172 - overnight scanner raises the sell target when the dollar floor is larger
+  ---
+  duration_ms: 0.5855
+  ...
+# Subtest: trading loop records actual partial-fill quantity and metadata
+ok 173 - trading loop records actual partial-fill quantity and metadata
+  ---
+  duration_ms: 10.3758
+  ...
+# Subtest: trading loop blocks duplicate same-side order while partial is pending
+ok 174 - trading loop blocks duplicate same-side order while partial is pending
+  ---
+  duration_ms: 0.9364
+  ...
+# Subtest: stock scanner blocks duplicate buy, occupies slot, reserves buying power, and writes runtime summary
+ok 175 - stock scanner blocks duplicate buy, occupies slot, reserves buying power, and writes runtime summary
+  ---
+  duration_ms: 103.023
+  ...
+# Subtest: authoritative broker open orders clear stale partial buy slot reservations
+ok 176 - authoritative broker open orders clear stale partial buy slot reservations
+  ---
+  duration_ms: 1.137
+  ...
+# Subtest: partial buy creates partial-fill state and summary
+ok 177 - partial buy creates partial-fill state and summary
+  ---
+  duration_ms: 2.3234
+  ...
+# Subtest: partial sell creates partial-fill state and remaining exposure reason
+ok 178 - partial sell creates partial-fill state and remaining exposure reason
+  ---
+  duration_ms: 0.7814
+  ...
+# Subtest: filled after partial clears active pending summary
+ok 179 - filled after partial clears active pending summary
+  ---
+  duration_ms: 0.4386
+  ...
+# Subtest: canceled and rejected partial orders record reason codes
+ok 180 - canceled and rejected partial orders record reason codes
+  ---
+  duration_ms: 0.8753
+  ...
+# Subtest: stale partial order warning appears
+ok 181 - stale partial order warning appears
+  ---
+  duration_ms: 0.4278
+  ...
+# Subtest: partial state saves and loads from disk
+ok 182 - partial state saves and loads from disk
+  ---
+  duration_ms: 2.2134
+  ...
+# Subtest: process locks prevent duplicate live starts and release cleanly
+ok 183 - process locks prevent duplicate live starts and release cleanly
+  ---
+  duration_ms: 4.8749
+  ...
+# Subtest: stale process locks are replaced
+ok 184 - stale process locks are replaced
+  ---
+  duration_ms: 3.5371
+  ...
+# Subtest: reddit collector degrades safely on missing credentials and validates source status
+ok 185 - reddit collector degrades safely on missing credentials and validates source status
+  ---
+  duration_ms: 4.9916
+  ...
+# Subtest: regular watch feature state keeps scanner ranking two-key gated
+ok 186 - regular watch feature state keeps scanner ranking two-key gated
+  ---
+  duration_ms: 5.7443
+  ...
+# Subtest: regular watch defaults stay off with safe status placeholders
+ok 187 - regular watch defaults stay off with safe status placeholders
+  ---
+  duration_ms: 5.4257
+  ...
+# Subtest: regular watch child features cannot enable while the master is off
+ok 188 - regular watch child features cannot enable while the master is off
+  ---
+  duration_ms: 3.8389
+  ...
+# Subtest: regular watch scanner ranking cannot enable while priority scoring is off
+ok 189 - regular watch scanner ranking cannot enable while priority scoring is off
+  ---
+  duration_ms: 1.2532
+  ...
+# Subtest: regular watch scanner ranking still requires config allowment
+ok 190 - regular watch scanner ranking still requires config allowment
+  ---
+  duration_ms: 1.2106
+  ...
+# Subtest: regular watch two-key features only become active when effective
+ok 191 - regular watch two-key features only become active when effective
+  ---
+  duration_ms: 0.3796
+  ...
+# Subtest: regular watch runtime state does not rewrite .env.local
+ok 192 - regular watch runtime state does not rewrite .env.local
+  ---
+  duration_ms: 3.5469
+  ...
+# Subtest: regular watch status refresh and reset stay safe
+ok 193 - regular watch status refresh and reset stay safe
+  ---
+  duration_ms: 4.8792
+  ...
+# Subtest: regular watch score stays deterministic for a basic market confirmation context
+ok 194 - regular watch score stays deterministic for a basic market confirmation context
+  ---
+  duration_ms: 2.0628
+  ...
+# Subtest: regular watch source runtime keeps two-key scanner ranking off until effective
+ok 195 - regular watch source runtime keeps two-key scanner ranking off until effective
+  ---
+  duration_ms: 1.5713
+  ...
+# Subtest: risk-budget sizing accepts fractional quantity when stop and broker state are valid
+ok 196 - risk-budget sizing accepts fractional quantity when stop and broker state are valid
+  ---
+  duration_ms: 1.8016
+  ...
+# Subtest: risk-budget sizing rejects missing price or stop
+ok 197 - risk-budget sizing rejects missing price or stop
+  ---
+  duration_ms: 1.2269
+  ...
+# Subtest: risk-budget sizing rejects too-small and too-large stop distance
+ok 198 - risk-budget sizing rejects too-small and too-large stop distance
+  ---
+  duration_ms: 0.2434
+  ...
+# Subtest: risk-budget sizing requires broker equity and buying power when strict
+ok 199 - risk-budget sizing requires broker equity and buying power when strict
+  ---
+  duration_ms: 0.188
+  ...
+# Subtest: risk-budget sizing rejects below-minimum notional and zero whole-share quantity
+ok 200 - risk-budget sizing rejects below-minimum notional and zero whole-share quantity
+  ---
+  duration_ms: 0.2646
+  ...
+# Subtest: risk-budget sizing caps by buying power, max notional, and max quantity
+ok 201 - risk-budget sizing caps by buying power, max notional, and max quantity
+  ---
+  duration_ms: 0.3474
+  ...
+# Subtest: risk gate max-open-position cap blocks buys only
+ok 202 - risk gate max-open-position cap blocks buys only
+  ---
+  duration_ms: 4.296
+  ...
+# Subtest: risk gate blocks duplicate symbol buys from live portfolio context
+ok 203 - risk gate blocks duplicate symbol buys from live portfolio context
+  ---
+  duration_ms: 0.466
+  ...
+# Subtest: risk gate blocks duplicate open buy orders from live portfolio context
+ok 204 - risk gate blocks duplicate open buy orders from live portfolio context
+  ---
+  duration_ms: 0.3519
+  ...
+# Subtest: risk gate allows scale-in buys to pass through same-symbol holdings and open orders
+ok 205 - risk gate allows scale-in buys to pass through same-symbol holdings and open orders
+  ---
+  duration_ms: 0.3088
+  ...
+# Subtest: risk gate respects a widened live-market spread ceiling
+ok 206 - risk gate respects a widened live-market spread ceiling
+  ---
+  duration_ms: 0.4915
+  ...
+# Subtest: risk gate allows explicit single-source momentum override for stock buys
+ok 207 - risk gate allows explicit single-source momentum override for stock buys
+  ---
+  duration_ms: 0.2936
+  ...
+# Subtest: risk gate does not emit volatility warnings when the threshold is removed
+ok 208 - risk gate does not emit volatility warnings when the threshold is removed
+  ---
+  duration_ms: 1.0717
+  ...
+# Subtest: risk gate allows scanner exit sells to bypass entry-only confirmation and reward-risk math
+ok 209 - risk gate allows scanner exit sells to bypass entry-only confirmation and reward-risk math
+  ---
+  duration_ms: 0.6671
+  ...
+# Subtest: risk gate allows scanner exit sells to bypass entry-only volume and liquidity checks
+ok 210 - risk gate allows scanner exit sells to bypass entry-only volume and liquidity checks
+  ---
+  duration_ms: 0.7197
+  ...
+# Subtest: selection v2 positive momentum outranks equal negative collapse for continuation
+ok 211 - selection v2 positive momentum outranks equal negative collapse for continuation
+  ---
+  duration_ms: 3.1978
+  ...
+# Subtest: selection v2 reversal requires stabilization
+ok 212 - selection v2 reversal requires stabilization
+  ---
+  duration_ms: 0.5359
+  ...
+# Subtest: selection v2 relative volume beats raw high volume without unusual activity
+ok 213 - selection v2 relative volume beats raw high volume without unusual activity
+  ---
+  duration_ms: 0.513
+  ...
+# Subtest: selection v2 stale watch data and priority override are bounded
+ok 214 - selection v2 stale watch data and priority override are bounded
+  ---
+  duration_ms: 0.194
+  ...
+# Subtest: selection v2 flags wide spread, failed breakout, and overextension
+ok 215 - selection v2 flags wide spread, failed breakout, and overextension
+  ---
+  duration_ms: 1.0919
+  ...
+# Subtest: shadow outcome tracker records candidates without order side effects
+ok 216 - shadow outcome tracker records candidates without order side effects
+  ---
+  duration_ms: 2.9257
+  ...
+# Subtest: decision recorder preserves old and v2 candidate leaderboards
+ok 217 - decision recorder preserves old and v2 candidate leaderboards
+  ---
+  duration_ms: 16.2385
+  ...
+# Subtest: decision recorder excludes unqualified v2 candidates from qualified leaderboard
+ok 218 - decision recorder excludes unqualified v2 candidates from qualified leaderboard
+  ---
+  duration_ms: 1.561
+  ...
+# Subtest: decision recorder returns null qualified leaderboard when no v2 candidate qualifies
+ok 219 - decision recorder returns null qualified leaderboard when no v2 candidate qualifies
+  ---
+  duration_ms: 1.374
+  ...
+# Subtest: selection validation summarizes recorded decision data
+ok 220 - selection validation summarizes recorded decision data
+  ---
+  duration_ms: 3.1435
+  ...
+# Subtest: selection v2 missing volume baseline does not fabricate neutral relative volume
+ok 221 - selection v2 missing volume baseline does not fabricate neutral relative volume
+  ---
+  duration_ms: 0.4036
+  ...
+# Subtest: selection v2 labels previous-day volume as time-adjusted approximation
+ok 222 - selection v2 labels previous-day volume as time-adjusted approximation
+  ---
+  duration_ms: 0.474
+  ...
+# Subtest: selection v2 exposes momentum heuristic instead of measured acceleration
+ok 223 - selection v2 exposes momentum heuristic instead of measured acceleration
+  ---
+  duration_ms: 0.4713
+  ...
+# Subtest: outcome updater writes separate idempotent records and preserves decisions
+ok 224 - outcome updater writes separate idempotent records and preserves decisions
+  ---
+  duration_ms: 14.0865
+  ...
+# Subtest: outcome updater populates all windows once they are reachable
+ok 225 - outcome updater populates all windows once they are reachable
+  ---
+  duration_ms: 4.2929
+  ...
+# Subtest: outcome updater keeps unreached windows pending and unpersisted
+ok 226 - outcome updater keeps unreached windows pending and unpersisted
+  ---
+  duration_ms: 1.8466
+  ...
+# Subtest: outcome updater records market-closed windows as unavailable
+ok 227 - outcome updater records market-closed windows as unavailable
+  ---
+  duration_ms: 4.6789
+  ...
+# Subtest: outcome updater does not use a pre-decision bar for a future window
+ok 228 - outcome updater does not use a pre-decision bar for a future window
+  ---
+  duration_ms: 2.8163
+  ...
+# Subtest: outcome updater reports same-bar stop and target as ambiguous
+ok 229 - outcome updater reports same-bar stop and target as ambiguous
+  ---
+  duration_ms: 2.6125
+  ...
+# Subtest: selection validation calculates regret from completed outcome windows
+ok 230 - selection validation calculates regret from completed outcome windows
+  ---
+  duration_ms: 4.468
+  ...
+# {"status":"listening","port":50531,"mode":"paper","alpaca_execution_enabled":false,"meme_monitor":"disabled","meme_feature_state_source":"env + runtime state","meme_blocked_features":[],"performance_history_path":"C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\server-port-fallback-sre2eU\\\\history.jsonl","policy_path":"C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\server-port-fallback-sre2eU\\\\policy.json","policy_history_path":"C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\server-port-fallback-sre2eU\\\\policy-history.jsonl","timestamp":"2026-07-09T21:59:13.746Z"}
+# Subtest: server cli falls back to the next free port when the preferred port is occupied
+ok 231 - server cli falls back to the next free port when the preferred port is occupied
+  ---
+  duration_ms: 15.734
+  ...
+# Subtest: session guards block buys but keep sells allowed
+ok 232 - session guards block buys but keep sells allowed
+  ---
+  duration_ms: 3.4221
+  ...
+# Subtest: session guard summary keeps the display shape compact
+ok 233 - session guard summary keeps the display shape compact
+  ---
+  duration_ms: 0.3541
+  ...
+# Subtest: setup fatigue key resolution is deterministic
+ok 234 - setup fatigue key resolution is deterministic
+  ---
+  duration_ms: 1.4505
+  ...
+# Subtest: setup fatigue ignores completed fill metadata as a partial-fill failure
+ok 235 - setup fatigue ignores completed fill metadata as a partial-fill failure
+  ---
+  duration_ms: 3.4961
+  ...
+# Subtest: setup fatigue ignores buy fills that are not exits
+ok 236 - setup fatigue ignores buy fills that are not exits
+  ---
+  duration_ms: 0.27
+  ...
+# Subtest: setup fatigue increases after repeated losses and stopouts
+ok 237 - setup fatigue increases after repeated losses and stopouts
+  ---
+  duration_ms: 0.7926
+  ...
+# Subtest: repeated stopouts sharpen the pause window
+ok 238 - repeated stopouts sharpen the pause window
+  ---
+  duration_ms: 1.0587
+  ...
+# Subtest: wins reduce setup fatigue
+ok 239 - wins reduce setup fatigue
+  ---
+  duration_ms: 2.0325
+  ...
+# Subtest: expired pause unblocks the setup
+ok 240 - expired pause unblocks the setup
+  ---
+  duration_ms: 0.3801
+  ...
+# Subtest: setup fatigue summary exposes paused setups and counts
+ok 241 - setup fatigue summary exposes paused setups and counts
+  ---
+  duration_ms: 1.291
+  ...
+# Subtest: shadow-only meme sources stay visible but do not enter scanner influence paths
+ok 242 - shadow-only meme sources stay visible but do not enter scanner influence paths
+  ---
+  duration_ms: 10.4568
+  ...
+# Subtest: shadow-only regular watch and hot-slot rotation flags remain ineffective without config allowment
+ok 243 - shadow-only regular watch and hot-slot rotation flags remain ineffective without config allowment
+  ---
+  duration_ms: 1.2422
+  ...
+# Subtest: shadow-only auto action stays locked
+ok 244 - shadow-only auto action stays locked
+  ---
+  duration_ms: 1.1332
+  ...
+# Subtest: source url redaction hides keys and tokens
+ok 245 - source url redaction hides keys and tokens
+  ---
+  duration_ms: 2.2725
+  ...
+# Subtest: source message redaction hides embedded credentials
+ok 246 - source message redaction hides embedded credentials
+  ---
+  duration_ms: 0.6334
+  ...
+# Subtest: source cache stores and reuses successful json payloads
+ok 247 - source cache stores and reuses successful json payloads
+  ---
+  duration_ms: 5.7815
+  ...
+# Subtest: source fetch timeout wrapper does not pass cache metadata to fetch
+ok 248 - source fetch timeout wrapper does not pass cache metadata to fetch
+  ---
+  duration_ms: 2.3554
+  ...
+# Subtest: stale cache reports stale metadata
+ok 249 - stale cache reports stale metadata
+  ---
+  duration_ms: 2.3346
+  ...
+# Subtest: source status builder preserves cache metadata
+ok 250 - source status builder preserves cache metadata
+  ---
+  duration_ms: 0.4
+  ...
+# Subtest: source status classifier maps auth and access failures
+ok 251 - source status classifier maps auth and access failures
+  ---
+  duration_ms: 0.4642
+  ...
+# Subtest: stocktwits and polygon sources degrade safely on missing credentials and rate limits
+ok 252 - stocktwits and polygon sources degrade safely on missing credentials and rate limits
+  ---
+  duration_ms: 1003.1358
+  ...
+# Subtest: stock scanner includes dynamic watchlist symbols only when the feature is effective
+ok 253 - stock scanner includes dynamic watchlist symbols only when the feature is effective
+  ---
+  duration_ms: 8.5789
+  ...
+# Subtest: stock scanner launcher maps live policy exit rules into scanner options
+ok 254 - stock scanner launcher maps live policy exit rules into scanner options
+  ---
+  duration_ms: 2.018
+  ...
+# Subtest: stock scanner launcher enforces live entry momentum floors over weak env defaults
+ok 255 - stock scanner launcher enforces live entry momentum floors over weak env defaults
+  ---
+  duration_ms: 0.4674
+  ...
+# Subtest: stock scanner launcher enables stale and stalled winner exits in live mode
+ok 256 - stock scanner launcher enables stale and stalled winner exits in live mode
+  ---
+  duration_ms: 0.7941
+  ...
+# Subtest: stock scanner launcher preserves env-driven multi-source confirmation behavior
+ok 257 - stock scanner launcher preserves env-driven multi-source confirmation behavior
+  ---
+  duration_ms: 3.9817
+  ...
+# Subtest: stock scanner launcher keeps total-position loss capped for live trading
+ok 258 - stock scanner launcher keeps total-position loss capped for live trading
+  ---
+  duration_ms: 0.2152
+  ...
+# Subtest: policy exit override builder safely handles a missing policy file
+ok 259 - policy exit override builder safely handles a missing policy file
+  ---
+  duration_ms: 0.1281
+  ...
+# Subtest: stock scanner keeps regular watch ranking isolated from meme watch features
+ok 260 - stock scanner keeps regular watch ranking isolated from meme watch features
+  ---
+  duration_ms: 4.174
+  ...
+# Subtest: stock scanner builds real buy candidates from fresh bullish Alpaca data
+ok 261 - stock scanner builds real buy candidates from fresh bullish Alpaca data
+  ---
+  duration_ms: 7.0456
+  ...
+# Subtest: stock scanner rejects stale market data before ranking a buy candidate
+ok 262 - stock scanner rejects stale market data before ranking a buy candidate
+  ---
+  duration_ms: 0.2763
+  ...
+# Subtest: stock scanner requires fresh upward pressure when recent momentum gate is enabled
+ok 263 - stock scanner requires fresh upward pressure when recent momentum gate is enabled
+  ---
+  duration_ms: 0.677
+  ...
+# Subtest: live scanner defaults tighten the entry feed around real momentum
+ok 264 - live scanner defaults tighten the entry feed around real momentum
+  ---
+  duration_ms: 1.0404
+  ...
+# Subtest: stock scanner can allow high-score single-source momentum buys when explicitly enabled
+ok 265 - stock scanner can allow high-score single-source momentum buys when explicitly enabled
+  ---
+  duration_ms: 0.7468
+  ...
+# Subtest: stock scanner still builds candidates when the move is tiny and the spread is wide
+ok 266 - stock scanner still builds candidates when the move is tiny and the spread is wide
+  ---
+  duration_ms: 0.6168
+  ...
+# Subtest: stock scanner allows fractional stock buys when the budget is below one share
+ok 267 - stock scanner allows fractional stock buys when the budget is below one share
+  ---
+  duration_ms: 0.8105
+  ...
+# Subtest: stock scanner keeps fixed-notional sizing details when risk-budget sizing is disabled
+ok 268 - stock scanner keeps fixed-notional sizing details when risk-budget sizing is disabled
+  ---
+  duration_ms: 0.5124
+  ...
+# Subtest: stock scanner writes risk-budget sizing and structure stop details when enabled
+ok 269 - stock scanner writes risk-budget sizing and structure stop details when enabled
+  ---
+  duration_ms: 1.5899
+  ...
+# Subtest: stock scanner writes buying-power sizing when selected explicitly
+ok 270 - stock scanner writes buying-power sizing when selected explicitly
+  ---
+  duration_ms: 1.1174
+  ...
+# Subtest: stock scanner applies a 20 point rank penalty to a recent sell symbol
+ok 271 - stock scanner applies a 20 point rank penalty to a recent sell symbol
+  ---
+  duration_ms: 1.1128
+  ...
+# Subtest: stock scanner applies execution quality penalties to buy candidates and leaves sells alone
+ok 272 - stock scanner applies execution quality penalties to buy candidates and leaves sells alone
+  ---
+  duration_ms: 2.4171
+  ...
+# Subtest: stock scanner compounds recent sell timers and ignores buys
+ok 273 - stock scanner compounds recent sell timers and ignores buys
+  ---
+  duration_ms: 1.6219
+  ...
+# Subtest: stock scanner lets stacked sell timers decay as older timers expire
+ok 274 - stock scanner lets stacked sell timers decay as older timers expire
+  ---
+  duration_ms: 0.3685
+  ...
+# Subtest: stock scanner stacks losing sell penalty with the normal recent sell timer
+ok 275 - stock scanner stacks losing sell penalty with the normal recent sell timer
+  ---
+  duration_ms: 0.3691
+  ...
+# Subtest: stock scanner adds a stale-exit penalty on top of the normal recent sell timer
+ok 276 - stock scanner adds a stale-exit penalty on top of the normal recent sell timer
+  ---
+  duration_ms: 0.4056
+  ...
+# Subtest: stock scanner blocks buys for fatigued setups but still allows sells
+ok 277 - stock scanner blocks buys for fatigued setups but still allows sells
+  ---
+  duration_ms: 0.796
+  ...
+# Subtest: stock scanner temporarily skips buys after clustered stop exits in the same symbol
+ok 278 - stock scanner temporarily skips buys after clustered stop exits in the same symbol
+  ---
+  duration_ms: 0.5945
+  ...
+# Subtest: stock scanner keeps a symbol eligible with only one recent stop exit
+ok 279 - stock scanner keeps a symbol eligible with only one recent stop exit
+  ---
+  duration_ms: 0.6679
+  ...
+# Subtest: stock scanner skips buy candidates above the scanner risk limit before posting
+ok 280 - stock scanner skips buy candidates above the scanner risk limit before posting
+  ---
+  duration_ms: 0.5132
+  ...
+# Subtest: stock scanner skips excluded buy symbols without affecting exit handling
+ok 281 - stock scanner skips excluded buy symbols without affecting exit handling
+  ---
+  duration_ms: 0.4664
+  ...
+# Subtest: stock scanner applies capped spread rank pressure without hard-blocking buys
+ok 282 - stock scanner applies capped spread rank pressure without hard-blocking buys
+  ---
+  duration_ms: 0.7695
+  ...
+# Subtest: stock scanner defaults to simplified live-market rules
+ok 283 - stock scanner defaults to simplified live-market rules
+  ---
+  duration_ms: 2.0816
+  ...
+# Subtest: stock scanner posts candidates to the local paper order endpoint
+ok 284 - stock scanner posts candidates to the local paper order endpoint
+  ---
+  duration_ms: 122.6681
+  ...
+# Subtest: stock scanner honors the configured approved rotation without fallback expansion
+ok 285 - stock scanner honors the configured approved rotation without fallback expansion
+  ---
+  duration_ms: 0.4327
+  ...
+# Subtest: stock scanner creates a full-position sell at the dollar stop
+ok 286 - stock scanner creates a full-position sell at the dollar stop
+  ---
+  duration_ms: 0.5472
+  ...
+# Subtest: stock scanner widens the hard stop by position notional with a cap
+not ok 287 - stock scanner widens the hard stop by position notional with a cap
+  ---
+  duration_ms: 1.6255
+  location: 'D:\\a\\workflow-2\\workflow-2\\test\\stock-scanner.test.js:958:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    1.95 !== 2
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 2
+  actual: 1.95
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (D:\a\workflow-2\workflow-2\test\stock-scanner.test.js:971:10)
+    Test.runInAsyncScope (node:async_hooks:206:9)
+    Test.run (node:internal/test_runner/test:796:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:526:18)
+    Test.postRun (node:internal/test_runner/test:889:19)
+    Test.run (node:internal/test_runner/test:835:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+# Subtest: stock scanner run applies the widened hard stop to live positions
+ok 288 - stock scanner run applies the widened hard stop to live positions
+  ---
+  duration_ms: 7.935
+  ...
+# Subtest: stock scanner run passes the sell profit floor into exit evaluation
+ok 289 - stock scanner run passes the sell profit floor into exit evaluation
+  ---
+  duration_ms: 5.9472
+  ...
+# Subtest: stock scanner trails winners after peak profit and sell on giveback
+ok 290 - stock scanner trails winners after peak profit and sell on giveback
+  ---
+  duration_ms: 0.9542
+  ...
+# Subtest: stock scanner exits stale positions that never become runners
+ok 291 - stock scanner exits stale positions that never become runners
+  ---
+  duration_ms: 0.4552
+  ...
+# Subtest: stock scanner recycles minor green positions that never arm trailing protection
+ok 292 - stock scanner recycles minor green positions that never arm trailing protection
+  ---
+  duration_ms: 2.5266
+  ...
+# Subtest: stock scanner exits stalled protected winners so capital can recycle
+ok 293 - stock scanner exits stalled protected winners so capital can recycle
+  ---
+  duration_ms: 0.7102
+  ...
+# Subtest: stock scanner does not harvest trailing wins below the net profit floor
+ok 294 - stock scanner does not harvest trailing wins below the net profit floor
+  ---
+  duration_ms: 0.4109
+  ...
+# Subtest: stock scanner does not apply recent-symbol rank penalties to sell exits
+ok 295 - stock scanner does not apply recent-symbol rank penalties to sell exits
+  ---
+  duration_ms: 0.3215
+  ...
+# Subtest: stock scanner rotates away from a recently traded symbol when another rank stays stronger
+ok 296 - stock scanner rotates away from a recently traded symbol when another rank stays stronger
+  ---
+  duration_ms: 5.9901
+  ...
+# Subtest: stock scanner rotates away from a recent losing exit when another rank is close
+ok 297 - stock scanner rotates away from a recent losing exit when another rank is close
+  ---
+  duration_ms: 6.2638
+  ...
+# Subtest: stock scanner rotates away from stacked recent sells when another rank is close
+ok 298 - stock scanner rotates away from stacked recent sells when another rank is close
+  ---
+  duration_ms: 4.6005
+  ...
+# Subtest: stock scanner keeps a recent winner eligible when it remains the strongest rank
+ok 299 - stock scanner keeps a recent winner eligible when it remains the strongest rank
+  ---
+  duration_ms: 5.2127
+  ...
+# Subtest: stock scanner blocks buy churn but still allows sell exits
+ok 300 - stock scanner blocks buy churn but still allows sell exits
+  ---
+  duration_ms: 0.4674
+  ...
+# Subtest: stock scanner runtime snapshot includes anti-churn details
+ok 301 - stock scanner runtime snapshot includes anti-churn details
+  ---
+  duration_ms: 8.1162
+  ...
+# Subtest: stock scanner runtime snapshot includes candidate lifecycle details when enabled
+ok 302 - stock scanner runtime snapshot includes candidate lifecycle details when enabled
+  ---
+  duration_ms: 14.2099
+  ...
+# Subtest: stock scanner batches large stock universes into multiple market-data requests
+ok 303 - stock scanner batches large stock universes into multiple market-data requests
+  ---
+  duration_ms: 6.2002
+  ...
+# Subtest: stock scanner skips buy candidates when buys are blocked
+ok 304 - stock scanner skips buy candidates when buys are blocked
+  ---
+  duration_ms: 7.474
+  ...
+# Subtest: stock scanner blocks stock buys while the US market is closed
+ok 305 - stock scanner blocks stock buys while the US market is closed
+  ---
+  duration_ms: 6.9515
+  ...
+# Subtest: stock scanner writes an off-hours preview without submitting orders
+ok 306 - stock scanner writes an off-hours preview without submitting orders
+  ---
+  duration_ms: 12.6094
+  ...
+# Subtest: stock scanner keeps market-open behavior unchanged
+ok 307 - stock scanner keeps market-open behavior unchanged
+  ---
+  duration_ms: 11.7204
+  ...
+# Subtest: stock scanner counts all live Alpaca positions against the max-position cap
+ok 308 - stock scanner counts all live Alpaca positions against the max-position cap
+  ---
+  duration_ms: 4.9905
+  ...
+# Subtest: stock scanner ignores dynamic watchlist symbols when the feature is disabled
+ok 309 - stock scanner ignores dynamic watchlist symbols when the feature is disabled
+  ---
+  duration_ms: 22.79
+  ...
+# Subtest: stock scanner includes fresh dynamic watchlist symbols and keeps expired symbols out
+ok 310 - stock scanner includes fresh dynamic watchlist symbols and keeps expired symbols out
+  ---
+  duration_ms: 17.6956
+  ...
+# Subtest: resolveScannerWatchConfig selects approved, dynamic, and hybrid scanner source modes
+ok 311 - resolveScannerWatchConfig selects approved, dynamic, and hybrid scanner source modes
+  ---
+  duration_ms: 4.2391
+  ...
+# Subtest: stock scanner uses the dynamic source universe and records source metadata
+ok 312 - stock scanner uses the dynamic source universe and records source metadata
+  ---
+  duration_ms: 15.1173
+  ...
+# Subtest: stock scanner reports an empty dynamic source without falling back to the approved list
+ok 313 - stock scanner reports an empty dynamic source without falling back to the approved list
+  ---
+  duration_ms: 13.0484
+  ...
+# Subtest: stock scanner moves hot-hot candidates ahead when priority override is enabled but still obeys full-account blocks
+ok 314 - stock scanner moves hot-hot candidates ahead when priority override is enabled but still obeys full-account blocks
+  ---
+  duration_ms: 32.0217
+  ...
+# Subtest: stock scanner keeps regular watch ranking off by default and only boosts approved symbols when enabled
+ok 315 - stock scanner keeps regular watch ranking off by default and only boosts approved symbols when enabled
+  ---
+  duration_ms: 37.9553
+  ...
+# Subtest: stock scanner passes buying-power sizing mode through the full scanner path
+ok 316 - stock scanner passes buying-power sizing mode through the full scanner path
+  ---
+  duration_ms: 16.0709
+  ...
+# Subtest: stock scanner reports occupied slot as the no-buy reason even when candidates exist
+ok 317 - stock scanner reports occupied slot as the no-buy reason even when candidates exist
+  ---
+  duration_ms: 12.0277
+  ...
+# Subtest: position stop loss is capped in total dollars instead of multiplying by share count
+not ok 318 - position stop loss is capped in total dollars instead of multiplying by share count
+  ---
+  duration_ms: 0.3556
+  location: 'D:\\a\\workflow-2\\workflow-2\\test\\stock-scanner.test.js:3071:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    1.125 !== 1.13
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1.13
+  actual: 1.125
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (D:\a\workflow-2\workflow-2\test\stock-scanner.test.js:3087:10)
+    Test.runInAsyncScope (node:async_hooks:206:9)
+    Test.run (node:internal/test_runner/test:796:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:526:18)
+    Test.postRun (node:internal/test_runner/test:889:19)
+    Test.run (node:internal/test_runner/test:835:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+# Subtest: structure-aware stops select a valid swing low before fallback
+ok 319 - structure-aware stops select a valid swing low before fallback
+  ---
+  duration_ms: 1.9063
+  ...
+# Subtest: structure-aware stops reject swing lows that are too close or too far and use fallback
+ok 320 - structure-aware stops reject swing lows that are too close or too far and use fallback
+  ---
+  duration_ms: 0.3199
+  ...
+# Subtest: structure-aware stops use safe fallback when structure data is unavailable
+ok 321 - structure-aware stops use safe fallback when structure data is unavailable
+  ---
+  duration_ms: 0.311
+  ...
+# Subtest: structure-aware stops use price-relative distance for very low-priced symbols
+ok 322 - structure-aware stops use price-relative distance for very low-priced symbols
+  ---
+  duration_ms: 0.2692
+  ...
+# Subtest: US market holiday helper blocks a known 2026 holiday
+ok 323 - US market holiday helper blocks a known 2026 holiday
+  ---
+  duration_ms: 21.6727
+  ...
+# Subtest: US market holiday helper blocks an observed holiday
+ok 324 - US market holiday helper blocks an observed holiday
+  ---
+  duration_ms: 0.4676
+  ...
+1..324
+# tests 324
+# suites 0
+# pass 322
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 21972.5978
