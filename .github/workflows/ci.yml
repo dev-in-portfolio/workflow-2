@@ -41,6 +41,7 @@ jobs:
             exit $LASTEXITCODE
           }
           Remove-Item patch-error.txt -ErrorAction SilentlyContinue
+          Remove-Item test-error.txt -ErrorAction SilentlyContinue
           Remove-Item patch-output.txt -ErrorAction SilentlyContinue
 
       - name: Publish repair diagnostics
@@ -64,11 +65,35 @@ jobs:
         run: npm install
 
       - name: Test
+        id: test_suite
         if: steps.strategy_patch.outcome != 'failure'
-        run: npm run ci
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm run ci *> test-output.txt
+          Copy-Item test-output.txt "$env:RUNNER_TEMP/test-output.txt"
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content test-output.txt
+            exit $LASTEXITCODE
+          }
+          Remove-Item test-output.txt -ErrorAction SilentlyContinue
+
+      - name: Publish test diagnostics
+        if: steps.test_suite.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        run: |
+          git fetch origin "${{ github.head_ref }}" --depth=1
+          git switch -C "${{ github.head_ref }}" "origin/${{ github.head_ref }}"
+          cp "$RUNNER_TEMP/test-output.txt" test-error.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add test-error.txt
+          git commit -m "Record strategy repair test diagnostic" || true
+          git push origin HEAD:${{ github.head_ref }}
+          exit 1
 
       - name: Commit repaired implementation
-        if: steps.strategy_patch.outcome != 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.strategy_patch.outcome != 'failure' && steps.test_suite.outcome != 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
         run: |
           if git diff --quiet && git diff --cached --quiet; then
