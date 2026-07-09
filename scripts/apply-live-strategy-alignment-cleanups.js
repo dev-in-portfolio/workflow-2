@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
+// This one-time cleanup keeps the expanded CI suite deterministic on Windows.
 const root = path.resolve(__dirname, '..');
 
 function read(relativePath) {
