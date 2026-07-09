@@ -68,11 +68,26 @@ stopTestBlock = stopTestBlock.replace(
   /(positionMarketValue:\s*192\.5,[\s\S]{0,160}?positionQuantity:\s*25,[\s\S]{0,40}?\}\),)\s*6\.25\);/g,
   '$1 1.4437);',
 );
+stopTestBlock = stopTestBlock
+  .replace('  assert.equal(breach.exitState.stop_loss_dollars, 2);', '  assert.equal(breach.exitState.stop_loss_dollars, 1.95);')
+  .replace('  assert.equal(breach.exitState.stop_loss_per_share, 1);', '  assert.equal(breach.exitState.stop_loss_per_share, 0.975);')
+  .replace('  assert.equal(breach.exitState.hard_stop_price, 79.75);', '  assert.equal(breach.exitState.hard_stop_price, 79.775);')
+  .replace('  assert.equal(breach.exitState.distance_to_stop_dollars, -0.05);', '  assert.equal(breach.exitState.distance_to_stop_dollars, -0.1);');
 if (/positionQuantity:\s*2,[\s\S]{0,40}?\}\),\s*2\);/.test(stopTestBlock)) {
   throw new Error('Per-share two-share stop expectation remains after migration');
 }
 if (/positionQuantity:\s*25,[\s\S]{0,40}?\}\),\s*6\.25\);/.test(stopTestBlock)) {
   throw new Error('Per-share 25-share stop expectation remains after migration');
+}
+for (const staleExpectation of [
+  'assert.equal(breach.exitState.stop_loss_dollars, 2);',
+  'assert.equal(breach.exitState.stop_loss_per_share, 1);',
+  'assert.equal(breach.exitState.hard_stop_price, 79.75);',
+  'assert.equal(breach.exitState.distance_to_stop_dollars, -0.05);',
+]) {
+  if (stopTestBlock.includes(staleExpectation)) {
+    throw new Error(`Stale exit-state stop expectation remains: ${staleExpectation}`);
+  }
 }
 scannerTests = `${scannerTests.slice(0, stopTestStart)}${stopTestBlock}${scannerTests.slice(stopTestEnd)}`;
 scannerTests = scannerTests.replace(
