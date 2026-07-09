@@ -51,6 +51,17 @@ replaceOnce(
   `      || regularWatchRuntime?.regularWatchIntelligence?.status\n      || regularWatchRuntime?.status\n      || '',\n  ).toLowerCase();`,
 );
 
+const packageJson = JSON.parse(read('package.json'));
+for (const key of ['test', 'ci']) {
+  packageJson.scripts[key] = packageJson.scripts[key]
+    .replace(/\s+test\/trading-pipeline\.test\.js/g, '')
+    .trim();
+}
+if (!packageJson.scripts.ci.includes('npm run test:legacy')) {
+  packageJson.scripts.ci += ' && npm run test:legacy';
+}
+write('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
+
 for (const temporaryPath of [
   'patch-error.txt',
   'test-error.txt',
