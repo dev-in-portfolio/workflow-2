@@ -18,6 +18,12 @@ jobs:
           fetch-depth: 1
           show-progress: false
 
+      - name: Normalize checkout line endings
+        shell: bash
+        run: |
+          git config core.autocrlf false
+          git reset --hard HEAD
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -34,6 +40,8 @@ jobs:
             Get-Content patch-output.txt
             exit $LASTEXITCODE
           }
+          Remove-Item patch-error.txt -ErrorAction SilentlyContinue
+          Remove-Item patch-output.txt -ErrorAction SilentlyContinue
 
       - name: Publish repair diagnostics
         if: steps.strategy_patch.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
@@ -41,6 +49,8 @@ jobs:
         run: |
           git fetch origin "${{ github.head_ref }}" --depth=1
           git switch -C "${{ github.head_ref }}" "origin/${{ github.head_ref }}"
+          git config core.autocrlf false
+          git reset --hard HEAD
           node scripts/apply-live-strategy-alignment.js > patch-error.txt 2>&1 || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
