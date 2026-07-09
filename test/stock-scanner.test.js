@@ -145,6 +145,7 @@ test('live scanner defaults tighten the entry feed around real momentum', () => 
   });
 
   assert.equal(liveConfig.requireRecentMomentum, true);
+  assert.equal(liveConfig.allowContrarianEntries, false);
   assert.equal(liveConfig.minMovePct, 0.25);
   assert.equal(liveConfig.minRecentMovePct, 0.15);
   assert.equal(liveConfig.minRecentRangePct, 0.15);
@@ -973,14 +974,14 @@ test('stock scanner widens the hard stop by position notional with a cap', () =>
     stopLossMaxDollars: 2.5,
     positionMarketValue: 260,
     positionQuantity: 2,
-  }), 2);
+  }), 1.95);
   assert.equal(calculateEffectiveStopLossDollars({
     baseStopLossDollars: 0.25,
     stopLossNotionalPct: 0.75,
     stopLossMaxDollars: 2.5,
     positionMarketValue: 192.5,
     positionQuantity: 25,
-  }), 6.25);
+  }), 1.4437);
 
   const normalWiggle = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
@@ -1009,11 +1010,11 @@ test('stock scanner widens the hard stop by position notional with a cap', () =>
   assert(breach);
   assert.equal(breach.payload.side, 'sell');
   assert.equal(breach.exitState.exit_reason, 'STOP_LOSS_DOLLARS');
-  assert.equal(breach.exitState.stop_loss_dollars, 2);
-  assert.equal(breach.exitState.stop_loss_per_share, 1);
-  assert.equal(breach.exitState.hard_stop_price, 79.75);
+  assert.equal(breach.exitState.stop_loss_dollars, 1.95);
+  assert.equal(breach.exitState.stop_loss_per_share, 0.975);
+  assert.equal(breach.exitState.hard_stop_price, 79.775);
   assert.equal(breach.exitState.base_stop_loss_dollars, 1);
-  assert.equal(breach.exitState.distance_to_stop_dollars, -0.05);
+  assert.equal(breach.exitState.distance_to_stop_dollars, -0.1);
 });
 
 test('stock scanner run applies the widened hard stop to live positions', async () => {
@@ -3066,3 +3067,23 @@ function buildResponse(payload) {
     },
   };
 }
+
+test('position stop loss is capped in total dollars instead of multiplying by share count', () => {
+  const oneShare = calculateEffectiveStopLossDollars({
+    baseStopLossDollars: 0.75,
+    stopLossNotionalPct: 0.75,
+    stopLossMaxDollars: 1.5,
+    positionMarketValue: 150,
+    positionQuantity: 1,
+  });
+  const thirtyShares = calculateEffectiveStopLossDollars({
+    baseStopLossDollars: 0.75,
+    stopLossNotionalPct: 0.75,
+    stopLossMaxDollars: 1.5,
+    positionMarketValue: 150,
+    positionQuantity: 30,
+  });
+
+  assert.equal(oneShare, 1.125);
+  assert.equal(thirtyShares, 1.125);
+});

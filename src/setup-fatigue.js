@@ -445,7 +445,7 @@ function isExitOutcome(outcome = {}) {
       || outcome.stop_exit
       || outcome.stopped_out
       || outcome.trailing_exit
-      || outcome.trailing_profit_exit
+      || outcome.trailing_profit_exit,
   );
 }
 

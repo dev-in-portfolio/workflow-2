@@ -2939,13 +2939,13 @@ function buildHomeHotListStatus(snapshot = {}) {
   const regularWatchEnabled = Boolean(
     regularWatch.enabled
       ?? regularWatchRuntime?.regularWatchIntelligence?.enabled
-      ?? regularWatchRuntime?.enabled
+      ?? regularWatchRuntime?.enabled,
   );
   const regularWatchStatus = String(
     regularWatch.status
       || regularWatchRuntime?.regularWatchIntelligence?.status
       || regularWatchRuntime?.status
-      || ''
+      || '',
   ).toLowerCase();
   const regularWatchCount = safeNumber(
     regularWatch.symbolsChecked

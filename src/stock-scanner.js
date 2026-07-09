@@ -166,7 +166,8 @@ function createStockScanner(options = {}) {
   const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? scannerConfig.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03));
   const minRecentRangePct = Math.max(0, safeNumber(options.minRecentRangePct ?? scannerConfig.minRecentRangePct ?? env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct : 0.05));
   const minRecentCloseLocationPct = Math.max(0, Math.min(100, safeNumber(options.minRecentCloseLocationPct ?? scannerConfig.minRecentCloseLocationPct ?? env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct : 60)));
-  const allowContrarianEntries = options.allowContrarianEntries ?? true;
+  const allowContrarianEntries = options.allowContrarianEntries
+    ?? parseBool(env.STOCK_SCANNER_ALLOW_CONTRARIAN_ENTRIES, !stricterLiveEntryDefaults);
   const blockBuys = options.blockBuys ?? parseBool(env.BLOCK_BUYS, false);
   const sellMaxPriceDiffPct = safeNumber(options.sellMaxPriceDiffPct ?? env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, 0.75);
   const recentTradePenaltyMinutes = Math.max(0, safeNumber(options.recentTradePenaltyMinutes ?? env.STOCK_SCANNER_RECENT_TRADE_PENALTY_MINUTES, 15));
@@ -755,7 +756,6 @@ function createStockScanner(options = {}) {
         maxStopDistanceDollars,
         allowRiskBudgetFractionalShares,
         riskBudgetRequireBrokerEquity,
-        maxStalenessSeconds,
         scannerSymbolSource: memeWatchConfig.scannerSymbolSource || scannerSymbolSource,
         sourceListsBySymbol: memeWatchConfig.sourceListsBySymbol || latestSourceListsBySymbol,
         candidateLifecycleEnabled,
@@ -2218,7 +2218,7 @@ function buildCandidates(bundle, options = {}) {
         regularWatchEntry,
         regularWatchRankingEnabled,
       });
-      const selectionV2 = options.scannerSelectionV2ShadowEnabled
+      const selectionV2 = (options.scannerSelectionV2ShadowEnabled || options.scannerSelectionV2AuthorityEnabled)
         ? buildSelectionV2Score({
           symbol,
           snapshot,
@@ -2245,8 +2245,8 @@ function buildCandidates(bundle, options = {}) {
       scannerContext.secondary_confirmation_source = secondaryConfirmationSource;
       scannerContext.regular_watch_comparison = regularWatchComparison;
       scannerContext.selection_v2 = selectionV2;
-      scannerContext.selection_v2_shadow_only = Boolean(selectionV2);
-      scannerContext.selection_v2_authoritative = false;
+      scannerContext.selection_v2_shadow_only = Boolean(selectionV2 && !options.scannerSelectionV2AuthorityEnabled);
+      scannerContext.selection_v2_authoritative = Boolean(selectionV2 && options.scannerSelectionV2AuthorityEnabled);
       candidate.dynamicWatchlistMember = isDynamicWatchSymbol;
       candidate.priorityOverrideEligible = isPriorityOverrideSymbol;
       candidate.priorityOverrideApplied = isPriorityOverrideApplied;
@@ -2266,6 +2266,13 @@ function buildCandidates(bundle, options = {}) {
         candidate.priorityOverrideSortScore = candidate.rankScore + priorityOverrideBonus;
         candidate.regularWatchSortScore = Math.max(candidate.regularWatchSortScore, candidate.priorityOverrideSortScore);
       }
+      if (candidate.payload.side === 'buy' && options.scannerSelectionV2AuthorityEnabled && !selectionV2?.qualified) {
+        options.skipTracker?.record?.(selectionV2?.reason_codes?.[0] || 'SELECTION_V2_NOT_QUALIFIED', {
+          symbol,
+          selection_v2: selectionV2 || null,
+        });
+        continue;
+      }
     }
     if (candidate?.payload?.side === 'sell') {
       sellEntries.push(candidate);
@@ -2273,13 +2280,20 @@ function buildCandidates(bundle, options = {}) {
       buyEntries.push(candidate);
     }
   }
+  const selectionV2Authoritative = Boolean(options.scannerSelectionV2AuthorityEnabled);
   buyEntries.sort((a, b) => {
-    const aScore = Number.isFinite(Number(a.regularWatchSortScore))
+    const aLegacyScore = Number.isFinite(Number(a.regularWatchSortScore))
       ? Number(a.regularWatchSortScore)
       : (Number.isFinite(Number(a.priorityOverrideSortScore)) ? Number(a.priorityOverrideSortScore) : Number(a.rankScore || 0));
-    const bScore = Number.isFinite(Number(b.regularWatchSortScore))
+    const bLegacyScore = Number.isFinite(Number(b.regularWatchSortScore))
       ? Number(b.regularWatchSortScore)
       : (Number.isFinite(Number(b.priorityOverrideSortScore)) ? Number(b.priorityOverrideSortScore) : Number(b.rankScore || 0));
+    const aScore = selectionV2Authoritative && Number.isFinite(Number(a.selectionV2SortScore))
+      ? Number(a.selectionV2SortScore)
+      : aLegacyScore;
+    const bScore = selectionV2Authoritative && Number.isFinite(Number(b.selectionV2SortScore))
+      ? Number(b.selectionV2SortScore)
+      : bLegacyScore;
     if (bScore !== aScore) return bScore - aScore;
     const rankDelta = Number(b.rankScore || 0) - Number(a.rankScore || 0);
     if (Math.abs(rankDelta) > 1e-9) return rankDelta;
@@ -3286,11 +3300,8 @@ function calculateEffectiveStopLossDollars({
   positionMarketValue = null,
   positionQuantity = null,
 } = {}) {
-  const base = Math.abs(safeNumber(baseStopLossDollars, 1));
-  const quantity = Math.abs(safeNumber(positionQuantity, NaN));
-  const quantityMultiplier = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
-  const basePositionStop = roundCurrency(base * quantityMultiplier);
-  const maxStop = Math.max(basePositionStop, Math.abs(safeNumber(stopLossMaxDollars, base)) * quantityMultiplier);
+  const basePositionStop = Math.abs(safeNumber(baseStopLossDollars, 1));
+  const maxStop = Math.max(basePositionStop, Math.abs(safeNumber(stopLossMaxDollars, basePositionStop)));
   const notionalPct = Math.max(0, safeNumber(stopLossNotionalPct, 0));
   const marketValue = Math.abs(safeNumber(positionMarketValue, NaN));
   const notionalStop = Number.isFinite(marketValue) && marketValue > 0 && notionalPct > 0
@@ -3539,7 +3550,8 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     return null;
   }
   const volumeScore = Math.log10(Math.max(10, safeNumber(snapshot.prevDailyBar?.v ?? snapshot.dailyBar?.v ?? 0, 0)));
-  const baseRankScore = Math.abs(movePct) * 10 + volumeScore - (spreadPct * 3);
+  const directionalMovePct = options.allowContrarianEntries === true ? Math.abs(movePct) : Math.max(0, movePct);
+  const baseRankScore = directionalMovePct * 10 + volumeScore - (spreadPct * 3);
   const recentPenalty = options.recentTradePenalty || null;
   const setupPenalty = options.setupPenalty || null;
   const setupFatigue = evaluateSetupFatigueCandidate({

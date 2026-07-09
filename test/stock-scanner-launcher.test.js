@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildLiveEntryOverrides, buildLiveExitOverrides, buildPolicyExitOverrides } = require('../scripts/start-stock-scanner');
+const { buildLiveEntryOverrides, buildLiveRiskOverrides, buildLiveExitOverrides, buildPolicyExitOverrides } = require('../scripts/start-stock-scanner');
 
 test('stock scanner launcher maps live policy exit rules into scanner options', () => {
   const overrides = buildPolicyExitOverrides({
@@ -40,6 +40,10 @@ test('stock scanner launcher enforces live entry momentum floors over weak env d
     minRecentMovePct: 0.15,
     minRecentRangePct: 0.15,
     minRecentCloseLocationPct: 65,
+    allowContrarianEntries: false,
+    minAdjustedRankScore: 8,
+    scannerSelectionV2ShadowEnabled: true,
+    scannerSelectionV2AuthorityEnabled: true,
   });
 });
 
@@ -93,4 +97,22 @@ test('stock scanner launcher preserves env-driven multi-source confirmation beha
   assert(capturedOptions);
   assert.equal(capturedOptions.scannerConfig.requireMultiSourceConfirmation, true);
   assert.notEqual(capturedOptions.requireMultiSourceConfirmation, false);
+});
+
+test('stock scanner launcher keeps total-position loss capped for live trading', () => {
+  const overrides = buildLiveRiskOverrides({
+    positionStopLossDollars: 1,
+    positionStopLossNotionalPct: 0.75,
+    positionStopLossMaxDollars: 2.5,
+  });
+
+  assert.deepEqual(overrides, {
+    stopLossDollars: 1,
+    stopLossNotionalPct: 0.75,
+    stopLossMaxDollars: 1.5,
+  });
+});
+
+test('policy exit override builder safely handles a missing policy file', () => {
+  assert.deepEqual(buildPolicyExitOverrides(null), {});
 });
