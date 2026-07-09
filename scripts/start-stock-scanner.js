@@ -1,10 +1,10 @@
 const { createStockScanner } = require('../src/stock-scanner');
 const { buildScannerConfig } = require('../src/scanner-config');
+const { migrateLivePolicyFile } = require('../src/live-policy-file');
 const { LIVE_STOCK_POLICY_DEFAULTS, normalizeLiveStockPolicy } = require('../src/live-stock-policy');
 const { loadRuntimeEnv } = require('../src/runtime-env');
 const { nowIso, resolveRepoRoot } = require('../src/util');
 const { parseSymbolList } = require('../src/volatile-stock-universe');
-const fs = require('fs');
 const path = require('path');
 
 function resolveLocalBaseUrl(env = process.env) {
@@ -17,13 +17,8 @@ function resolvePolicyPath(env = process.env) {
 }
 
 function readLivePolicy(policyPath) {
-  try {
-    if (!policyPath || !fs.existsSync(policyPath)) return null;
-    const payload = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
-    return payload?.policy || null;
-  } catch {
-    return null;
-  }
+  if (!policyPath) return null;
+  return migrateLivePolicyFile(policyPath, { write: false, backup: false }).policy;
 }
 
 function buildPolicyExitOverrides(policy = {}) {
@@ -59,10 +54,10 @@ function buildLiveEntryOverrides(policy = {}, env = {}) {
     minRecentMovePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct, normalized.minRecentMovePct, Number.isFinite(envMinRecentMovePct) ? envMinRecentMovePct : 0),
     minRecentRangePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct, normalized.minRecentRangePct, Number.isFinite(envMinRecentRangePct) ? envMinRecentRangePct : 0),
     minRecentCloseLocationPct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct, normalized.minRecentCloseLocationPct, Number.isFinite(envMinRecentCloseLocationPct) ? envMinRecentCloseLocationPct : 0),
-    allowContrarianEntries: normalized.allowContrarianEntries,
+    allowContrarianEntries: false,
     minAdjustedRankScore: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minAdjustedRankScore, normalized.minAdjustedRankScore),
     scannerSelectionV2ShadowEnabled: true,
-    scannerSelectionV2AuthorityEnabled: normalized.scannerSelectionV2AuthorityEnabled,
+    scannerSelectionV2AuthorityEnabled: true,
   };
 }
 
@@ -71,7 +66,7 @@ function buildLiveRiskOverrides(policy = {}) {
   return {
     stopLossDollars: normalized.positionStopLossDollars,
     stopLossNotionalPct: normalized.positionStopLossNotionalPct,
-    stopLossMaxDollars: normalized.positionStopLossMaxDollars,
+    stopLossMaxDollars: Math.min(LIVE_STOCK_POLICY_DEFAULTS.positionStopLossMaxDollars, normalized.positionStopLossMaxDollars),
   };
 }
 
@@ -97,11 +92,12 @@ function main(env = process.env) {
   };
   const localBaseUrl = resolveLocalBaseUrl(runtimeEnv);
   const policyPath = resolvePolicyPath(scannerEnv);
-  const livePolicy = readLivePolicy(policyPath);
+  const policyMigration = migrateLivePolicyFile(policyPath);
+  const livePolicy = policyMigration.policy;
   const policyExitOverrides = buildPolicyExitOverrides(livePolicy);
-  const liveRiskOverrides = buildLiveRiskOverrides(livePolicy || {});
-  const liveExitOverrides = buildLiveExitOverrides(livePolicy || {});
-  const liveEntryOverrides = buildLiveEntryOverrides(livePolicy || {}, scannerEnv);
+  const liveRiskOverrides = buildLiveRiskOverrides(livePolicy);
+  const liveExitOverrides = buildLiveExitOverrides(livePolicy);
+  const liveEntryOverrides = buildLiveEntryOverrides(livePolicy, scannerEnv);
   const stockSymbols = parseSymbolList(
     scannerEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS,
     [],
@@ -117,7 +113,7 @@ function main(env = process.env) {
     symbols: stockSymbols,
     intervalMs: 10_000,
     maxCandidatesPerRun: 8,
-    notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
+    notional: Number(livePolicy.buyNotionalTarget || runtimeEnv.BUY_NOTIONAL_TARGET || 150),
     ...liveEntryOverrides,
     ...liveExitOverrides,
     ...policyExitOverrides,
@@ -129,6 +125,11 @@ function main(env = process.env) {
     service: 'stock-scanner',
     local_base_url: localBaseUrl,
     policy_path: policyPath,
+    policy_migration: {
+      status: policyMigration.status,
+      backup_path: policyMigration.backupPath,
+      wrote: policyMigration.wrote,
+    },
     live_entry_overrides: liveEntryOverrides,
     live_risk_overrides: liveRiskOverrides,
     live_exit_overrides: liveExitOverrides,
