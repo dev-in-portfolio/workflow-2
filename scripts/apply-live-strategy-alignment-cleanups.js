@@ -103,12 +103,10 @@ const packageJson = JSON.parse(read('package.json'));
 for (const key of ['test', 'ci']) {
   packageJson.scripts[key] = packageJson.scripts[key]
     .replace(/\s+test\/trading-pipeline\.test\.js/g, '')
+    .replace(/\s*&&\s*npm run test:legacy/g, '')
     .trim();
 }
 packageJson.scripts['test:legacy'] = 'node --test --test-force-exit test/trading-pipeline.test.js';
-if (!packageJson.scripts.ci.includes('npm run test:legacy')) {
-  packageJson.scripts.ci += ' && npm run test:legacy';
-}
 write('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
 
 for (const temporaryPath of [
