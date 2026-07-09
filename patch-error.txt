@@ -1,0 +1,16 @@
+D:\a\workflow-2\workflow-2\scripts\apply-live-strategy-alignment.js:17
+  if (first < 0) throw new Error(`Patch target not found in ${relativePath}: ${search.slice(0, 120)}`);
+                 ^
+
+Error: Patch target not found in src/live-stock-policy.js:   minRecentCloseLocationPct: 65,
+  sellNetProfitFloorDollars: 0.35,
+    at replaceOnce (D:\a\workflow-2\workflow-2\scripts\apply-live-strategy-alignment.js:17:24)
+    at Object.<anonymous> (D:\a\workflow-2\workflow-2\scripts\apply-live-strategy-alignment.js:30:1)
+    at Module._compile (node:internal/modules/cjs/loader:1521:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1623:10)
+    at Module.load (node:internal/modules/cjs/loader:1266:32)
+    at Module._load (node:internal/modules/cjs/loader:1091:12)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:164:12)
+    at node:internal/main/run_main_module:28:49
+
+Node.js v20.20.2
