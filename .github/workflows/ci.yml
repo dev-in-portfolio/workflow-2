@@ -71,3 +71,5 @@ jobs:
           git add -A
           git commit -m "Align live scanner with momentum strategy"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+# Final validation retrigger after adding forced legacy-test cleanup.
