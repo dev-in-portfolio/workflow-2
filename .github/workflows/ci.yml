@@ -24,17 +24,41 @@ jobs:
           node-version: '20'
 
       - name: Apply one-time strategy repair
+        id: strategy_patch
         if: hashFiles('scripts/apply-live-strategy-alignment.js') != ''
-        run: node scripts/apply-live-strategy-alignment.js
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node scripts/apply-live-strategy-alignment.js *> patch-output.txt
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content patch-output.txt
+            exit $LASTEXITCODE
+          }
+
+      - name: Publish repair diagnostics
+        if: steps.strategy_patch.outcome == 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        run: |
+          git fetch origin "${{ github.head_ref }}" --depth=1
+          git switch -C "${{ github.head_ref }}" "origin/${{ github.head_ref }}"
+          node scripts/apply-live-strategy-alignment.js > patch-error.txt 2>&1 || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add patch-error.txt
+          git commit -m "Record strategy repair diagnostic" || true
+          git push origin HEAD:${{ github.head_ref }}
+          exit 1
 
       - name: Install
+        if: steps.strategy_patch.outcome != 'failure'
         run: npm install
 
       - name: Test
+        if: steps.strategy_patch.outcome != 'failure'
         run: npm run ci
 
       - name: Commit repaired implementation
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.strategy_patch.outcome != 'failure' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
         run: |
           if git diff --quiet && git diff --cached --quiet; then
