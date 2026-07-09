@@ -52,23 +52,37 @@ replaceOnce(
   `      || regularWatchRuntime?.regularWatchIntelligence?.status\n      || regularWatchRuntime?.status\n      || '',\n  ).toLowerCase();`,
 );
 
-replaceOnce(
-  'test/stock-scanner.test.js',
-  `    positionMarketValue: 260,\n    positionQuantity: 2,\n  }), 2);`,
-  `    positionMarketValue: 260,\n    positionQuantity: 2,\n  }), 1.95);`,
+let scannerTests = read('test/stock-scanner.test.js');
+const stopTestMarker = "test('stock scanner widens the hard stop by position notional with a cap', () => {";
+const stopTestStart = scannerTests.indexOf(stopTestMarker);
+const stopTestEnd = scannerTests.indexOf('\ntest(', stopTestStart + stopTestMarker.length);
+if (stopTestStart < 0 || stopTestEnd < 0) {
+  throw new Error('Unable to isolate the stock-scanner hard-stop regression test');
+}
+let stopTestBlock = scannerTests.slice(stopTestStart, stopTestEnd);
+stopTestBlock = stopTestBlock.replace(
+  /(positionMarketValue:\s*260,[\s\S]{0,160}?positionQuantity:\s*2,[\s\S]{0,40}?\}\),)\s*2\);/g,
+  '$1 1.95);',
 );
-
-replaceOnce(
-  'test/stock-scanner.test.js',
-  `    positionMarketValue: 192.5,\n    positionQuantity: 25,\n  }), 6.25);`,
-  `    positionMarketValue: 192.5,\n    positionQuantity: 25,\n  }), 1.4437);`,
+stopTestBlock = stopTestBlock.replace(
+  /(positionMarketValue:\s*192\.5,[\s\S]{0,160}?positionQuantity:\s*25,[\s\S]{0,40}?\}\),)\s*6\.25\);/g,
+  '$1 1.4437);',
 );
-
-replaceOnce(
-  'test/stock-scanner.test.js',
+if (/positionQuantity:\s*2,[\s\S]{0,40}?\}\),\s*2\);/.test(stopTestBlock)) {
+  throw new Error('Per-share two-share stop expectation remains after migration');
+}
+if (/positionQuantity:\s*25,[\s\S]{0,40}?\}\),\s*6\.25\);/.test(stopTestBlock)) {
+  throw new Error('Per-share 25-share stop expectation remains after migration');
+}
+scannerTests = `${scannerTests.slice(0, stopTestStart)}${stopTestBlock}${scannerTests.slice(stopTestEnd)}`;
+scannerTests = scannerTests.replace(
   `  assert.equal(oneShare, 1.13);\n  assert.equal(thirtyShares, 1.13);`,
   `  assert.equal(oneShare, 1.125);\n  assert.equal(thirtyShares, 1.125);`,
 );
+if (!scannerTests.includes('assert.equal(oneShare, 1.125);') || !scannerTests.includes('assert.equal(thirtyShares, 1.125);')) {
+  throw new Error('Total-position stop regression expectations were not updated');
+}
+write('test/stock-scanner.test.js', scannerTests);
 
 const packageJson = JSON.parse(read('package.json'));
 for (const key of ['test', 'ci']) {
