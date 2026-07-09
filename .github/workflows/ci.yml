@@ -1,75 +1,24 @@
 name: ci
 
 on:
+  push:
   pull_request:
-
-concurrency:
-  group: strategy-repair-${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
 
 jobs:
   test:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repair branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-          show-progress: false
-
-      - name: Normalize checkout line endings
-        shell: bash
-        run: |
-          git config core.autocrlf false
-          git reset --hard HEAD
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Apply one-time strategy repair
-        shell: pwsh
-        run: |
-          node scripts/apply-live-strategy-alignment.js
-          node scripts/apply-live-strategy-alignment-cleanups.js
-
       - name: Install
         run: npm install
 
-      - name: Run complete CI suite
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          npm run ci *> test-output.txt
-          $exitCode = $LASTEXITCODE
-          if ($exitCode -ne 0) {
-            "Strategy repair CI failure tail:" | Set-Content ci-failure-tail.txt
-            Get-Content test-output.txt -Tail 240 | Add-Content ci-failure-tail.txt
-            Get-Content ci-failure-tail.txt
-            gh pr comment $env:PR_NUMBER --body-file ci-failure-tail.txt
-            exit $exitCode
-          }
-          Remove-Item test-output.txt -ErrorAction SilentlyContinue
-
-      - name: Commit repaired implementation
-        shell: bash
-        run: |
-          git fetch origin main --depth=1
-          git checkout origin/main -- .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Align live scanner with momentum strategy"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
-# Final validation retrigger after adding forced legacy-test cleanup.
+      - name: Test
+        run: npm run ci

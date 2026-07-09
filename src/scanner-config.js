@@ -112,7 +112,7 @@ function buildScannerConfig(env = process.env) {
     minRecentMovePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03)),
     minRecentRangePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct : 0.05)),
     minRecentCloseLocationPct: Math.max(0, Math.min(100, safeNumber(env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct : 60))),
-    allowContrarianEntries: true,
+    allowContrarianEntries: parseBool(env.STOCK_SCANNER_ALLOW_CONTRARIAN_ENTRIES, !stricterLiveEntryDefaults),
     blockBuys: parseBool(env.BLOCK_BUYS, false),
     sellMaxPriceDiffPct: safeNumber(env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, 0.75),
     recentTradePenaltyMinutes: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_TRADE_PENALTY_MINUTES, 15)),

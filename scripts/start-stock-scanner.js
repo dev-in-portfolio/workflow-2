@@ -27,6 +27,7 @@ function readLivePolicy(policyPath) {
 }
 
 function buildPolicyExitOverrides(policy = {}) {
+  policy = policy && typeof policy === 'object' ? policy : {};
   const map = {
     stopLossDollars: policy.positionStopLossDollars,
     stopLossNotionalPct: policy.positionStopLossNotionalPct,
@@ -58,6 +59,19 @@ function buildLiveEntryOverrides(policy = {}, env = {}) {
     minRecentMovePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct, normalized.minRecentMovePct, Number.isFinite(envMinRecentMovePct) ? envMinRecentMovePct : 0),
     minRecentRangePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct, normalized.minRecentRangePct, Number.isFinite(envMinRecentRangePct) ? envMinRecentRangePct : 0),
     minRecentCloseLocationPct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct, normalized.minRecentCloseLocationPct, Number.isFinite(envMinRecentCloseLocationPct) ? envMinRecentCloseLocationPct : 0),
+    allowContrarianEntries: normalized.allowContrarianEntries,
+    minAdjustedRankScore: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minAdjustedRankScore, normalized.minAdjustedRankScore),
+    scannerSelectionV2ShadowEnabled: true,
+    scannerSelectionV2AuthorityEnabled: normalized.scannerSelectionV2AuthorityEnabled,
+  };
+}
+
+function buildLiveRiskOverrides(policy = {}) {
+  const normalized = normalizeLiveStockPolicy(policy);
+  return {
+    stopLossDollars: normalized.positionStopLossDollars,
+    stopLossNotionalPct: normalized.positionStopLossNotionalPct,
+    stopLossMaxDollars: normalized.positionStopLossMaxDollars,
   };
 }
 
@@ -85,6 +99,7 @@ function main(env = process.env) {
   const policyPath = resolvePolicyPath(scannerEnv);
   const livePolicy = readLivePolicy(policyPath);
   const policyExitOverrides = buildPolicyExitOverrides(livePolicy);
+  const liveRiskOverrides = buildLiveRiskOverrides(livePolicy || {});
   const liveExitOverrides = buildLiveExitOverrides(livePolicy || {});
   const liveEntryOverrides = buildLiveEntryOverrides(livePolicy || {}, scannerEnv);
   const stockSymbols = parseSymbolList(
@@ -103,10 +118,10 @@ function main(env = process.env) {
     intervalMs: 10_000,
     maxCandidatesPerRun: 8,
     notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
-    allowContrarianEntries: true,
     ...liveEntryOverrides,
     ...liveExitOverrides,
     ...policyExitOverrides,
+    ...liveRiskOverrides,
   });
   scanner.start();
   process.stdout.write(`${JSON.stringify({
@@ -115,6 +130,7 @@ function main(env = process.env) {
     local_base_url: localBaseUrl,
     policy_path: policyPath,
     live_entry_overrides: liveEntryOverrides,
+    live_risk_overrides: liveRiskOverrides,
     live_exit_overrides: liveExitOverrides,
     policy_exit_overrides: policyExitOverrides,
     timestamp: nowIso(),
@@ -130,6 +146,7 @@ module.exports = {
   main,
   buildPolicyExitOverrides,
   buildLiveEntryOverrides,
+  buildLiveRiskOverrides,
   buildLiveExitOverrides,
   readLivePolicy,
   resolvePolicyPath,
