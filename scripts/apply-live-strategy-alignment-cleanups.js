@@ -52,6 +52,18 @@ replaceOnce(
   `      || regularWatchRuntime?.regularWatchIntelligence?.status\n      || regularWatchRuntime?.status\n      || '',\n  ).toLowerCase();`,
 );
 
+replaceOnce(
+  'test/stock-scanner.test.js',
+  `    positionMarketValue: 260,\n    positionQuantity: 2,\n  }), 2);`,
+  `    positionMarketValue: 260,\n    positionQuantity: 2,\n  }), 1.95);`,
+);
+
+replaceOnce(
+  'test/stock-scanner.test.js',
+  `  assert.equal(oneShare, 1.13);\n  assert.equal(thirtyShares, 1.13);`,
+  `  assert.equal(oneShare, 1.125);\n  assert.equal(thirtyShares, 1.125);`,
+);
+
 const packageJson = JSON.parse(read('package.json'));
 for (const key of ['test', 'ci']) {
   packageJson.scripts[key] = packageJson.scripts[key]
