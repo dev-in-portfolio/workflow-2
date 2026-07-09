@@ -105,6 +105,7 @@ for (const key of ['test', 'ci']) {
     .replace(/\s+test\/trading-pipeline\.test\.js/g, '')
     .trim();
 }
+packageJson.scripts['test:legacy'] = 'node --test --test-force-exit test/trading-pipeline.test.js';
 if (!packageJson.scripts.ci.includes('npm run test:legacy')) {
   packageJson.scripts.ci += ' && npm run test:legacy';
 }
