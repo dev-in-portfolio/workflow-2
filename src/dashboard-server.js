@@ -2928,32 +2928,89 @@ function buildDynamicTopFreshness(snapshot = {}, dynamicTopSymbols = []) {
 
 function buildHomeHotListStatus(snapshot = {}) {
   const summary = snapshot.summary || {};
+  const live = snapshot.live || {};
+  const regularWatch = live.regular_watch_intelligence || snapshot.regularWatchIntelligence || {};
+  const regularWatchRuntime = live.regular_watch_runtime || snapshot.regularWatchStatus || {};
   const memeMonitor = snapshot.memeMonitor || {};
   const watch = snapshot.watch || {};
+  const memeHotList = memeMonitor.hotList || watch.dynamicHotList || {};
+  const memeHotHotScoring = memeMonitor.hotHotScoring || watch.hotHotList || {};
+  const memePayload = memeMonitor.hotListPayload || {};
+  const regularWatchEnabled = Boolean(
+    regularWatch.enabled
+      ?? regularWatchRuntime?.regularWatchIntelligence?.enabled
+      ?? regularWatchRuntime?.enabled
+  );
+  const regularWatchStatus = String(
+    regularWatch.status
+      || regularWatchRuntime?.regularWatchIntelligence?.status
+      || regularWatchRuntime?.status
+      || ''
+  ).toLowerCase();
+  const regularWatchCount = safeNumber(
+    regularWatch.symbolsChecked
+      ?? regularWatchRuntime?.regularWatchIntelligence?.symbolsChecked
+      ?? regularWatchRuntime?.regularWatchList?.length
+      ?? regularWatchRuntime?.regularWatchMovers?.length
+      ?? 0,
+    0,
+  );
+  const regularWatchMoverCount = safeNumber(
+    regularWatch.moversFound
+      ?? regularWatchRuntime?.regularWatchIntelligence?.moversFound
+      ?? regularWatchRuntime?.regularWatchMovers?.length
+      ?? 0,
+    0,
+  );
+  const regularWatchLastRunAt = regularWatch.lastRunAt
+    || regularWatchRuntime?.regularWatchIntelligence?.lastRunAt
+    || regularWatchRuntime?.lastRunAt
+    || regularWatchRuntime?.generatedAt
+    || null;
+  const regularWatchStale = Boolean(regularWatchRuntime?.stale);
+  if (regularWatchEnabled || regularWatchStatus || regularWatchLastRunAt !== null) {
+    const status = regularWatchStatus && regularWatchStatus !== 'disabled'
+      ? regularWatchStatus
+      : (regularWatchEnabled ? 'active' : 'off');
+    return {
+      enabled: regularWatchEnabled,
+      status,
+      stale: regularWatchStale,
+      primaryCount: regularWatchCount,
+      primaryLabel: 'approved symbols',
+      secondaryCount: regularWatchMoverCount,
+      secondaryLabel: 'movers',
+      lastScoredAt: regularWatchLastRunAt,
+      lastError: regularWatch.lastError || regularWatchRuntime?.regularWatchIntelligence?.lastError || regularWatchRuntime?.lastError || null,
+      sourceLabel: 'Regular stock process',
+      dynamicCount: regularWatchCount,
+      hotHotCount: regularWatchMoverCount,
+    };
+  }
+
   const hotList = memeMonitor.hotList || watch.dynamicHotList || {};
   const hotHotScoring = memeMonitor.hotHotScoring || watch.hotHotList || {};
-  const payload = memeMonitor.hotListPayload || {};
   const dynamicCount = safeNumber(
     hotList.dynamicCount
       ?? hotList.dynamic_count
-      ?? payload.summary?.dynamicCount
-      ?? payload.dynamicHotList?.length
+      ?? memePayload.summary?.dynamicCount
+      ?? memePayload.dynamicHotList?.length
       ?? summary.meme_monitor_hot_list_dynamic_count,
     0,
   );
   const hotHotCount = safeNumber(
     hotList.hotHotCount
       ?? hotList.hot_hot_count
-      ?? payload.summary?.hotHotCount
-      ?? payload.hotHotList?.length
+      ?? memePayload.summary?.hotHotCount
+      ?? memePayload.hotHotList?.length
       ?? summary.meme_monitor_hot_list_hot_hot_count,
     0,
   );
   const lastScoredAt = hotList.lastScoredAt
     || hotList.last_scored_at
     || hotHotScoring.lastScoredAt
-    || payload.lastScoredAt
-    || payload.generatedAt
+    || memePayload.lastScoredAt
+    || memePayload.generatedAt
     || null;
   const enabled = Boolean(hotList.enabled ?? watch.dynamicHotList?.enabled ?? memeMonitor.enabled);
   const rawStatus = String(hotList.status || summary.meme_monitor_hot_list_status || '').toLowerCase();
@@ -2961,16 +3018,21 @@ function buildHomeHotListStatus(snapshot = {}) {
   const status = rawStatus && rawStatus !== 'off' && rawStatus !== 'disabled'
     ? rawStatus
     : (watchStatus || rawStatus || (enabled ? 'unknown' : 'off'));
-  const stale = Boolean(hotList.stale ?? hotHotScoring.stale ?? payload.stale ?? summary.meme_monitor_hot_list_stale);
+  const stale = Boolean(hotList.stale ?? hotHotScoring.stale ?? memePayload.stale ?? summary.meme_monitor_hot_list_stale);
 
   return {
     enabled,
     status,
     stale,
+    primaryCount: dynamicCount,
+    primaryLabel: 'dynamic symbols',
+    secondaryCount: hotHotCount,
+    secondaryLabel: 'hot hot symbols',
     dynamicCount,
     hotHotCount,
     lastScoredAt,
     lastError: hotList.lastError || hotHotScoring.lastError || null,
+    sourceLabel: 'Meme monitor state',
   };
 }
 

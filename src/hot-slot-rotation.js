@@ -11,8 +11,8 @@ function resolveHotSlotRotationConfig(env = process.env) {
     maxAllowedLossDollars: Math.max(0, safeNumber(env.MEME_ROTATION_MAX_ALLOWED_LOSS_DOLLARS, 0)),
     protectStrongRunners: parseBool(env.MEME_ROTATION_PROTECT_STRONG_RUNNERS, true),
     recheckAfterExit: parseBool(env.MEME_ROTATION_RECHECK_AFTER_EXIT, true),
-    exitTimeoutSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_EXIT_TIMEOUT_SECONDS, 30))),
-    entryRecheckMaxAgeSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_ENTRY_RECHECK_MAX_AGE_SECONDS, 30))),
+    exitTimeoutSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_EXIT_TIMEOUT_SECONDS, 8))),
+    entryRecheckMaxAgeSeconds: Math.max(1, Math.floor(safeNumber(env.MEME_ROTATION_ENTRY_RECHECK_MAX_AGE_SECONDS, 45))),
   };
 }
 

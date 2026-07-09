@@ -1,5 +1,6 @@
 const { createStockScanner } = require('../src/stock-scanner');
 const { buildScannerConfig } = require('../src/scanner-config');
+const { LIVE_STOCK_POLICY_DEFAULTS, normalizeLiveStockPolicy } = require('../src/live-stock-policy');
 const { loadRuntimeEnv } = require('../src/runtime-env');
 const { nowIso, resolveRepoRoot } = require('../src/util');
 const { parseSymbolList } = require('../src/volatile-stock-universe');
@@ -33,32 +34,78 @@ function buildPolicyExitOverrides(policy = {}) {
     trailingProfitStartDollars: policy.trailingProfitStartDollars,
     trailingProfitGivebackDollars: policy.trailingProfitGivebackDollars,
     sellNetProfitFloorDollars: policy.sellNetProfitFloorDollars,
+    stalePositionExitEnabled: policy.stalePositionExitEnabled,
+    stalePositionMaxHoldMinutes: policy.stalePositionMaxHoldMinutes,
+    stalePositionMinPeakProfitDollars: policy.stalePositionMinPeakProfitDollars,
+    stalePositionMaxExitPnlDollars: policy.stalePositionMaxExitPnlDollars,
+    stalledWinnerExitEnabled: policy.stalledWinnerExitEnabled,
+    stalledWinnerMaxHoldMinutes: policy.stalledWinnerMaxHoldMinutes,
+    stalledWinnerMaxMinutesSincePeak: policy.stalledWinnerMaxMinutesSincePeak,
+    stalledWinnerMinProfitDollars: policy.stalledWinnerMinProfitDollars,
   };
   return Object.fromEntries(Object.entries(map).filter(([, value]) => Number.isFinite(Number(value))));
 }
 
+function buildLiveEntryOverrides(policy = {}, env = {}) {
+  const normalized = normalizeLiveStockPolicy(policy);
+  const envMinMovePct = Number(env.STOCK_SCANNER_MIN_MOVE_PCT);
+  const envMinRecentMovePct = Number(env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT);
+  const envMinRecentRangePct = Number(env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT);
+  const envMinRecentCloseLocationPct = Number(env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT);
+  return {
+    minMovePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minMovePct, normalized.minMovePct, Number.isFinite(envMinMovePct) ? envMinMovePct : 0),
+    requireRecentMomentum: normalized.requireRecentMomentum,
+    minRecentMovePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct, normalized.minRecentMovePct, Number.isFinite(envMinRecentMovePct) ? envMinRecentMovePct : 0),
+    minRecentRangePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct, normalized.minRecentRangePct, Number.isFinite(envMinRecentRangePct) ? envMinRecentRangePct : 0),
+    minRecentCloseLocationPct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct, normalized.minRecentCloseLocationPct, Number.isFinite(envMinRecentCloseLocationPct) ? envMinRecentCloseLocationPct : 0),
+  };
+}
+
+function buildLiveExitOverrides(policy = {}) {
+  const normalized = normalizeLiveStockPolicy(policy);
+  return {
+    stalePositionExitEnabled: normalized.stalePositionExitEnabled,
+    stalePositionMaxHoldMinutes: normalized.stalePositionMaxHoldMinutes,
+    stalePositionMinPeakProfitDollars: normalized.stalePositionMinPeakProfitDollars,
+    stalePositionMaxExitPnlDollars: normalized.stalePositionMaxExitPnlDollars,
+    stalledWinnerExitEnabled: normalized.stalledWinnerExitEnabled,
+    stalledWinnerMaxHoldMinutes: normalized.stalledWinnerMaxHoldMinutes,
+    stalledWinnerMaxMinutesSincePeak: normalized.stalledWinnerMaxMinutesSincePeak,
+    stalledWinnerMinProfitDollars: normalized.stalledWinnerMinProfitDollars,
+  };
+}
+
 function main(env = process.env) {
   const runtimeEnv = loadRuntimeEnv(env);
+  const scannerEnv = {
+    ...runtimeEnv,
+    SCANNER_MODE: runtimeEnv.SCANNER_MODE || runtimeEnv.SCANNER_PROFILE || 'live-market',
+  };
   const localBaseUrl = resolveLocalBaseUrl(runtimeEnv);
-  const policyPath = resolvePolicyPath(runtimeEnv);
+  const policyPath = resolvePolicyPath(scannerEnv);
   const livePolicy = readLivePolicy(policyPath);
   const policyExitOverrides = buildPolicyExitOverrides(livePolicy);
+  const liveExitOverrides = buildLiveExitOverrides(livePolicy || {});
+  const liveEntryOverrides = buildLiveEntryOverrides(livePolicy || {}, scannerEnv);
   const stockSymbols = parseSymbolList(
-    runtimeEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS,
+    scannerEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS,
     [],
   );
   const scanner = createStockScanner({
-    env: runtimeEnv,
-    scannerConfig: buildScannerConfig(runtimeEnv),
+    env: scannerEnv,
+    scannerConfig: buildScannerConfig(scannerEnv),
+    scannerMode: 'live-market',
     localBaseUrl,
     enabled: true,
     keepAlive: true,
     runtimeStateEnabled: true,
     symbols: stockSymbols,
-    intervalMs: 30_000,
+    intervalMs: 10_000,
     maxCandidatesPerRun: 8,
     notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
     allowContrarianEntries: true,
+    ...liveEntryOverrides,
+    ...liveExitOverrides,
     ...policyExitOverrides,
   });
   scanner.start();
@@ -67,6 +114,8 @@ function main(env = process.env) {
     service: 'stock-scanner',
     local_base_url: localBaseUrl,
     policy_path: policyPath,
+    live_entry_overrides: liveEntryOverrides,
+    live_exit_overrides: liveExitOverrides,
     policy_exit_overrides: policyExitOverrides,
     timestamp: nowIso(),
   }, null, 2)}\n`);
@@ -80,6 +129,8 @@ if (require.main === module) {
 module.exports = {
   main,
   buildPolicyExitOverrides,
+  buildLiveEntryOverrides,
+  buildLiveExitOverrides,
   readLivePolicy,
   resolvePolicyPath,
   resolveLocalBaseUrl,

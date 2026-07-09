@@ -362,13 +362,16 @@ function resolveHotListStatus(snapshot = {}) {
       ? 'warn-text'
       : 'loss-text';
   const age = status.lastScoredAt ? formatDataAge(status.lastScoredAt) : 'not scored yet';
-  const counts = `${formatCount(status.dynamicCount || 0)} dynamic, ${formatCount(status.hotHotCount || 0)} hot hot`;
+  const primaryCount = Number(status.primaryCount ?? status.regularWatchCount ?? status.dynamicCount ?? 0);
+  const secondaryCount = Number(status.secondaryCount ?? status.moverCount ?? status.hotHotCount ?? 0);
+  const primaryLabel = String(status.primaryLabel || 'approved symbols');
+  const secondaryLabel = String(status.secondaryLabel || 'movers');
   const stale = status.stale ? 'Stale. ' : '';
   const error = status.lastError ? ` Error: ${status.lastError}` : '';
   return {
     label,
     tone,
-    hint: `${stale}${counts}. ${age}.${error}`,
+    hint: `${stale}${formatCount(primaryCount)} ${primaryLabel}, ${formatCount(secondaryCount)} ${secondaryLabel}. ${age}.${error}`,
   };
 }
 

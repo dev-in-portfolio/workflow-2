@@ -191,3 +191,47 @@ test('risk gate allows scanner exit sells to bypass entry-only confirmation and 
   assert(nonExitDecision.reason_codes.includes('INVALID_REWARD_RISK'));
   assert(nonExitDecision.reason_codes.includes('LOW_PROVIDER_CONFIRMATION'));
 });
+
+test('risk gate allows scanner exit sells to bypass entry-only volume and liquidity checks', () => {
+  const signal = baseSignal({
+    symbol: 'ZCMD',
+    asset_type: 'stock',
+    side: 'sell',
+    direction: 'bearish',
+    entry_price: 2.4,
+    stop_loss: 2.15,
+    take_profit: 2.7,
+    liquidity_score: 5,
+    volume: 0,
+    risk_score: 95,
+  });
+  const portfolio = {
+    available: true,
+    open_positions_count: 1,
+    positions: [{ symbol: 'ZCMD', qty: '62' }],
+  };
+  const marketContext = {
+    price: 2.33,
+    volume: 0,
+    spread_slippage_pct: 13.28,
+    exit_state: {
+      exit_reason: 'STALE_POSITION_TIMEOUT',
+      unrealized_pl: -4.54,
+      gross_pnl: -4.54,
+      execution_drag: 0,
+      net_pnl: -4.54,
+      real_gain: false,
+    },
+  };
+
+  const exitDecision = evaluateRiskGate(signal, portfolio, basePolicy({
+    minLiquidityScore: 50,
+    minVolume: 50000,
+  }), marketContext);
+
+  assert.equal(exitDecision.pass, true);
+  assert.equal(exitDecision.reason_codes.includes('MIN_LIQUIDITY_NOT_MET'), false);
+  assert.equal(exitDecision.reason_codes.includes('MIN_VOLUME_NOT_MET'), false);
+  assert.equal(exitDecision.reason_codes.includes('SIGNAL_RISK_TOO_HIGH'), false);
+  assert.equal(exitDecision.warnings.includes('MAX_SPREAD_SLIPPAGE_EXCEEDED'), false);
+});

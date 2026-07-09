@@ -17,9 +17,14 @@ function calculateStructureAwareStop(options = {}) {
   const minDistance = Math.max(0.01, safeNumber(options.minStopDistanceDollars, 0.01));
   const maxDistance = positiveNumber(options.maxStopDistanceDollars, Number.POSITIVE_INFINITY);
   const fixedStopDollars = positiveNumber(options.fixedStopDollars, null);
+  const lowPriceThreshold = Math.max(0.01, safeNumber(options.lowPriceThreshold, 1));
+  const lowPriceStopPct = Math.max(1, safeNumber(options.lowPriceStopPct, 15));
   const spreadPct = Math.max(0, safeNumber(options.spreadPct ?? marketData.spread_pct, 0));
   const spreadDistance = price ? price * (spreadPct / 100) : 0;
-  const minimumDistance = Math.max(minDistance, spreadDistance);
+  const priceRelativeDistance = price && price < lowPriceThreshold
+    ? Math.max(price * (lowPriceStopPct / 100), 0.0001)
+    : null;
+  const minimumDistance = Math.max(priceRelativeDistance ?? minDistance, spreadDistance);
 
   const candidates = [];
   if (!price) {
@@ -61,9 +66,10 @@ function calculateStructureAwareStop(options = {}) {
     candidates.push(buildCandidate('swing_high', price, swingHigh, side, minimumDistance, maxDistance));
   }
 
-  if (fixedStopDollars) {
-    const stopPrice = side === 'sell' ? price + fixedStopDollars : price - fixedStopDollars;
-    candidates.push(buildCandidate('fixed_dollar', price, stopPrice, side, minimumDistance, maxDistance));
+  if (fixedStopDollars || priceRelativeDistance) {
+    const fixedDistance = priceRelativeDistance ?? fixedStopDollars;
+    const stopPrice = side === 'sell' ? price + fixedDistance : price - fixedDistance;
+    candidates.push(buildCandidate(priceRelativeDistance ? 'price_relative' : 'fixed_dollar', price, stopPrice, side, minimumDistance, maxDistance));
   }
 
   const fallbackDistance = clampDistance(minimumDistance, maxDistance);

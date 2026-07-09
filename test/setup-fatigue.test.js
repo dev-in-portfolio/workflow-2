@@ -46,6 +46,71 @@ test('setup fatigue key resolution is deterministic', () => {
   assert.equal(second, 'mu-breakout');
 });
 
+test('setup fatigue ignores completed fill metadata as a partial-fill failure', async () => {
+  const state = await reconcileSetupFatigueState({
+    paperOutcomes: [
+      outcomeFixture({
+        recorded_at: '2026-06-16T14:00:00.000Z',
+        net_pnl: 0.6,
+        pnl: 0.6,
+        partial_fill: {
+          status: 'filled',
+          remaining_quantity: 0,
+          filled_quantity: 32,
+          submitted_quantity: 32,
+        },
+        partial_fill_state: {
+          count: 0,
+          partial_buys: [],
+          partial_sells: [],
+          reserved_buy_notional: 0,
+        },
+      }),
+    ],
+    now: '2026-06-16T14:20:00.000Z',
+    env: {
+      SETUP_FATIGUE_ENABLED: 'true',
+    },
+  });
+
+  const entry = state.setups['mu-breakout'];
+  assert(entry);
+  assert.equal(entry.recent_losses, 0);
+  assert.equal(entry.reason_codes.includes('SETUP_FATIGUE_PARTIAL_FILL_PROBLEM'), false);
+});
+
+test('setup fatigue ignores buy fills that are not exits', async () => {
+  const state = await reconcileSetupFatigueState({
+    paperOutcomes: [
+      outcomeFixture({
+        side: 'buy',
+        net_pnl: 0,
+        pnl: 0,
+        exit_reason: null,
+        partial_fill: {
+          status: 'filled',
+          remaining_quantity: 0,
+          filled_quantity: 32,
+          submitted_quantity: 32,
+        },
+        paper_result: {
+          status: 'filled',
+          side: 'buy',
+          filled_quantity: 32,
+          submitted_quantity: 32,
+          remaining_quantity: 0,
+        },
+      }),
+    ],
+    now: '2026-06-16T14:20:00.000Z',
+    env: {
+      SETUP_FATIGUE_ENABLED: 'true',
+    },
+  });
+
+  assert.equal(Object.keys(state.setups).length, 0);
+});
+
 test('setup fatigue increases after repeated losses and stopouts', async () => {
   const state = await reconcileSetupFatigueState({
     paperOutcomes: [

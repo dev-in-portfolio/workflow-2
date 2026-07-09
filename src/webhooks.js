@@ -19,13 +19,6 @@ function buildPaperOrderRequestFromSignal(signal, options = {}) {
   }
   const side = normalizeTradeSide(action);
   if (!side) return null;
-  const sizeMultiplier = clampSizeMultiplier(
-    options.positionSizeMultiplier
-      ?? options.policy?.positionSizeMultiplier
-      ?? signal.position_size_multiplier
-      ?? signal.size_multiplier
-      ?? signal.policy_position_size_multiplier,
-  );
   if (side === 'buy') {
     const sizing = resolveBuyOrderSizing(signal, options);
     if (!sizing.pass) {
@@ -76,8 +69,8 @@ function buildPaperOrderRequestFromSignal(signal, options = {}) {
     symbol: signal.symbol,
     side,
     order_type: signal.order_type || 'market',
-    quantity: hasQuantity ? Number((quantity * sizeMultiplier).toFixed(6)) : null,
-    notional: hasNotional ? Number((notional * sizeMultiplier).toFixed(2)) : null,
+    quantity: hasQuantity ? Number(quantity.toFixed(6)) : null,
+    notional: hasNotional ? Number(notional.toFixed(2)) : null,
     limit_price: signal.limit_price ?? null,
     stop_loss: null,
     take_profit: null,
@@ -112,6 +105,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
       DEFAULT_BUY_NOTIONAL_TARGET,
     ),
   );
+  const sizeMultiplier = clampSizeMultiplier(options.policy?.positionSizeMultiplier ?? options.positionSizeMultiplier ?? 1);
   const price = safeNumber(
     signal.entry_price
       ?? signal.price
@@ -127,6 +121,8 @@ function resolveBuyOrderSizing(signal, options = {}) {
     ?? signal.supports_fractional_shares
     ?? signal.fractional_shares
     ?? (assetType === 'crypto' || symbol.includes('/'));
+  const preserveSignalSizing = Boolean(options.respectSignalQuantity)
+    || String(signal.sizing_method || signal.sizing_mode || '').trim().toLowerCase() === 'risk_budget';
 
   if (!Number.isFinite(price) || price <= 0) {
     return {
@@ -143,8 +139,9 @@ function resolveBuyOrderSizing(signal, options = {}) {
 
   const signalQuantity = safeNumber(signal.quantity, null);
   const signalNotional = safeNumber(signal.notional, null);
-  if (Number.isFinite(signalQuantity) && signalQuantity > 0) {
-    const quantity = supportsFractionalShares ? floorToDecimals(signalQuantity, 6) : Math.floor(signalQuantity);
+  if (preserveSignalSizing && Number.isFinite(signalQuantity) && signalQuantity > 0) {
+    const scaledQuantity = signalQuantity * sizeMultiplier;
+    const quantity = supportsFractionalShares ? floorToDecimals(scaledQuantity, 6) : Math.floor(scaledQuantity);
     if (!(quantity > 0)) {
       return {
         pass: false,
@@ -153,6 +150,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
         price,
         supports_fractional_shares: Boolean(supportsFractionalShares),
         sizing_mode: 'signal_whole_share_qty',
+        size_multiplier: sizeMultiplier,
       };
     }
     return {
@@ -163,12 +161,14 @@ function resolveBuyOrderSizing(signal, options = {}) {
       price,
       supports_fractional_shares: Boolean(supportsFractionalShares),
       sizing_mode: supportsFractionalShares ? 'signal_fractional_qty' : 'signal_whole_share_qty',
+      respected_signal_quantity: true,
+      size_multiplier: sizeMultiplier,
       reason_codes: [],
     };
   }
 
   if (supportsFractionalShares) {
-    const rawQuantity = targetNotional / price;
+    const rawQuantity = (targetNotional * sizeMultiplier) / price;
     const quantity = floorToDecimals(rawQuantity, 6);
     if (!(quantity > 0)) {
       return {
@@ -178,21 +178,24 @@ function resolveBuyOrderSizing(signal, options = {}) {
         price,
         supports_fractional_shares: true,
         sizing_mode: 'fractional_qty',
+        size_multiplier: sizeMultiplier,
       };
     }
     return {
       pass: true,
       quantity,
       notional: Number((quantity * price).toFixed(2)),
-      target_notional: targetNotional,
+      target_notional: Number((targetNotional * sizeMultiplier).toFixed(2)),
       price,
       supports_fractional_shares: true,
       sizing_mode: 'fractional_qty',
+      respected_signal_quantity: false,
+      size_multiplier: sizeMultiplier,
       reason_codes: [],
     };
   }
 
-  const quantity = Math.floor(targetNotional / price);
+  const quantity = Math.floor((targetNotional * sizeMultiplier) / price);
   if (!(quantity >= 1)) {
     return {
       pass: false,
@@ -201,6 +204,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
       price,
       supports_fractional_shares: false,
       sizing_mode: 'whole_share_qty',
+      size_multiplier: sizeMultiplier,
     };
   }
 
@@ -208,10 +212,12 @@ function resolveBuyOrderSizing(signal, options = {}) {
     pass: true,
     quantity,
     notional: Number((quantity * price).toFixed(2)),
-    target_notional: targetNotional,
+    target_notional: Number((targetNotional * sizeMultiplier).toFixed(2)),
     price,
     supports_fractional_shares: false,
     sizing_mode: 'whole_share_qty',
+    respected_signal_quantity: false,
+    size_multiplier: sizeMultiplier,
     reason_codes: [],
   };
 }

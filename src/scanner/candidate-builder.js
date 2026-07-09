@@ -509,6 +509,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const fees = Math.max(0, safeNumber(options.fees ?? options.position?.fees ?? options.position?.estimated_fees, 0));
   const executionDrag = entrySlippage + exitSlippage + fees;
   const effectiveTrailingStart = Math.max(trailingStart, sellNetProfitFloorDollars + trailingGiveback + executionDrag);
+  const staleRecyclePeakCeiling = Math.max(staleMinPeakProfit, effectiveTrailingStart);
   const trailingActive = Number.isFinite(peak) && peak >= effectiveTrailingStart;
   const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
   const brokerPnlTrusted = options.position?.current_price !== undefined || options.position?.currentPrice !== undefined || options.position?.market_value !== undefined || options.position?.marketValue !== undefined;
@@ -561,7 +562,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     && !trailingActive
     && Number.isFinite(heldSeconds)
     && heldSeconds >= staleMaxHoldSeconds
-    && safeNumber(peak, Number.NEGATIVE_INFINITY) < staleMinPeakProfit
+    && safeNumber(peak, Number.NEGATIVE_INFINITY) < staleRecyclePeakCeiling
     && Number.isFinite(netPnl)
     && netPnl <= staleMaxExitPnl
   ) {

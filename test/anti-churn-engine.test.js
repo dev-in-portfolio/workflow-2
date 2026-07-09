@@ -62,6 +62,58 @@ test('anti-churn classifies execution losses and partial-fill problems', () => {
   assert.equal(partialFill.classification, AntiChurnClassification.PARTIAL_FILL_PROBLEM);
 });
 
+test('anti-churn does not classify completed fill metadata as a partial-fill problem', () => {
+  const completedFill = classifyExitOutcome({
+    symbol: 'OPTU',
+    net_pnl: 0.5,
+    partial_fill: {
+      status: 'filled',
+      remaining_quantity: 0,
+      filled_quantity: 32,
+      submitted_quantity: 32,
+    },
+    partial_fill_state: {
+      count: 0,
+      partial_buys: [],
+      partial_sells: [],
+      reserved_buy_notional: 0,
+    },
+  });
+
+  assert.notEqual(completedFill.classification, AntiChurnClassification.PARTIAL_FILL_PROBLEM);
+});
+
+test('anti-churn reconciliation ignores buy fills that are not exits', async () => {
+  const state = await reconcileAntiChurnState({
+    paperOutcomes: [
+      {
+        symbol: 'OPTU',
+        side: 'buy',
+        recorded_at: '2026-07-08T18:53:33.403Z',
+        paper_result: {
+          status: 'filled',
+          side: 'buy',
+          filled_quantity: 32,
+          submitted_quantity: 32,
+          remaining_quantity: 0,
+        },
+        partial_fill: {
+          status: 'filled',
+          remaining_quantity: 0,
+          filled_quantity: 32,
+          submitted_quantity: 32,
+        },
+      },
+    ],
+    now: '2026-07-08T18:58:00.000Z',
+    retentionHours: 24,
+  });
+  const summary = summarizeAntiChurnState(state);
+
+  assert.equal(summary.recent_exit_count, 0);
+  assert.equal(summary.symbols_under_cooldown.length, 0);
+});
+
 test('anti-churn gives hard stopouts stronger and capped cooldowns', () => {
   const first = calculateAntiChurnPenalty({
     symbol: 'MU',

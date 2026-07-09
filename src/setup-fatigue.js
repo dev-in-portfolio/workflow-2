@@ -139,6 +139,7 @@ async function reconcileSetupFatigueState({
   const normalizedOutcomes = outcomes
     .map((outcome) => normalizePaperOutcome(outcome))
     .filter(Boolean)
+    .filter(isExitOutcome)
     .filter((outcome) => isWithinRetentionWindow(outcome.recorded_at, now, retentionHours))
     .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
 
@@ -381,6 +382,7 @@ function normalizePaperOutcome(record = {}) {
     symbol,
     recorded_at: recordedAt,
     side: String(source.side || paperResult.side || '').trim().toLowerCase() || null,
+    position_exit: Boolean(source.position_exit || source.positionExit),
     quantity: safeNumber(paperResult.filled_quantity ?? source.quantity ?? paperResult.quantity, 0),
     pnl: safeNumber(source.pnl ?? source.net_pnl ?? source.adjusted_pnl, 0),
     gross_pnl: safeNumber(source.gross_pnl ?? source.pnl, 0),
@@ -403,12 +405,7 @@ function normalizePaperOutcome(record = {}) {
     ) || null,
     stop_exit: Boolean(source.stop_exit || source.stopped_out || paperResult.stop_exit),
     trailing_exit: Boolean(source.trailing_exit || source.trailing_profit_exit || paperResult.trailing_exit),
-    partial_fill: Boolean(
-      source.partial_fill
-      || source.partial_fill_state
-      || safeNumber(source.partial_fill?.remaining_quantity, 0) > 0
-      || safeNumber(source.partial_fill?.filled_quantity, 0) < safeNumber(source.partial_fill?.submitted_quantity, 0),
-    ),
+    partial_fill: hasPartialFillProblem(source),
     reason_codes: normalizeReasonCodes(source.reason_codes),
     original_signal: source.original_signal || null,
   };
@@ -429,6 +426,58 @@ function readPaperOutcomesFromHistory(historyPath, maxBytes = DEFAULTS.historyMa
   } catch {
     return [];
   }
+}
+
+function isExitOutcome(outcome = {}) {
+  const side = normalizeText(outcome.side || outcome.paper_result?.side || outcome.original_signal?.side || null);
+  const exitReason = normalizeText(
+    outcome.exit_reason
+      || outcome.original_signal?.market_context?.exit_state?.exit_reason
+      || outcome.market_context?.exit_state?.exit_reason
+      || outcome.exit_state?.exit_reason
+      || null,
+  );
+  return Boolean(
+    outcome.position_exit
+      || outcome.positionExit
+      || side === 'sell'
+      || exitReason
+      || outcome.stop_exit
+      || outcome.stopped_out
+      || outcome.trailing_exit
+      || outcome.trailing_profit_exit
+  );
+}
+
+function hasPartialFillProblem(source = {}) {
+  if (source.partial_fill_problem === true) return true;
+  const status = String(source.status || source.paper_result?.status || source.partial_fill?.status || '').trim().toLowerCase();
+  if (status === 'partially_filled') return true;
+
+  const directRemaining = safeNumber(source.remaining_quantity ?? source.remaining_qty, 0);
+  if (directRemaining > 0) return true;
+
+  const partial = source.partial_fill && typeof source.partial_fill === 'object' ? source.partial_fill : null;
+  if (partial) {
+    const remaining = safeNumber(partial.remaining_quantity ?? partial.remaining_qty, 0);
+    const filled = safeNumber(partial.filled_quantity ?? partial.filled_qty, null);
+    const submitted = safeNumber(partial.submitted_quantity ?? partial.submitted_qty, null);
+    if (remaining > 0) return true;
+    if (Number.isFinite(filled) && Number.isFinite(submitted) && submitted > 0 && filled + 1e-6 < submitted) return true;
+  } else if (source.partial_fill === true) {
+    return true;
+  }
+
+  const partialState = source.partial_fill_state && typeof source.partial_fill_state === 'object' ? source.partial_fill_state : null;
+  if (partialState) {
+    const count = safeNumber(partialState.count, 0);
+    const reserved = safeNumber(partialState.reserved_buy_notional, 0);
+    const activeBuys = Array.isArray(partialState.partial_buys) ? partialState.partial_buys.length : 0;
+    const activeSells = Array.isArray(partialState.partial_sells) ? partialState.partial_sells.length : 0;
+    if (count > 0 || reserved > 0 || activeBuys > 0 || activeSells > 0) return true;
+  }
+
+  return false;
 }
 
 function readTailLines(filePath, maxBytes = DEFAULTS.historyMaxBytes) {

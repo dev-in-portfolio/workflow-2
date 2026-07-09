@@ -1,6 +1,17 @@
 const { parseBool, parseNumber, parseCsvList } = require('./config');
+const { LIVE_STOCK_POLICY_DEFAULTS } = require('./live-stock-policy');
 const { safeNumber } = require('./util');
 const { parseSymbolList } = require('./volatile-stock-universe');
+
+function shouldUseStricterLiveEntryDefaults(env = process.env) {
+  const tradingMode = String(env.TRADING_MODE || '').trim().toLowerCase();
+  const scannerMode = String(env.SCANNER_MODE || env.SCANNER_PROFILE || '').trim().toLowerCase();
+  const liveTradingEnabled = parseBool(env.LIVE_TRADING_ENABLED, false);
+  return tradingMode === 'live'
+    || liveTradingEnabled === true
+    || scannerMode === 'live-market'
+    || scannerMode === 'live';
+}
 
 const SCANNER_CONFIG_KEYS = [
   'apiKeyId', 'apiSecretKey', 'baseUrl', 'twelveDataApiKey', 'twelveDataBaseUrl',
@@ -19,6 +30,7 @@ const SCANNER_CONFIG_KEYS = [
   'minRecentCloseLocationPct',
   'recentTradePenaltyMinutes', 'recentTradeRankPenalty',
   'recentLossPenaltyMinutes', 'recentLossRankPenalty',
+  'recentStaleExitPenaltyMinutes', 'recentStaleExitRankPenalty',
   'recentStopExitPenaltyMinutes', 'recentStopExitRankPenalty',
   'antiChurnEnabled', 'antiChurnRetentionHours',
   'antiChurnCleanWinCooldownSeconds', 'antiChurnTrailingWinCooldownSeconds',
@@ -62,6 +74,7 @@ const SCANNER_CONFIG_KEYS = [
 ];
 
 function buildScannerConfig(env = process.env) {
+  const stricterLiveEntryDefaults = shouldUseStricterLiveEntryDefaults(env);
   return {
     apiKeyId: env.ALPACA_API_KEY_ID || '',
     apiSecretKey: env.ALPACA_API_SECRET_KEY || '',
@@ -80,25 +93,25 @@ function buildScannerConfig(env = process.env) {
     stopLossDollars: Math.max(0.01, Number(env.POSITION_STOP_LOSS_DOLLARS ?? 1) || 1),
     stopLossNotionalPct: Math.max(0, safeNumber(env.POSITION_STOP_LOSS_NOTIONAL_PCT, 0.75)),
     stopLossMaxDollars: Math.max(1, safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5)),
-    trailingProfitStartDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_START_DOLLARS ?? 0.5) || 0.5),
-    trailingProfitGivebackDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? 0.3) || 0.3),
-    stalePositionExitEnabled: parseBool(env.STOCK_SCANNER_STALE_POSITION_EXIT_ENABLED, false),
-    stalePositionMaxHoldMinutes: Math.max(1, safeNumber(env.STOCK_SCANNER_STALE_POSITION_MAX_HOLD_MINUTES, 12)),
-    stalePositionMinPeakProfitDollars: Math.max(0, safeNumber(env.STOCK_SCANNER_STALE_POSITION_MIN_PEAK_PROFIT_DOLLARS, 0.25)),
-    stalePositionMaxExitPnlDollars: safeNumber(env.STOCK_SCANNER_STALE_POSITION_MAX_EXIT_PNL_DOLLARS, 0),
-    stalledWinnerExitEnabled: parseBool(env.STOCK_SCANNER_STALLED_WINNER_EXIT_ENABLED, false),
-    stalledWinnerMaxHoldMinutes: Math.max(1, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MAX_HOLD_MINUTES, 18)),
-    stalledWinnerMaxMinutesSincePeak: Math.max(1, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MAX_MINUTES_SINCE_PEAK, 8)),
-    stalledWinnerMinProfitDollars: Math.max(0, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MIN_PROFIT_DOLLARS, 1)),
-    sellNetProfitFloorDollars: Math.max(0, safeNumber(env.SELL_NET_PROFIT_FLOOR_DOLLARS, 1)),
+    trailingProfitStartDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_START_DOLLARS ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars) || LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars),
+    trailingProfitGivebackDollars: Math.max(0.01, Number(env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars) || LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars),
+    stalePositionExitEnabled: parseBool(env.STOCK_SCANNER_STALE_POSITION_EXIT_ENABLED, LIVE_STOCK_POLICY_DEFAULTS.stalePositionExitEnabled),
+    stalePositionMaxHoldMinutes: Math.max(1, safeNumber(env.STOCK_SCANNER_STALE_POSITION_MAX_HOLD_MINUTES, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMaxHoldMinutes)),
+    stalePositionMinPeakProfitDollars: Math.max(0, safeNumber(env.STOCK_SCANNER_STALE_POSITION_MIN_PEAK_PROFIT_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMinPeakProfitDollars)),
+    stalePositionMaxExitPnlDollars: safeNumber(env.STOCK_SCANNER_STALE_POSITION_MAX_EXIT_PNL_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMaxExitPnlDollars),
+    stalledWinnerExitEnabled: parseBool(env.STOCK_SCANNER_STALLED_WINNER_EXIT_ENABLED, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerExitEnabled),
+    stalledWinnerMaxHoldMinutes: Math.max(1, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MAX_HOLD_MINUTES, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMaxHoldMinutes)),
+    stalledWinnerMaxMinutesSincePeak: Math.max(1, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MAX_MINUTES_SINCE_PEAK, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMaxMinutesSincePeak)),
+    stalledWinnerMinProfitDollars: Math.max(0, safeNumber(env.STOCK_SCANNER_STALLED_WINNER_MIN_PROFIT_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMinProfitDollars)),
+    sellNetProfitFloorDollars: Math.max(0, safeNumber(env.SELL_NET_PROFIT_FLOOR_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.sellNetProfitFloorDollars)),
     requireMultiSourceConfirmation: Boolean(env.TWELVE_DATA_API_KEY || env.TWELVEDATA_API_KEY),
     singleSourceMomentumEnabled: parseBool(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_ENABLED, false),
     singleSourceMomentumMinRankScore: Math.max(0, safeNumber(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_MIN_RANK_SCORE, 500)),
-    minMovePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_MOVE_PCT, 0)),
-    requireRecentMomentum: parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, false),
-    minRecentMovePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, 0.03)),
-    minRecentRangePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, 0.05)),
-    minRecentCloseLocationPct: Math.max(0, Math.min(100, safeNumber(env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, 60))),
+    minMovePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minMovePct : 0)),
+    requireRecentMomentum: parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, stricterLiveEntryDefaults),
+    minRecentMovePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03)),
+    minRecentRangePct: Math.max(0, safeNumber(env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct : 0.05)),
+    minRecentCloseLocationPct: Math.max(0, Math.min(100, safeNumber(env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct : 60))),
     allowContrarianEntries: true,
     blockBuys: parseBool(env.BLOCK_BUYS, false),
     sellMaxPriceDiffPct: safeNumber(env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, 0.75),
@@ -106,6 +119,8 @@ function buildScannerConfig(env = process.env) {
     recentTradeRankPenalty: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_TRADE_RANK_PENALTY, 20)),
     recentLossPenaltyMinutes: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_LOSS_PENALTY_MINUTES, 10)),
     recentLossRankPenalty: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_LOSS_RANK_PENALTY, 60)),
+    recentStaleExitPenaltyMinutes: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_STALE_EXIT_PENALTY_MINUTES, 20)),
+    recentStaleExitRankPenalty: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_STALE_EXIT_RANK_PENALTY, 40)),
     recentStopExitPenaltyMinutes: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_STOP_EXIT_PENALTY_MINUTES, 30)),
     recentStopExitRankPenalty: Math.max(0, safeNumber(env.STOCK_SCANNER_RECENT_STOP_EXIT_RANK_PENALTY, 80)),
     antiChurnEnabled: parseBool(env.ANTI_CHURN_ENABLED, true),

@@ -84,6 +84,7 @@ test('provider timestamps are validated', () => {
   assert.equal(invalid.reason, 'INVALID_TIMESTAMP');
 });
 
+
 test('bad provider payload is rejected', () => {
   const normalized = normalizeMarketData({}, { maxStalenessSeconds: 60 });
   const validation = validateNormalizedMarketData(normalized);
@@ -1575,6 +1576,45 @@ test('sell outcomes use the position cost basis to compute realized pnl', () => 
   assert.equal(outcome.paper_result.exit_price, 11);
   assert.equal(outcome.pnl, 2);
   assert.equal(outcome.status, 'filled');
+});
+
+test('sell outcomes record hold duration and exit telemetry', () => {
+  const performance = new PerformanceStore({});
+  const outcome = recordPaperOutcome(
+    performance,
+    {
+      signal_id: 'sell-duration-proof',
+      symbol: 'WRAP',
+      direction: 'bearish',
+      side: 'sell',
+      position_avg_entry_price: 10,
+      created_at: '2026-07-09T17:00:00.000Z',
+      market_context: {
+        exit_state: {
+          entry_price: 10,
+          sell_price: 11.25,
+          opened_at: '2026-07-09T16:48:00.000Z',
+          exit_reason: 'TRAILING_PROFIT_GIVEBACK',
+          trailing_peak_unrealized_pl: 2.4,
+        },
+      },
+    },
+    {
+      order_id: 'sell-duration-proof',
+      status: 'filled',
+      filled_at: '2026-07-09T17:03:00.000Z',
+      average_fill_price: 11.25,
+      filled_quantity: 5,
+      estimated_fees: 0,
+    },
+  );
+
+  assert.equal(outcome.exit_reason, 'TRAILING_PROFIT_GIVEBACK');
+  assert.equal(outcome.entry_at, '2026-07-09T16:48:00.000Z');
+  assert.equal(outcome.exit_at, '2026-07-09T17:03:00.000Z');
+  assert.equal(outcome.holding_period_seconds, 900);
+  assert.equal(outcome.trade_duration_seconds, 900);
+  assert.equal(outcome.exit_state.exit_reason, 'TRAILING_PROFIT_GIVEBACK');
 });
 
 test('paper adapter prevents duplicate submissions', () => {

@@ -108,7 +108,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   const fillRate = safeNumber(fillQualitySummary?.fill_rate, null);
   const partialFillRate = safeNumber(fillQualitySummary?.partial_fill_rate, null);
 
-  const scannerResult = performScannerChecks(signal, signalSide, marketContext, config, normalizedSignalSymbol, approvedSymbols);
+  const scannerResult = performScannerChecks(signal, signalSide, marketContext, config, normalizedSignalSymbol, approvedSymbols, { isScannerExitSell });
   const portfolioResult = performPortfolioChecks(signalSide, signal, portfolio, config, effectiveMaxOpenPositions, effectiveMaxDailyLoss, effectiveMaxExposurePerAsset, effectiveMaxExposurePerSector, effectiveMaxCryptoExposure, effectiveMaxPositionNotional, normalizedSignalSymbol);
   const signalResult = performSignalChecks(signal, marketContext, config, now, signalSide, isScannerExitSell, stopLoss, takeProfit, entryPrice, rewardRiskRatio, confidenceBucket, minProviderConfirmationScore);
   const brokerResult = performBrokerChecks(marketContext, config, now, portfolio, signalSide, fillRate, partialFillRate, multiSourceConfirmation, signal.strategy_requires_open_market, isScannerExitSell);

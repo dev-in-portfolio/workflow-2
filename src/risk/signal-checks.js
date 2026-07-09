@@ -30,11 +30,11 @@ function performSignalChecks(
     reasonCodes.push(RiskReason.STALE_SIGNAL);
   }
 
-  if (signal.confidence_score !== undefined && signal.confidence_score < config.minConfidenceForPaper) {
+  if (!isScannerExitSell && signal.confidence_score !== undefined && signal.confidence_score < config.minConfidenceForPaper) {
     reasonCodes.push(RiskReason.LOW_CONFIDENCE);
   }
 
-  if (Array.isArray(config.blockedCalibrationBuckets) && config.blockedCalibrationBuckets.includes(confidenceBucket)) {
+  if (!isScannerExitSell && Array.isArray(config.blockedCalibrationBuckets) && config.blockedCalibrationBuckets.includes(confidenceBucket)) {
     reasonCodes.push('BLOCKED_CALIBRATION_BUCKET');
   }
 
@@ -44,15 +44,15 @@ function performSignalChecks(
     reasonCodes.push('BLOCKED_BUY_CALIBRATION_BUCKET');
   }
 
-  if (signal.freshness_score !== undefined && signal.freshness_score < config.minFreshnessScore) {
+  if (!isScannerExitSell && signal.freshness_score !== undefined && signal.freshness_score < config.minFreshnessScore) {
     warnings.push('LOW_FRESHNESS');
   }
 
-  if (signal.edge_score !== undefined && signal.edge_score < config.minEdgeScore) {
+  if (!isScannerExitSell && signal.edge_score !== undefined && signal.edge_score < config.minEdgeScore) {
     reasonCodes.push('LOW_EDGE_SCORE');
   }
 
-  if (signal.source_quality_score !== undefined && signal.source_quality_score < config.minSourceQualityScore) {
+  if (!isScannerExitSell && signal.source_quality_score !== undefined && signal.source_quality_score < config.minSourceQualityScore) {
     reasonCodes.push('LOW_SOURCE_QUALITY');
   }
 
@@ -61,11 +61,11 @@ function performSignalChecks(
     reasonCodes.push('LOW_PROVIDER_CONFIRMATION');
   }
 
-  if (signal.contradiction_score !== undefined && signal.contradiction_score > config.maxContradictionScore) {
+  if (!isScannerExitSell && signal.contradiction_score !== undefined && signal.contradiction_score > config.maxContradictionScore) {
     reasonCodes.push('HIGH_CONTRADICTION');
   }
 
-  if (signal.risk_score !== undefined && signal.risk_score > config.maxRiskScore) {
+  if (!isScannerExitSell && signal.risk_score !== undefined && signal.risk_score > config.maxRiskScore) {
     reasonCodes.push('SIGNAL_RISK_TOO_HIGH');
   }
 

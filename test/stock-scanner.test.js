@@ -10,6 +10,7 @@ const {
   calculateEffectiveStopLossDollars,
   calculateSpreadRankPenalty,
   createStockScanner,
+  buildScannerConfig,
   normalizeRecentTradePenaltyMap,
   rankScannerBuyCandidates,
   resolveScannerWatchConfig,
@@ -59,6 +60,45 @@ test('stock scanner builds real buy candidates from fresh bullish Alpaca data', 
   assert.equal(candidate.payload.supports_fractional_shares, true);
 });
 
+test('stock scanner rejects stale market data before ranking a buy candidate', () => {
+  const skips = [];
+  const candidate = buildStockCandidateForSymbol('SCAGW', {
+    latestQuote: {
+      bp: 0.02,
+      ap: 0.03,
+      t: '2026-06-01T10:00:00.000Z',
+    },
+    latestTrade: {
+      p: 0.021,
+      t: '2026-06-01T10:00:00.000Z',
+    },
+    minuteBar: {
+      v: 1200,
+      h: 0.03,
+      l: 0.02,
+      t: '2026-06-01T10:00:00.000Z',
+    },
+    prevDailyBar: {
+      c: 0.06,
+      v: 600,
+    },
+  }, {
+    bp: 0.02,
+    ap: 0.03,
+    t: '2026-06-01T10:00:00.000Z',
+  }, {
+    receivedAt: '2026-07-08T15:10:00.000Z',
+    notional: 150,
+    runId: 'stock-stale-test',
+    assetType: 'stock',
+    maxStalenessSeconds: 60,
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  });
+
+  assert.equal(candidate, null);
+  assert.equal(skips[0].reason, 'DATA_STALE_OR_UNAVAILABLE');
+});
+
 test('stock scanner requires fresh upward pressure when recent momentum gate is enabled', () => {
   const skips = [];
   const flat = buildStockCandidateForSymbol('FLAT', {
@@ -97,6 +137,18 @@ test('stock scanner requires fresh upward pressure when recent momentum gate is 
   assert.equal(skips[0].reason, 'RECENT_UPWARD_MOMENTUM_WEAK');
   assert(rising);
   assert.equal(rising.payload.symbol, 'RISE');
+});
+
+test('live scanner defaults tighten the entry feed around real momentum', () => {
+  const liveConfig = buildScannerConfig({
+    TRADING_MODE: 'live',
+  });
+
+  assert.equal(liveConfig.requireRecentMomentum, true);
+  assert.equal(liveConfig.minMovePct, 0.25);
+  assert.equal(liveConfig.minRecentMovePct, 0.15);
+  assert.equal(liveConfig.minRecentRangePct, 0.15);
+  assert.equal(liveConfig.minRecentCloseLocationPct, 65);
 });
 
 test('stock scanner can allow high-score single-source momentum buys when explicitly enabled', () => {
@@ -519,6 +571,41 @@ test('stock scanner stacks losing sell penalty with the normal recent sell timer
   assert.deepEqual(penalty.components.map((component) => component.reason).sort(), ['recent_loss_exit', 'recent_sell', 'recent_stop_exit']);
 });
 
+test('stock scanner adds a stale-exit penalty on top of the normal recent sell timer', () => {
+  const penalties = normalizeRecentTradePenaltyMap([
+    {
+      entry_type: 'paper_outcome',
+      record: {
+        symbol: 'EVGO',
+        side: 'sell',
+        pnl: -0.36,
+        trade_duration_seconds: 720,
+        paper_result: {
+          status: 'filled',
+          filled_at: '2026-07-09T17:03:03.088Z',
+          order_id: 'stale-exit-evgo',
+        },
+        exit_reason: 'STALE_POSITION_TIMEOUT',
+      },
+    },
+  ], {
+    now: '2026-07-09T17:10:03.088Z',
+    windowMinutes: 15,
+    penalty: 20,
+    lossWindowMinutes: 10,
+    lossPenalty: 60,
+    staleWindowMinutes: 20,
+    stalePenalty: 40,
+  });
+
+  const penalty = penalties.get('EVGO');
+  assert(penalty);
+  assert.equal(penalty.penalty, 120);
+  assert.equal(penalty.reason, 'compound_recent_sell_loss_and_stale');
+  assert.equal(penalty.exit_reason, 'STALE_POSITION_TIMEOUT');
+  assert.deepEqual(penalty.components.map((component) => component.reason).sort(), ['recent_loss_exit', 'recent_sell', 'recent_stale_exit']);
+});
+
 test('stock scanner blocks buys for fatigued setups but still allows sells', () => {
   const blockedBuy = buildStockCandidateForSymbol('MU', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
@@ -731,12 +818,14 @@ test('stock scanner defaults to simplified live-market rules', () => {
   assert.equal(scanner.config.stopLossDollars, 1);
   assert.equal(scanner.config.stopLossNotionalPct, 0.75);
   assert.equal(scanner.config.stopLossMaxDollars, 2.5);
-  assert.equal(scanner.config.trailingProfitStartDollars, 0.5);
-  assert.equal(scanner.config.trailingProfitGivebackDollars, 0.3);
+  assert.equal(scanner.config.trailingProfitStartDollars, 0.45);
+  assert.equal(scanner.config.trailingProfitGivebackDollars, 0.1);
   assert.equal(scanner.config.recentTradePenaltyMinutes, 15);
   assert.equal(scanner.config.recentTradeRankPenalty, 20);
   assert.equal(scanner.config.recentLossPenaltyMinutes, 10);
   assert.equal(scanner.config.recentLossRankPenalty, 60);
+  assert.equal(scanner.config.recentStaleExitPenaltyMinutes, 20);
+  assert.equal(scanner.config.recentStaleExitRankPenalty, 40);
   assert.equal(scanner.config.recentStopExitPenaltyMinutes, 30);
   assert.equal(scanner.config.recentStopExitRankPenalty, 80);
   assert.equal(scanner.config.stopoutClusterBlockMinutes, 30);
@@ -979,6 +1068,62 @@ test('stock scanner run applies the widened hard stop to live positions', async 
   assert.equal(result.skip_summary.EXIT_TARGET_NOT_MET, 1);
 });
 
+test('stock scanner run passes the sell profit floor into exit evaluation', async () => {
+  const alpacaTimestamp = new Date(Date.now() - 3000).toISOString();
+  const scanner = createStockScanner({
+    enabled: true,
+    baseUrl: 'https://data.alpaca.markets',
+    localBaseUrl: 'http://127.0.0.1:65535',
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    symbols: ['NVDA'],
+    intervalMs: 60_000,
+    cooldownMs: 60_000,
+    maxOpenPositions: 1,
+    marketOpen: true,
+    sellNetProfitFloorDollars: 1.2,
+    trailingProfitStartDollars: 0.5,
+    trailingProfitGivebackDollars: 0.3,
+    marketFetch: async (url) => {
+      if (url.includes('/v2/positions')) {
+        return buildResponse([
+          {
+            symbol: 'NVDA',
+            qty: '2',
+            qty_available: '2',
+            avg_entry_price: '80',
+            unrealized_pl: '0.70',
+            market_value: '160.70',
+          },
+        ]);
+      }
+      if (url.includes('/v2/orders?status=open')) return buildResponse([]);
+      if (url.includes('/v2/account')) return buildResponse({ cash: '500', buying_power: '500' });
+      if (url.includes('/v2/stocks/snapshots?')) {
+        return buildResponse({
+          snapshots: {
+            NVDA: {
+              latestQuote: { bp: 80.34, ap: 80.36, t: alpacaTimestamp },
+              latestTrade: { p: 80.35, t: alpacaTimestamp },
+              minuteBar: { v: 50, h: 80.4, l: 80.3, t: alpacaTimestamp },
+              prevDailyBar: { c: 79, v: 100000 },
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    localFetch: async () => buildResponse({ accepted: true, final_decision: 'approved_for_paper' }),
+  });
+
+  const result = await scanner.runOnce({ runId: 'stock-sell-floor-pass-through-test' });
+  scanner.stop();
+
+  const exitSkip = result.recent_skips.find((entry) => entry.reason === 'EXIT_TARGET_NOT_MET');
+  assert(exitSkip);
+  assert.equal(exitSkip.sell_net_profit_floor_dollars, 1.2);
+});
+
 test('stock scanner trails winners after peak profit and sell on giveback', () => {
   const beforeStart = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',
@@ -1063,6 +1208,45 @@ test('stock scanner exits stale positions that never become runners', () => {
   assert.equal(stale.exitState.held_seconds >= 12 * 60, true);
 });
 
+test('stock scanner recycles minor green positions that never arm trailing protection', () => {
+  const staleGreen = buildStockCandidateForSymbol('PDDL', {
+    latestQuote: { bp: 1.52, ap: 1.54, t: '2026-07-09T19:30:34.000Z' },
+    latestTrade: { p: 1.53, t: '2026-07-09T19:30:34.000Z' },
+    minuteBar: { o: 1.53, c: 1.53, h: 1.54, l: 1.52, v: 900, t: '2026-07-09T19:30:34.000Z' },
+    prevDailyBar: { c: 1.48, v: 250000 },
+  }, { bp: 1.52, ap: 1.54, t: '2026-07-09T19:30:34.000Z' }, {
+    receivedAt: '2026-07-09T19:30:34.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'PDDL', qty: '106', qty_available: '106', avg_entry_price: '1.5272', unrealized_pl: '0.294' },
+    stopLossDollars: 0.25,
+    stopLossNotionalPct: 0.6075,
+    stopLossMaxDollars: 1.8062,
+    sellNetProfitFloorDollars: 0.35,
+    trailingProfitStartDollars: 0.45,
+    trailingProfitGivebackDollars: 0.1,
+    stalePositionExitEnabled: true,
+    stalePositionMaxHoldMinutes: 12,
+    stalePositionMinPeakProfitDollars: 0.25,
+    stalePositionMaxExitPnlDollars: 0.35,
+    trailingState: {
+      positions: {
+        PDDL: {
+          opened_at: '2026-07-09T18:52:39.048Z',
+          peak_updated_at: '2026-07-09T18:52:39.048Z',
+          peak_unrealized_pl: 0.294,
+        },
+      },
+    },
+  });
+
+  assert(staleGreen);
+  assert.equal(staleGreen.payload.side, 'sell');
+  assert.equal(staleGreen.exitState.exit_reason, 'STALE_POSITION_TIMEOUT');
+  assert.equal(staleGreen.exitState.exit_mode, 'stale_position_recycle');
+  assert.equal(staleGreen.exitState.profit_protection_active, false);
+  assert.equal(staleGreen.exitState.held_seconds >= 12 * 60, true);
+});
+
 test('stock scanner exits stalled protected winners so capital can recycle', () => {
   const stalledWinner = buildStockCandidateForSymbol('GOGL', {
     latestQuote: { bp: 29.14, ap: 29.16, t: '2026-07-07T16:18:00.000Z' },
@@ -1077,9 +1261,9 @@ test('stock scanner exits stalled protected winners so capital can recycle', () 
     trailingProfitStartDollars: 1.3,
     trailingProfitGivebackDollars: 0.3,
     stalledWinnerExitEnabled: true,
-    stalledWinnerMaxHoldMinutes: 18,
-    stalledWinnerMaxMinutesSincePeak: 8,
-    stalledWinnerMinProfitDollars: 1,
+    stalledWinnerMaxHoldMinutes: 10,
+    stalledWinnerMaxMinutesSincePeak: 5,
+    stalledWinnerMinProfitDollars: 0.45,
     trailingState: {
       positions: {
         GOGL: {
@@ -1096,8 +1280,8 @@ test('stock scanner exits stalled protected winners so capital can recycle', () 
   assert.equal(stalledWinner.payload.side, 'sell');
   assert.equal(stalledWinner.exitState.exit_reason, 'STALLED_WINNER_TIMEOUT');
   assert.equal(stalledWinner.exitState.exit_mode, 'stalled_winner_recycle');
-  assert.equal(stalledWinner.exitState.held_seconds >= 18 * 60, true);
-  assert.equal(stalledWinner.exitState.seconds_since_peak >= 8 * 60, true);
+  assert.equal(stalledWinner.exitState.held_seconds >= 10 * 60, true);
+  assert.equal(stalledWinner.exitState.seconds_since_peak >= 5 * 60, true);
 });
 
 test('stock scanner does not harvest trailing wins below the net profit floor', () => {
@@ -2675,6 +2859,7 @@ function createScannerHarness({
     MEME_DYNAMIC_WATCHLIST_ENABLED: 'false',
     MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
     MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
+    MAX_STALENESS_SECONDS: '20000000',
     SCANNER_SYMBOL_SOURCE: String(env.SCANNER_SYMBOL_SOURCE || env.MEME_DYNAMIC_WATCHLIST_ENABLED || '').toLowerCase() === 'true'
       ? 'dynamic'
       : 'approved',

@@ -209,6 +209,17 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
     || signal.marketContext?.exit_state
     || signal.exit_state
     || {};
+  const recordedAt = paperResult.filled_at || nowIso();
+  const entryAt = signalExitState.opened_at
+    || signal.position_opened_at
+    || signal.entry_at
+    || signal.created_at
+    || null;
+  const entryAtMs = entryAt ? new Date(entryAt).getTime() : Number.NaN;
+  const recordedAtMs = new Date(recordedAt).getTime();
+  const holdingPeriodSeconds = Number.isFinite(entryAtMs) && Number.isFinite(recordedAtMs) && recordedAtMs >= entryAtMs
+    ? Math.round((recordedAtMs - entryAtMs) / 1000)
+    : null;
   const sellSide = String(signal.side || signal.direction || '').trim().toLowerCase() === 'sell'
     || String(signal.direction || '').trim().toLowerCase() === 'bearish';
   const costBasis = safeNumber(
@@ -242,6 +253,12 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
     estimated_entry_price: signalExitState.entry_price ?? null,
     estimated_exit_price: signalExitState.sell_price ?? null,
     estimated_fees: signalExitState.fees ?? paperResult.estimated_fees ?? null,
+    entry_at: entryAt,
+    exit_at: recordedAt,
+    holding_period_seconds: holdingPeriodSeconds,
+    trade_duration_seconds: holdingPeriodSeconds,
+    exit_reason: signalExitState.exit_reason ?? null,
+    exit_state: Object.keys(signalExitState).length ? signalExitState : null,
   });
 
   if (typeof performance.recordPaperOutcome === 'function') {
@@ -249,7 +266,7 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
       ...outcome,
       signal_id: signal.signal_id || null,
       symbol: signal.symbol || null,
-      recorded_at: paperResult.filled_at || nowIso(),
+      recorded_at: recordedAt,
       partial_fill: buildPartialFillMetadata(paperResult),
     });
   }

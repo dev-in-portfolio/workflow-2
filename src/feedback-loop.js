@@ -13,6 +13,7 @@ const {
   summarizeExecutionQualityState,
   updateExecutionQualityState,
 } = require('./execution-quality-state');
+const { LIVE_STOCK_POLICY_DEFAULTS } = require('./live-stock-policy');
 const { nowIso, safeNumber } = require('./util');
 
 const DEFAULT_MAX_OPEN_POSITIONS = 2;
@@ -601,6 +602,13 @@ function buildExecutionQualityRecord(record = {}) {
   const scannerContext = marketContext.scanner || {};
   const side = String(record.side || paperResult.side || signal.side || '').trim().toLowerCase() || null;
   const symbol = String(record.symbol || paperResult.symbol || signal.symbol || '').trim().toUpperCase() || null;
+  const filledQty = safeNumber(paperResult.filled_quantity ?? paperResult.filled_qty ?? record.quantity ?? signal.quantity ?? null, null);
+  const submittedQty = safeNumber(paperResult.submitted_quantity ?? paperResult.qty ?? record.quantity ?? signal.quantity ?? null, null);
+  const remainingQty = safeNumber(paperResult.remaining_quantity ?? paperResult.remaining_qty ?? null, null);
+  const status = String(paperResult.status || record.status || '').toLowerCase();
+  const partialFill = status === 'partially_filled'
+    || (Number.isFinite(submittedQty) && Number.isFinite(filledQty) && filledQty > 0 && filledQty < submittedQty)
+    || (Number.isFinite(remainingQty) && remainingQty > 0 && Number.isFinite(filledQty) && filledQty > 0);
   return {
     symbol,
     setup_key: scannerContext.setup_key || signal.setup_key || signal.setupKey || null,
@@ -609,13 +617,13 @@ function buildExecutionQualityRecord(record = {}) {
     submitted_price: safeNumber(paperResult.submitted_price ?? paperResult.entry_price ?? record.entry_price ?? signal.entry_price ?? signal.price ?? null, null),
     expected_price: safeNumber(paperResult.expected_price ?? signal.entry_price ?? signal.price ?? null, null),
     filled_avg_price: safeNumber(paperResult.average_fill_price ?? paperResult.filled_avg_price ?? paperResult.filled_price ?? null, null),
-    filled_qty: safeNumber(paperResult.filled_quantity ?? paperResult.filled_qty ?? record.quantity ?? signal.quantity ?? null, null),
-    submitted_qty: safeNumber(paperResult.submitted_quantity ?? paperResult.qty ?? record.quantity ?? signal.quantity ?? null, null),
+    filled_qty: filledQty,
+    submitted_qty: submittedQty,
     status: paperResult.status || record.status || null,
     slippage: safeNumber(record.execution_slippage ?? record.slippage ?? paperResult.slippage ?? null, null),
     spread_pct: safeNumber(scannerContext.spread_pct ?? marketContext.spread_pct ?? null, null),
     execution_drag: safeNumber(record.execution_drag ?? paperResult.execution_drag ?? null, null),
-    partial_fill: Boolean(record.partial_fill || String(paperResult.status || '').toLowerCase() === 'partially_filled'),
+    partial_fill: partialFill,
     latency_ms: safeNumber(record.latency_ms ?? paperResult.latency_ms ?? null, null),
     rejected: String(paperResult.status || record.status || '').toLowerCase() === 'rejected',
     canceled: String(paperResult.status || record.status || '').toLowerCase().includes('cancel'),
@@ -737,14 +745,15 @@ function defaultPolicySnapshot() {
       maxOpenPositions: DEFAULT_MAX_OPEN_POSITIONS,
       positionSizeMultiplier: 1,
       sellProfitThresholdPct: 5,
-      sellNetProfitFloorDollars: 1,
+      sellNetProfitFloorDollars: LIVE_STOCK_POLICY_DEFAULTS.sellNetProfitFloorDollars,
       approvedSymbols: [],
+      buyNotionalTarget: 150,
       minBuyNotional: 25,
       positionStopLossDollars: 1,
       positionStopLossNotionalPct: 0.75,
       positionStopLossMaxDollars: 2.5,
-      trailingProfitStartDollars: 0.5,
-      trailingProfitGivebackDollars: 0.3,
+      trailingProfitStartDollars: LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars,
+      trailingProfitGivebackDollars: LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars,
       blockedBuyCalibrationBuckets: [],
       blockBuys: false,
     },
@@ -757,6 +766,7 @@ function normalizePolicySnapshot(snapshot) {
   const policy = snapshot?.policy || snapshot?.proposed_policy || snapshot || {};
   return {
     source: snapshot?.source || 'manual',
+    scope: snapshot?.scope || snapshot?.policy?.scope || 'live-market',
     captured_at: snapshot?.captured_at || nowIso(),
     report_date: snapshot?.report_date || snapshot?.date || nowIso().slice(0, 10),
     reason_codes: Array.isArray(snapshot?.reason_codes) ? snapshot.reason_codes : [],
@@ -781,15 +791,15 @@ function normalizePolicySnapshot(snapshot) {
       maxOpenPositions: Math.max(1, Math.round(safeNumber(policy.maxOpenPositions ?? DEFAULT_MAX_OPEN_POSITIONS, DEFAULT_MAX_OPEN_POSITIONS))),
       positionSizeMultiplier: safeNumber(policy.positionSizeMultiplier ?? 1, 1),
       sellProfitThresholdPct: safeNumber(policy.sellProfitThresholdPct ?? 5, 5),
-      sellNetProfitFloorDollars: safeNumber(policy.sellNetProfitFloorDollars ?? 1, 1),
-      buyNotionalTarget: safeNumber(policy.buyNotionalTarget ?? 150, 150),
+      sellNetProfitFloorDollars: safeNumber(policy.sellNetProfitFloorDollars ?? LIVE_STOCK_POLICY_DEFAULTS.sellNetProfitFloorDollars, LIVE_STOCK_POLICY_DEFAULTS.sellNetProfitFloorDollars),
+      buyNotionalTarget: safeNumber(policy.buyNotionalTarget ?? 25, 25),
       approvedSymbols: normalizeApprovedSymbols(policy.approvedSymbols),
-      minBuyNotional: safeNumber(policy.minBuyNotional ?? 25, 25),
+      minBuyNotional: safeNumber(policy.minBuyNotional ?? 10, 10),
       positionStopLossDollars: safeNumber(policy.positionStopLossDollars ?? 1, 1),
       positionStopLossNotionalPct: safeNumber(policy.positionStopLossNotionalPct ?? 0.75, 0.75),
       positionStopLossMaxDollars: safeNumber(policy.positionStopLossMaxDollars ?? 2.5, 2.5),
-      trailingProfitStartDollars: safeNumber(policy.trailingProfitStartDollars ?? 0.5, 0.5),
-      trailingProfitGivebackDollars: safeNumber(policy.trailingProfitGivebackDollars ?? 0.3, 0.3),
+      trailingProfitStartDollars: safeNumber(policy.trailingProfitStartDollars ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars, LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars),
+      trailingProfitGivebackDollars: safeNumber(policy.trailingProfitGivebackDollars ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars, LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars),
       volatilityThresholdPct: policy.volatilityThresholdPct === undefined || policy.volatilityThresholdPct === null
         ? null
         : safeNumber(policy.volatilityThresholdPct, null),

@@ -65,3 +65,23 @@ test('structure-aware stops use safe fallback when structure data is unavailable
   assert.equal(stop.stop_price, 99.5);
   assert.equal(stop.stop_distance, 0.5);
 });
+
+test('structure-aware stops use price-relative distance for very low-priced symbols', () => {
+  const stop = calculateStructureAwareStop({
+    symbol: 'SCAGW',
+    side: 'buy',
+    price: 0.0211,
+    marketData: {
+      recent_swing_low: 0.0504,
+    },
+    fixedStopDollars: 0.25,
+    minStopDistanceDollars: 0.01,
+    maxStopDistanceDollars: 3,
+  });
+
+  assert.equal(stop.accepted, true);
+  assert.equal(stop.method, 'price_relative');
+  assert(stop.stop_distance > 0);
+  assert(stop.stop_distance < 0.0211 * 0.2);
+  assert.equal(stop.stop_price > 0.01, true);
+});

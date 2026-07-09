@@ -1,11 +1,9 @@
 const { safeNumber } = require('./util');
 
 const DEPRECATED_POLICY_FIELDS = [
-  'blockedCalibrationBuckets',
   'cooldownAfterLossMinutes',
   'cooldownAfterSignalSpamMinutes',
   'duplicateSignalWindowMinutes',
-  'sellProfitThresholdPct',
   'volatilityThresholdPct',
 ];
 

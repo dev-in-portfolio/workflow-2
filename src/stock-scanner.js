@@ -13,6 +13,7 @@ const { recordScannerDecisionCycle, recordScannerSelectionShadow } = require('./
 const { loadTrailingState, saveTrailingState, updateTrailingSnapshot } = require('./position-trailing-state');
 const { isRegularUsMarketHours, resolveIntradayStockRegime } = require('./market-hours');
 const { assertSignalCandidate } = require('./module-contracts');
+const { LIVE_STOCK_POLICY_DEFAULTS } = require('./live-stock-policy');
 const {
   loadPartialFillState,
   reconcilePartialFills,
@@ -99,8 +100,19 @@ function mapSourceLabel(key) {
   return SCANNER_SOURCE_LABELS[String(key || '').trim().toLowerCase()] || String(key || '').trim();
 }
 
+function shouldUseStricterLiveEntryDefaults(env = process.env, options = {}) {
+  const tradingMode = String(options.tradingMode || env.TRADING_MODE || '').trim().toLowerCase();
+  const scannerMode = String(options.scannerMode || env.SCANNER_MODE || env.SCANNER_PROFILE || '').trim().toLowerCase();
+  const liveTradingEnabled = parseBool(env.LIVE_TRADING_ENABLED, false);
+  return tradingMode === 'live'
+    || liveTradingEnabled === true
+    || scannerMode === 'live-market'
+    || scannerMode === 'live';
+}
+
 function createStockScanner(options = {}) {
   const env = options.env || process.env;
+  const scannerConfig = options.scannerConfig || {};
   const marketFetch = options.marketFetch || options.fetch || globalThis.fetch;
   const localFetch = options.localFetch || globalThis.fetch;
   if (!marketFetch) throw new Error('Stock scanner requires fetch support');
@@ -110,6 +122,7 @@ function createStockScanner(options = {}) {
   const dataDir = options.dataDir || path.resolve(repoRoot, 'data');
   const memeMonitorStatePath = resolveMemeMonitorStatePath({ dataDir, filePath: options.memeMonitorStatePath, repoRoot });
   const dynamicHotListPath = resolveDynamicHotListPath({ dataDir, filePath: options.dynamicHotListPath, repoRoot });
+  const stricterLiveEntryDefaults = shouldUseStricterLiveEntryDefaults(env, options);
 
   const apiKeyId = options.apiKeyId || env.ALPACA_API_KEY_ID || '';
   const apiSecretKey = options.apiSecretKey || env.ALPACA_API_SECRET_KEY || '';
@@ -122,36 +135,37 @@ function createStockScanner(options = {}) {
     ? parseSymbolList(options.symbols, [])
     : parseSymbolList(env.STOCK_SCANNER_SYMBOLS, []);
   const scannerSymbolSource = normalizeScannerSymbolSource(options.scannerSymbolSource
-    ?? options.scannerConfig?.scannerSymbolSource
+    ?? scannerConfig.scannerSymbolSource
     ?? (Object.prototype.hasOwnProperty.call(env, 'SCANNER_SYMBOL_SOURCE') ? env.SCANNER_SYMBOL_SOURCE : 'approved'));
   const excludedBuySymbols = parseSymbolList(options.excludedBuySymbols ?? env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS, []);
-  const intervalMs = Math.max(15_000, Number(options.intervalMs ?? Number(env.STOCK_SCANNER_INTERVAL_SECONDS || 60) * 1000) || 60_000);
+  const intervalMs = Math.max(5_000, Number(options.intervalMs ?? Number(env.STOCK_SCANNER_INTERVAL_SECONDS || 10) * 1000) || 10_000);
   const maxCandidatesPerRun = Math.max(1, Number(options.maxCandidatesPerRun ?? env.STOCK_SCANNER_MAX_CANDIDATES ?? 2) || 2);
   const notional = Math.max(1, Number(options.notional ?? env.BUY_NOTIONAL_TARGET ?? 150) || 150);
   const minBuyNotional = Math.max(1, Number(options.minBuyNotional ?? env.MIN_BUY_NOTIONAL ?? 25) || 25);
   const maxOpenPositions = Math.max(1, Number(options.maxOpenPositions ?? env.MAX_OPEN_POSITIONS ?? 2) || 2);
+  const maxStalenessSeconds = Math.max(1, safeNumber(options.maxStalenessSeconds ?? env.MAX_STALENESS_SECONDS ?? 60, 60));
   const stopLossDollars = Math.max(0.01, Number(options.stopLossDollars ?? env.POSITION_STOP_LOSS_DOLLARS ?? 1) || 1);
   const stopLossNotionalPct = Math.max(0, safeNumber(options.stopLossNotionalPct ?? env.POSITION_STOP_LOSS_NOTIONAL_PCT, 0.75));
   const stopLossMaxDollars = Math.max(stopLossDollars, safeNumber(options.stopLossMaxDollars ?? env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5));
-  const trailingProfitStartDollars = Math.max(0.01, Number(options.trailingProfitStartDollars ?? env.TRAILING_PROFIT_START_DOLLARS ?? 0.5) || 0.5);
-  const trailingProfitGivebackDollars = Math.max(0.01, Number(options.trailingProfitGivebackDollars ?? env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? 0.3) || 0.3);
-  const stalePositionExitEnabled = options.stalePositionExitEnabled ?? parseBool(env.STOCK_SCANNER_STALE_POSITION_EXIT_ENABLED, false);
-  const stalePositionMaxHoldMinutes = Math.max(1, safeNumber(options.stalePositionMaxHoldMinutes ?? env.STOCK_SCANNER_STALE_POSITION_MAX_HOLD_MINUTES, 12));
-  const stalePositionMinPeakProfitDollars = Math.max(0, safeNumber(options.stalePositionMinPeakProfitDollars ?? env.STOCK_SCANNER_STALE_POSITION_MIN_PEAK_PROFIT_DOLLARS, 0.25));
-  const stalePositionMaxExitPnlDollars = safeNumber(options.stalePositionMaxExitPnlDollars ?? env.STOCK_SCANNER_STALE_POSITION_MAX_EXIT_PNL_DOLLARS, 0);
-  const stalledWinnerExitEnabled = options.stalledWinnerExitEnabled ?? parseBool(env.STOCK_SCANNER_STALLED_WINNER_EXIT_ENABLED, false);
-  const stalledWinnerMaxHoldMinutes = Math.max(1, safeNumber(options.stalledWinnerMaxHoldMinutes ?? env.STOCK_SCANNER_STALLED_WINNER_MAX_HOLD_MINUTES, 18));
-  const stalledWinnerMaxMinutesSincePeak = Math.max(1, safeNumber(options.stalledWinnerMaxMinutesSincePeak ?? env.STOCK_SCANNER_STALLED_WINNER_MAX_MINUTES_SINCE_PEAK, 8));
-  const stalledWinnerMinProfitDollars = Math.max(0, safeNumber(options.stalledWinnerMinProfitDollars ?? env.STOCK_SCANNER_STALLED_WINNER_MIN_PROFIT_DOLLARS, 1));
-  const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars ?? env.SELL_NET_PROFIT_FLOOR_DOLLARS, 1));
+  const trailingProfitStartDollars = Math.max(0.01, Number(options.trailingProfitStartDollars ?? env.TRAILING_PROFIT_START_DOLLARS ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars) || LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars);
+  const trailingProfitGivebackDollars = Math.max(0.01, Number(options.trailingProfitGivebackDollars ?? env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars) || LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars);
+  const stalePositionExitEnabled = options.stalePositionExitEnabled ?? parseBool(env.STOCK_SCANNER_STALE_POSITION_EXIT_ENABLED, LIVE_STOCK_POLICY_DEFAULTS.stalePositionExitEnabled);
+  const stalePositionMaxHoldMinutes = Math.max(1, safeNumber(options.stalePositionMaxHoldMinutes ?? env.STOCK_SCANNER_STALE_POSITION_MAX_HOLD_MINUTES, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMaxHoldMinutes));
+  const stalePositionMinPeakProfitDollars = Math.max(0, safeNumber(options.stalePositionMinPeakProfitDollars ?? env.STOCK_SCANNER_STALE_POSITION_MIN_PEAK_PROFIT_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMinPeakProfitDollars));
+  const stalePositionMaxExitPnlDollars = safeNumber(options.stalePositionMaxExitPnlDollars ?? env.STOCK_SCANNER_STALE_POSITION_MAX_EXIT_PNL_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMaxExitPnlDollars);
+  const stalledWinnerExitEnabled = options.stalledWinnerExitEnabled ?? parseBool(env.STOCK_SCANNER_STALLED_WINNER_EXIT_ENABLED, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerExitEnabled);
+  const stalledWinnerMaxHoldMinutes = Math.max(1, safeNumber(options.stalledWinnerMaxHoldMinutes ?? env.STOCK_SCANNER_STALLED_WINNER_MAX_HOLD_MINUTES, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMaxHoldMinutes));
+  const stalledWinnerMaxMinutesSincePeak = Math.max(1, safeNumber(options.stalledWinnerMaxMinutesSincePeak ?? env.STOCK_SCANNER_STALLED_WINNER_MAX_MINUTES_SINCE_PEAK, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMaxMinutesSincePeak));
+  const stalledWinnerMinProfitDollars = Math.max(0, safeNumber(options.stalledWinnerMinProfitDollars ?? env.STOCK_SCANNER_STALLED_WINNER_MIN_PROFIT_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMinProfitDollars));
+  const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars ?? env.SELL_NET_PROFIT_FLOOR_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.sellNetProfitFloorDollars));
   const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? Boolean(twelveDataApiKey);
   const singleSourceMomentumEnabled = options.singleSourceMomentumEnabled ?? parseBool(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_ENABLED, false);
   const singleSourceMomentumMinRankScore = Math.max(0, safeNumber(options.singleSourceMomentumMinRankScore ?? env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_MIN_RANK_SCORE, 500));
-  const minMovePct = Math.max(0, safeNumber(options.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT, 0));
-  const requireRecentMomentum = options.requireRecentMomentum ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, false);
-  const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, 0.03));
-  const minRecentRangePct = Math.max(0, safeNumber(options.minRecentRangePct ?? env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, 0.05));
-  const minRecentCloseLocationPct = Math.max(0, Math.min(100, safeNumber(options.minRecentCloseLocationPct ?? env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, 60)));
+  const minMovePct = Math.max(0, safeNumber(options.minMovePct ?? scannerConfig.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minMovePct : 0));
+  const requireRecentMomentum = options.requireRecentMomentum ?? scannerConfig.requireRecentMomentum ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, stricterLiveEntryDefaults);
+  const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? scannerConfig.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03));
+  const minRecentRangePct = Math.max(0, safeNumber(options.minRecentRangePct ?? scannerConfig.minRecentRangePct ?? env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct : 0.05));
+  const minRecentCloseLocationPct = Math.max(0, Math.min(100, safeNumber(options.minRecentCloseLocationPct ?? scannerConfig.minRecentCloseLocationPct ?? env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct : 60)));
   const allowContrarianEntries = options.allowContrarianEntries ?? true;
   const blockBuys = options.blockBuys ?? parseBool(env.BLOCK_BUYS, false);
   const sellMaxPriceDiffPct = safeNumber(options.sellMaxPriceDiffPct ?? env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, 0.75);
@@ -159,6 +173,8 @@ function createStockScanner(options = {}) {
   const recentTradeRankPenalty = Math.max(0, safeNumber(options.recentTradeRankPenalty ?? env.STOCK_SCANNER_RECENT_TRADE_RANK_PENALTY, 20));
   const recentLossPenaltyMinutes = Math.max(0, safeNumber(options.recentLossPenaltyMinutes ?? env.STOCK_SCANNER_RECENT_LOSS_PENALTY_MINUTES, 10));
   const recentLossRankPenalty = Math.max(0, safeNumber(options.recentLossRankPenalty ?? env.STOCK_SCANNER_RECENT_LOSS_RANK_PENALTY, 60));
+  const recentStaleExitPenaltyMinutes = Math.max(0, safeNumber(options.recentStaleExitPenaltyMinutes ?? env.STOCK_SCANNER_RECENT_STALE_EXIT_PENALTY_MINUTES, 20));
+  const recentStaleExitRankPenalty = Math.max(0, safeNumber(options.recentStaleExitRankPenalty ?? env.STOCK_SCANNER_RECENT_STALE_EXIT_RANK_PENALTY, 40));
   const recentStopExitPenaltyMinutes = Math.max(0, safeNumber(options.recentStopExitPenaltyMinutes ?? env.STOCK_SCANNER_RECENT_STOP_EXIT_PENALTY_MINUTES, 30));
   const recentStopExitRankPenalty = Math.max(0, safeNumber(options.recentStopExitRankPenalty ?? env.STOCK_SCANNER_RECENT_STOP_EXIT_RANK_PENALTY, 80));
   const antiChurnEnabled = options.antiChurnEnabled ?? parseBool(env.ANTI_CHURN_ENABLED, true);
@@ -211,10 +227,10 @@ function createStockScanner(options = {}) {
   const scannerSelectionV2AuthorityEnabled = options.scannerSelectionV2AuthorityEnabled ?? parseBool(env.SCANNER_SELECTION_V2_AUTHORITY_ENABLED, false);
   const scannerSelectionV2OutcomeTrackingEnabled = options.scannerSelectionV2OutcomeTrackingEnabled ?? parseBool(env.SCANNER_SELECTION_V2_OUTCOME_TRACKING_ENABLED, scannerSelectionV2ShadowEnabled);
   const scannerSelectionV2Config = {
-    selectionV2MaxSpreadPct: safeNumber(options.selectionV2MaxSpreadPct ?? env.SCANNER_SELECTION_V2_MAX_SPREAD_PCT, 2.5),
+    selectionV2MaxSpreadPct: safeNumber(options.selectionV2MaxSpreadPct ?? env.SCANNER_SELECTION_V2_MAX_SPREAD_PCT, stricterLiveEntryDefaults ? 2.0 : 2.5),
     selectionV2HardBlockSpreadPct: safeNumber(options.selectionV2HardBlockSpreadPct ?? env.SCANNER_SELECTION_V2_HARD_BLOCK_SPREAD_PCT, 5),
-    selectionV2MinRelativeVolume: safeNumber(options.selectionV2MinRelativeVolume ?? env.SCANNER_SELECTION_V2_MIN_RELATIVE_VOLUME, 0.25),
-    selectionV2MinFreshnessScore: safeNumber(options.selectionV2MinFreshnessScore ?? env.SCANNER_SELECTION_V2_MIN_FRESHNESS_SCORE, 35),
+    selectionV2MinRelativeVolume: safeNumber(options.selectionV2MinRelativeVolume ?? env.SCANNER_SELECTION_V2_MIN_RELATIVE_VOLUME, stricterLiveEntryDefaults ? 0.75 : 0.25),
+    selectionV2MinFreshnessScore: safeNumber(options.selectionV2MinFreshnessScore ?? env.SCANNER_SELECTION_V2_MIN_FRESHNESS_SCORE, stricterLiveEntryDefaults ? 60 : 35),
     selectionV2MaxVwapExtensionPct: safeNumber(options.selectionV2MaxVwapExtensionPct ?? env.SCANNER_SELECTION_V2_MAX_VWAP_EXTENSION_PCT, 7),
     selectionV2SpreadPenaltyThresholdPct: safeNumber(options.selectionV2SpreadPenaltyThresholdPct ?? env.SCANNER_SELECTION_V2_SPREAD_PENALTY_THRESHOLD_PCT, 0.75),
     selectionV2RegularWatchMaxBonus: safeNumber(options.selectionV2RegularWatchMaxBonus ?? env.SCANNER_SELECTION_V2_REGULAR_WATCH_MAX_BONUS, 12),
@@ -570,6 +586,8 @@ function createStockScanner(options = {}) {
         penalty: recentTradeRankPenalty,
         lossWindowMinutes: recentLossPenaltyMinutes,
         lossPenalty: recentLossRankPenalty,
+        staleWindowMinutes: recentStaleExitPenaltyMinutes,
+        stalePenalty: recentStaleExitRankPenalty,
         stopWindowMinutes: recentStopExitPenaltyMinutes,
         stopPenalty: recentStopExitRankPenalty,
         overrides: options.recentTradePenalties,
@@ -647,6 +665,7 @@ function createStockScanner(options = {}) {
         stalePositionMaxHoldMinutes,
         stalePositionMinPeakProfitDollars,
         stalePositionMaxExitPnlDollars,
+        maxStalenessSeconds,
         stalledWinnerExitEnabled,
         stalledWinnerMaxHoldMinutes,
         stalledWinnerMaxMinutesSincePeak,
@@ -736,6 +755,7 @@ function createStockScanner(options = {}) {
         maxStopDistanceDollars,
         allowRiskBudgetFractionalShares,
         riskBudgetRequireBrokerEquity,
+        maxStalenessSeconds,
         scannerSymbolSource: memeWatchConfig.scannerSymbolSource || scannerSymbolSource,
         sourceListsBySymbol: memeWatchConfig.sourceListsBySymbol || latestSourceListsBySymbol,
         candidateLifecycleEnabled,
@@ -786,6 +806,7 @@ function createStockScanner(options = {}) {
           stalePositionMaxHoldMinutes,
           stalePositionMinPeakProfitDollars,
           stalePositionMaxExitPnlDollars,
+          maxStalenessSeconds,
           stalledWinnerExitEnabled,
           stalledWinnerMaxHoldMinutes,
           stalledWinnerMaxMinutesSincePeak,
@@ -963,6 +984,7 @@ function createStockScanner(options = {}) {
       }
 
       let rotationResult = null;
+      let rotationCandidateSymbol = normalizeWatchSymbol(rotationPlan?.candidate);
       const suppressBuyPosting = Boolean(hotSlotRotationEnabled && rotationPlan?.accountFull);
       const shouldAttemptRotation = hotSlotRotationEnabled
         && rotationPlan?.rotationEligible
@@ -1131,7 +1153,8 @@ function createStockScanner(options = {}) {
                 };
                 break;
               }
-              await sleep(1000);
+              // Recheck quickly so a freed slot can be reused without waiting a full second.
+              await sleep(250);
             }
 
             if (!reconciledState?.available) {
@@ -1159,15 +1182,19 @@ function createStockScanner(options = {}) {
                 lastDecisionAt: nowIso(),
               }, hotSlotRotationFeatureState);
               options.logger({ level: 'info', event: 'rotation_buy_recheck_started', message: `Revalidating ${rotationPlan.candidate} after exiting ${evictionSymbol}` });
-              const freshCandidate = buyCandidates.find((candidate) => normalizeWatchSymbol(candidate.symbol) === normalizeWatchSymbol(rotationPlan.candidate)) || null;
-              const rotationCandidateStillValid = Boolean(
-                rotationCandidateFreshEnough
-                && freshCandidate
-                && freshPortfolio.remaining_position_slots > 0
-                && Number.isFinite(safeNumber(freshCandidate.payload?.market_context?.scanner?.current_price, null))
-                && Number.isFinite(safeNumber(freshCandidate.payload?.market_context?.scanner?.spread_pct, null)),
-              );
-              if (!rotationCandidateStillValid) {
+              const normalizedRotationSymbol = normalizeWatchSymbol(rotationPlan.candidate);
+              const freshRotationCandidates = buyCandidates.filter((candidate) => {
+                const candidateSymbol = normalizeWatchSymbol(candidate?.symbol);
+                if (!candidateSymbol || candidateSymbol === evictionSymbol) return false;
+                return Number.isFinite(safeNumber(candidate.payload?.market_context?.scanner?.current_price, null))
+                  && Number.isFinite(safeNumber(candidate.payload?.market_context?.scanner?.spread_pct, null));
+              });
+              const preferredCandidate = freshRotationCandidates.find((candidate) => normalizeWatchSymbol(candidate.symbol) === normalizedRotationSymbol) || null;
+              const promotedCandidate = (rotationCandidateFreshEnough && preferredCandidate)
+                ? preferredCandidate
+                : (freshRotationCandidates.find((candidate) => normalizeWatchSymbol(candidate.symbol) !== normalizedRotationSymbol) || preferredCandidate);
+              const promotedSymbol = promotedCandidate ? normalizeWatchSymbol(promotedCandidate.symbol) : null;
+              if (!promotedCandidate) {
                 state.hotSlotRotation = summarizeHotSlotRotationRuntime({
                   ...state.hotSlotRotation,
                   lastDecision: 'rotation_candidate_no_longer_valid',
@@ -1181,49 +1208,63 @@ function createStockScanner(options = {}) {
               } else {
                 state.hotSlotRotation = summarizeHotSlotRotationRuntime({
                   ...state.hotSlotRotation,
-                  lastDecision: 'rotation_candidate_still_valid',
-                  decision: 'rotation_candidate_still_valid',
-                  reasonCodes: ['rotation_buy_recheck_started', 'rotation_candidate_still_valid'],
+                  lastDecision: promotedSymbol === normalizedRotationSymbol ? 'rotation_candidate_still_valid' : 'rotation_candidate_replaced_with_fresh_candidate',
+                  decision: promotedSymbol === normalizedRotationSymbol ? 'rotation_candidate_still_valid' : 'rotation_candidate_replaced_with_fresh_candidate',
+                  reasonCodes: promotedSymbol === normalizedRotationSymbol
+                    ? ['rotation_buy_recheck_started', 'rotation_candidate_still_valid']
+                    : ['rotation_buy_recheck_started', 'rotation_candidate_still_valid', 'rotation_candidate_replaced_with_fresh_candidate'],
                   status: 'active',
                   blockReason: null,
                   lastDecisionAt: nowIso(),
                 }, hotSlotRotationFeatureState);
-                options.logger({ level: 'info', event: 'rotation_candidate_still_valid', message: `Rotation candidate ${rotationPlan.candidate} remains valid` });
-                const promotedCandidate = buyCandidates.find((candidate) => normalizeWatchSymbol(candidate.symbol) === normalizeWatchSymbol(rotationPlan.candidate)) || null;
-                if (promotedCandidate) {
+                options.logger({
+                  level: 'info',
+                  event: promotedSymbol === normalizedRotationSymbol ? 'rotation_candidate_still_valid' : 'rotation_candidate_replaced_with_fresh_candidate',
+                  message: promotedSymbol === normalizedRotationSymbol
+                    ? `Rotation candidate ${rotationPlan.candidate} remains valid`
+                    : `Rotation candidate ${rotationPlan.candidate} aged out, promoting fresh candidate ${promotedSymbol}`,
+                });
+                state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                  ...state.hotSlotRotation,
+                  candidate: promotedSymbol || state.hotSlotRotation.candidate,
+                  candidateHeatScore: promotedSymbol === normalizedRotationSymbol
+                    ? state.hotSlotRotation.candidateHeatScore
+                    : safeNumber(promotedCandidate?.payload?.market_context?.scanner?.selection_v2_score ?? promotedCandidate?.rankScore ?? null, null),
+                  candidateMarketScore: promotedSymbol === normalizedRotationSymbol
+                    ? state.hotSlotRotation.candidateMarketScore
+                    : safeNumber(promotedCandidate?.payload?.market_context?.scanner?.selection_v2?.market_score ?? promotedCandidate?.marketScore ?? null, null),
+                  selectedCandidate: promotedCandidate || state.hotSlotRotation.selectedCandidate,
+                  lastDecision: 'rotation_candidate_promoted_to_risk_gate',
+                  decision: 'rotation_candidate_promoted_to_risk_gate',
+                  reasonCodes: ['rotation_buy_recheck_started', 'rotation_candidate_still_valid', 'rotation_candidate_promoted_to_risk_gate'],
+                  status: 'active',
+                  lastDecisionAt: nowIso(),
+                }, hotSlotRotationFeatureState);
+                rotationCandidateSymbol = promotedSymbol || rotationCandidateSymbol;
+                options.logger({ level: 'info', event: 'rotation_candidate_promoted_to_risk_gate', message: `Posting rotation candidate ${promotedSymbol || rotationPlan.candidate} through the normal risk gate` });
+                const promotedResult = await postCandidate(promotedCandidate);
+                if (promotedResult && promotedResult.accepted) {
                   state.hotSlotRotation = summarizeHotSlotRotationRuntime({
                     ...state.hotSlotRotation,
-                    lastDecision: 'rotation_candidate_promoted_to_risk_gate',
-                    decision: 'rotation_candidate_promoted_to_risk_gate',
-                    reasonCodes: ['rotation_buy_recheck_started', 'rotation_candidate_still_valid', 'rotation_candidate_promoted_to_risk_gate'],
+                    lastDecision: 'rotation_complete',
+                    decision: 'rotation_complete',
+                    reasonCodes: ['rotation_complete'],
                     status: 'active',
+                    rotationEligible: true,
                     lastDecisionAt: nowIso(),
                   }, hotSlotRotationFeatureState);
-                  options.logger({ level: 'info', event: 'rotation_candidate_promoted_to_risk_gate', message: `Posting rotation candidate ${rotationPlan.candidate} through the normal risk gate` });
-                  const promotedResult = await postCandidate(promotedCandidate);
-                  if (promotedResult && promotedResult.accepted) {
-                    state.hotSlotRotation = summarizeHotSlotRotationRuntime({
-                      ...state.hotSlotRotation,
-                      lastDecision: 'rotation_complete',
-                      decision: 'rotation_complete',
-                      reasonCodes: ['rotation_complete'],
-                      status: 'active',
-                      rotationEligible: true,
-                      lastDecisionAt: nowIso(),
-                    }, hotSlotRotationFeatureState);
-                    options.logger({ level: 'info', event: 'rotation_complete', message: `Hot slot rotation completed for ${rotationPlan.candidate}` });
-                  } else {
-                    state.hotSlotRotation = summarizeHotSlotRotationRuntime({
-                      ...state.hotSlotRotation,
-                      lastDecision: 'rotation_aborted',
-                      decision: 'rotation_aborted',
-                      reasonCodes: ['rotation_candidate_promoted_to_risk_gate', 'rotation_aborted'],
-                      status: 'error',
-                      blockReason: 'rotation_aborted',
-                      lastDecisionAt: nowIso(),
-                    }, hotSlotRotationFeatureState);
-                    options.logger({ level: 'warn', event: 'rotation_aborted', message: `Hot slot rotation aborted for ${rotationPlan.candidate}` });
-                  }
+                  options.logger({ level: 'info', event: 'rotation_complete', message: `Hot slot rotation completed for ${promotedSymbol || rotationPlan.candidate}` });
+                } else {
+                  state.hotSlotRotation = summarizeHotSlotRotationRuntime({
+                    ...state.hotSlotRotation,
+                    lastDecision: 'rotation_aborted',
+                    decision: 'rotation_aborted',
+                    reasonCodes: ['rotation_candidate_promoted_to_risk_gate', 'rotation_aborted'],
+                    status: 'error',
+                    blockReason: 'rotation_aborted',
+                    lastDecisionAt: nowIso(),
+                  }, hotSlotRotationFeatureState);
+                  options.logger({ level: 'warn', event: 'rotation_aborted', message: `Hot slot rotation aborted for ${promotedSymbol || rotationPlan.candidate}` });
                 }
               }
             }
@@ -1231,7 +1272,6 @@ function createStockScanner(options = {}) {
         }
       }
 
-      const rotationCandidateSymbol = normalizeWatchSymbol(rotationPlan?.candidate);
       const buyCandidatesToPost = suppressBuyPosting
         ? []
         : shouldAttemptRotation && rotationCandidateSymbol
@@ -1381,6 +1421,8 @@ function createStockScanner(options = {}) {
       recentTradeRankPenalty,
       recentLossPenaltyMinutes,
       recentLossRankPenalty,
+      recentStaleExitPenaltyMinutes,
+      recentStaleExitRankPenalty,
       recentStopExitPenaltyMinutes,
       recentStopExitRankPenalty,
       stopoutClusterBlockMinutes,
@@ -2060,10 +2102,12 @@ function buildCandidates(bundle, options = {}) {
       stalePositionMaxHoldMinutes: options.stalePositionMaxHoldMinutes,
       stalePositionMinPeakProfitDollars: options.stalePositionMinPeakProfitDollars,
       stalePositionMaxExitPnlDollars: options.stalePositionMaxExitPnlDollars,
+      maxStalenessSeconds: options.maxStalenessSeconds,
       stalledWinnerExitEnabled: options.stalledWinnerExitEnabled,
       stalledWinnerMaxHoldMinutes: options.stalledWinnerMaxHoldMinutes,
       stalledWinnerMaxMinutesSincePeak: options.stalledWinnerMaxMinutesSincePeak,
       stalledWinnerMinProfitDollars: options.stalledWinnerMinProfitDollars,
+      sellNetProfitFloorDollars: options.sellNetProfitFloorDollars,
       trailingState: options.trailingState,
       previewMode: options.previewMode,
       previewReasonCodes: options.previewReasonCodes || [],
@@ -2456,6 +2500,8 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   };
   const previewMode = Boolean(options.previewMode);
   const previewReasonCodes = [];
+  const maxStalenessSeconds = Math.max(1, safeNumber(options.maxStalenessSeconds ?? 20000000, 20000000));
+  const receivedAt = options.receivedAt || nowIso();
   const quote = snapshot.latestQuote || latestQuote || {};
   const bid = safeNumber(quote.bp ?? quote.bid_price ?? quote.bid ?? quote.p, null);
   const ask = safeNumber(quote.ap ?? quote.ask_price ?? quote.ask ?? quote.p, null);
@@ -2465,6 +2511,16 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   const previousClose = safeNumber(snapshot.prevDailyBar?.c ?? snapshot.dailyBar?.c ?? snapshot.prevDailyBar?.close ?? null);
   if (!Number.isFinite(currentPrice) || !Number.isFinite(previousClose) || previousClose <= 0) {
     return skip('DATA_STALE_OR_UNAVAILABLE');
+  }
+  const newestMarketTimestampMs = getNewestMarketTimestampMs(snapshot, quote);
+  const marketAgeSeconds = Number.isFinite(newestMarketTimestampMs)
+    ? Math.max(0, (new Date(receivedAt).getTime() - newestMarketTimestampMs) / 1000)
+    : Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(marketAgeSeconds) || marketAgeSeconds > maxStalenessSeconds) {
+    return skip('DATA_STALE_OR_UNAVAILABLE', {
+      market_age_seconds: Number.isFinite(marketAgeSeconds) ? roundScore(marketAgeSeconds) : null,
+      max_staleness_seconds: maxStalenessSeconds,
+    });
   }
   const spreadPct = Number.isFinite(bid) && Number.isFinite(ask) && currentPrice > 0
     ? ((ask - bid) / currentPrice) * 100
@@ -2630,12 +2686,12 @@ function summarizePostResult(result = {}) {
   };
 }
 
-function loadRecentTradePenalties({ env = process.env, repoRoot = resolveRepoRoot(), now = nowIso(), windowMinutes = 5, penalty = 8, lossWindowMinutes = 10, lossPenalty = 60, stopWindowMinutes = 30, stopPenalty = 80, overrides = null } = {}) {
-  if ((!windowMinutes || !penalty) && (!lossWindowMinutes || !lossPenalty) && (!stopWindowMinutes || !stopPenalty)) return new Map();
-  if (overrides) return normalizeRecentTradePenaltyMap(overrides, { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty, stopWindowMinutes, stopPenalty });
+function loadRecentTradePenalties({ env = process.env, repoRoot = resolveRepoRoot(), now = nowIso(), windowMinutes = 5, penalty = 8, lossWindowMinutes = 10, lossPenalty = 60, staleWindowMinutes = 20, stalePenalty = 40, stopWindowMinutes = 30, stopPenalty = 80, overrides = null } = {}) {
+  if ((!windowMinutes || !penalty) && (!lossWindowMinutes || !lossPenalty) && (!staleWindowMinutes || !stalePenalty) && (!stopWindowMinutes || !stopPenalty)) return new Map();
+  if (overrides) return normalizeRecentTradePenaltyMap(overrides, { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty, staleWindowMinutes, stalePenalty, stopWindowMinutes, stopPenalty });
   const historyPath = resolvePerformanceHistoryPath(env, repoRoot);
   const lines = readTailLines(historyPath, 512 * 1024);
-  return normalizeRecentTradePenaltyMap(lines.map(parseJsonLine).filter(Boolean), { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty, stopWindowMinutes, stopPenalty });
+  return normalizeRecentTradePenaltyMap(lines.map(parseJsonLine).filter(Boolean), { now, windowMinutes, penalty, lossWindowMinutes, lossPenalty, staleWindowMinutes, stalePenalty, stopWindowMinutes, stopPenalty });
 }
 
 function resolvePerformanceHistoryPath(env = process.env, repoRoot = resolveRepoRoot()) {
@@ -2668,11 +2724,12 @@ function parseJsonLine(line) {
   }
 }
 
-function normalizeRecentTradePenaltyMap(source, { now = nowIso(), windowMinutes = 15, penalty = 20, lossWindowMinutes = 10, lossPenalty = 60, stopWindowMinutes = 30, stopPenalty = 80 } = {}) {
+function normalizeRecentTradePenaltyMap(source, { now = nowIso(), windowMinutes = 15, penalty = 20, lossWindowMinutes = 10, lossPenalty = 60, staleWindowMinutes = 20, stalePenalty = 40, stopWindowMinutes = 30, stopPenalty = 80 } = {}) {
   const map = new Map();
   const nowMs = new Date(now).getTime();
   const windowMs = Math.max(0, safeNumber(windowMinutes, 15)) * 60_000;
   const lossWindowMs = Math.max(0, safeNumber(lossWindowMinutes, 10)) * 60_000;
+  const staleWindowMs = Math.max(0, safeNumber(staleWindowMinutes, 20)) * 60_000;
   const stopWindowMs = Math.max(0, safeNumber(stopWindowMinutes, 30)) * 60_000;
   if (!Number.isFinite(nowMs)) return map;
   const records = source instanceof Map
@@ -2689,6 +2746,7 @@ function normalizeRecentTradePenaltyMap(source, { now = nowIso(), windowMinutes 
     const ageMs = nowMs - tradedAtMs;
     if (ageMs < 0) continue;
     const isLossExit = trade.side === 'sell' && trade.loss_exit;
+    const isStaleExit = trade.side === 'sell' && trade.stale_exit;
     const isStopExit = trade.side === 'sell' && trade.stop_exit;
     if (trade.side !== 'sell') continue;
     const components = [];
@@ -2710,6 +2768,16 @@ function normalizeRecentTradePenaltyMap(source, { now = nowIso(), windowMinutes 
         windowMs: lossWindowMs,
         penalty: lossPenalty,
         reason: 'recent_loss_exit',
+      }));
+    }
+    if (isStaleExit && staleWindowMs > 0 && stalePenalty > 0 && ageMs <= staleWindowMs) {
+      components.push(buildPenaltyComponent({
+        trade,
+        tradedAtMs,
+        nowMs,
+        windowMs: staleWindowMs,
+        penalty: stalePenalty,
+        reason: 'recent_stale_exit',
       }));
     }
     if (isStopExit && stopWindowMs > 0 && stopPenalty > 0 && ageMs <= stopWindowMs) {
@@ -2770,6 +2838,8 @@ function buildPenaltyComponent({ trade, tradedAtMs, nowMs, windowMs, penalty, re
 function summarizePenaltyReason(components = []) {
   const reasons = new Set(components.map((component) => component.reason).filter(Boolean));
   if (reasons.has('recent_stop_exit') && reasons.has('recent_loss_exit')) return 'compound_recent_sell_loss_and_stop';
+  if (reasons.has('recent_stale_exit') && reasons.has('recent_loss_exit')) return 'compound_recent_sell_loss_and_stale';
+  if (reasons.has('recent_stale_exit')) return 'compound_recent_sell_and_stale';
   if (reasons.has('recent_stop_exit')) return 'compound_recent_sell_and_stop';
   if (reasons.has('recent_loss_exit')) return 'compound_recent_sell_and_loss';
   return 'compound_recent_sell';
@@ -2808,11 +2878,13 @@ function extractFilledTrade(record = {}) {
     || /STOP_LOSS|LOSS/i.test(exitReason)
   );
   const stopExit = side === 'sell' && /STOP/i.test(exitReason);
+  const staleExit = side === 'sell' && /STALE_POSITION_TIMEOUT/i.test(exitReason);
   return {
     symbol,
     traded_at: tradedAt,
     side,
     loss_exit: lossExit,
+    stale_exit: staleExit,
     stop_exit: stopExit,
     exit_reason: exitReason || null,
   };
@@ -3255,6 +3327,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const fees = Math.max(0, safeNumber(options.fees ?? options.position?.fees ?? options.position?.estimated_fees, 0));
   const executionDrag = entrySlippage + exitSlippage + fees;
   const effectiveTrailingStart = Math.max(trailingStart, sellNetProfitFloorDollars + trailingGiveback + executionDrag);
+  const staleRecyclePeakCeiling = Math.max(staleMinPeakProfit, effectiveTrailingStart);
   const trailingActive = Number.isFinite(peak) && peak >= effectiveTrailingStart;
   const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
   const brokerPnlTrusted = options.position?.current_price !== undefined || options.position?.currentPrice !== undefined || options.position?.market_value !== undefined || options.position?.marketValue !== undefined;
@@ -3307,7 +3380,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     && !trailingActive
     && Number.isFinite(heldSeconds)
     && heldSeconds >= staleMaxHoldSeconds
-    && safeNumber(peak, Number.NEGATIVE_INFINITY) < staleMinPeakProfit
+    && safeNumber(peak, Number.NEGATIVE_INFINITY) < staleRecyclePeakCeiling
     && Number.isFinite(netPnl)
     && netPnl <= staleMaxExitPnl
   ) {
@@ -3771,6 +3844,27 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     return null;
   }
   return candidate;
+}
+
+function getNewestMarketTimestampMs(snapshot = {}, latestQuote = null) {
+  const timestamps = [
+    latestQuote?.t,
+    latestQuote?.timestamp,
+    snapshot.latestQuote?.t,
+    snapshot.latestQuote?.timestamp,
+    snapshot.latestTrade?.t,
+    snapshot.latestTrade?.timestamp,
+    snapshot.minuteBar?.t,
+    snapshot.minuteBar?.timestamp,
+    snapshot.dailyBar?.t,
+    snapshot.dailyBar?.timestamp,
+    snapshot.prevDailyBar?.t,
+    snapshot.prevDailyBar?.timestamp,
+  ]
+    .map((value) => (value ? new Date(value).getTime() : Number.NaN))
+    .filter((value) => Number.isFinite(value));
+  if (!timestamps.length) return null;
+  return Math.max(...timestamps);
 }
 
 function calculateSpreadRankPenalty(spreadPct, { thresholdPct = 0.75, penaltyPerPct = 25, cap = 80 } = {}) {

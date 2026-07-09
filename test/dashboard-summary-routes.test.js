@@ -257,6 +257,17 @@ test('home summary reports dynamic top freshness from source data, not dashboard
         last_scan_time: '2026-07-03T13:03:30.000Z',
         updated_at: '2026-07-03T13:04:00.000Z',
       },
+      regular_watch_intelligence: {
+        enabled: true,
+        status: 'active',
+        symbolsChecked: 2,
+        moversFound: 1,
+        lastRunAt: '2026-07-03T13:02:00.000Z',
+      },
+      regular_watch_runtime: {
+        stale: false,
+        generatedAt: '2026-07-03T13:02:05.000Z',
+      },
     },
     watch: {
       scannerPreview: {
@@ -268,17 +279,6 @@ test('home summary reports dynamic top freshness from source data, not dashboard
         { symbol: 'M1', regularWatchScore: 74 },
       ],
     },
-    memeMonitor: {
-      enabled: true,
-      hotList: {
-        enabled: true,
-        status: 'active',
-        dynamicCount: 2,
-        hotHotCount: 1,
-        lastScoredAt: '2026-07-03T13:02:00.000Z',
-        stale: false,
-      },
-    },
   });
 
   assert.equal(homeSummary.dynamicTopSymbols[0].symbol, 'P1');
@@ -286,8 +286,9 @@ test('home summary reports dynamic top freshness from source data, not dashboard
   assert.equal(homeSummary.dynamicTopFreshness.source_timestamp, '2026-07-03T13:03:30.000Z');
   assert.notEqual(homeSummary.dynamicTopFreshness.source_timestamp, homeSummary.generated_at);
   assert.equal(homeSummary.hotListStatus.status, 'active');
-  assert.equal(homeSummary.hotListStatus.dynamicCount, 2);
-  assert.equal(homeSummary.hotListStatus.hotHotCount, 1);
+  assert.equal(homeSummary.hotListStatus.primaryCount, 2);
+  assert.equal(homeSummary.hotListStatus.secondaryCount, 1);
+  assert.equal(homeSummary.hotListStatus.sourceLabel, 'Regular stock process');
 });
 
 test('home summary displays the score used for regular watch ranking', () => {

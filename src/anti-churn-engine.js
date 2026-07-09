@@ -241,12 +241,7 @@ function classifyExitOutcome(input = {}) {
     input.holding_period_seconds,
     null,
   );
-  const partialFill = Boolean(
-    input.partial_fill
-      || input.partial_fill_problem
-      || input.partial_fill_state
-      || safeNumber(input.remaining_quantity ?? input.partial_fill?.remaining_quantity, 0) > 0,
-  );
+  const partialFill = hasPartialFillProblem(input);
   const trailingExit = Boolean(
     input.trailing_exit
       || input.trailing_profit_exit
@@ -692,6 +687,7 @@ async function reconcileAntiChurnState({
   const historyPath = performanceHistoryPath || path.join(repoRoot, 'data', 'performance-history.jsonl');
   const outcomes = Array.isArray(paperOutcomes) ? paperOutcomes : readPaperOutcomesFromHistory(historyPath, config.historyMaxBytes || 512 * 1024);
   const recentOutcomes = normalizeOutcomeList(outcomes)
+    .filter(isExitOutcome)
     .filter((outcome) => require('./setup-fatigue').isWithinRetentionWindow(outcome.recorded_at, now, retentionHours))
     .sort((a, b) => new Date(a.recorded_at || 0).getTime() - new Date(b.recorded_at || 0).getTime());
 
@@ -970,6 +966,7 @@ function normalizeOutcomeRecord(record = {}) {
   if (!record || typeof record !== 'object') return null;
   const source = record.record || record;
   const symbol = normalizeSymbol(source.symbol || source.original_signal?.symbol || source.paper_result?.symbol || null);
+  const side = normalizeText(source.side || source.paper_result?.side || source.original_signal?.side || null);
   const recordedAt = normalizeIso(source.recorded_at || source.paper_result?.filled_at || source.paper_result?.filledAt || source.filled_at || source.created_at || source.timestamp || nowIso());
   const setupKey = normalizeSetupKey(resolveSetupKey(source));
   const pnl = firstFinite(source.net_pnl, source.adjusted_pnl, source.pnl, source.gross_pnl, null);
@@ -989,17 +986,14 @@ function normalizeOutcomeRecord(record = {}) {
     source.original_signal?.trade_duration_seconds,
     null,
   );
-  const partialFill = Boolean(
-    source.partial_fill
-      || source.partial_fill_state
-      || safeNumber(source.partial_fill?.remaining_quantity, 0) > 0
-      || safeNumber(source.partial_fill?.filled_quantity, 0) < safeNumber(source.partial_fill?.submitted_quantity, 0),
-  );
+  const partialFill = hasPartialFillProblem(source);
   const classification = normalizeClassification(source.classification || source.exit_classification || null);
   return {
     symbol,
+    side,
     setup_key: setupKey,
     recorded_at: recordedAt,
+    position_exit: Boolean(source.position_exit || source.positionExit),
     classification,
     pnl,
     gross_pnl: grossPnl,
@@ -1013,6 +1007,27 @@ function normalizeOutcomeRecord(record = {}) {
     churn_exit: Boolean(source.churn_exit),
     original_signal: source.original_signal || null,
   };
+}
+
+function isExitOutcome(outcome = {}) {
+  const side = normalizeText(outcome.side || outcome.paper_result?.side || outcome.original_signal?.side || null);
+  const exitReason = normalizeText(
+    outcome.exit_reason
+      || outcome.original_signal?.market_context?.exit_state?.exit_reason
+      || outcome.market_context?.exit_state?.exit_reason
+      || outcome.exit_state?.exit_reason
+      || null,
+  );
+  return Boolean(
+    outcome.position_exit
+      || outcome.positionExit
+      || side === 'sell'
+      || exitReason
+      || outcome.stopped_out
+      || outcome.stop_exit
+      || outcome.trailing_exit
+      || outcome.trailing_profit_exit
+  );
 }
 
 function readPaperOutcomesFromHistory(historyPath, maxBytes = 512 * 1024) {
@@ -1030,6 +1045,37 @@ function readPaperOutcomesFromHistory(historyPath, maxBytes = 512 * 1024) {
   } catch {
     return [];
   }
+}
+
+function hasPartialFillProblem(source = {}) {
+  if (source.partial_fill_problem === true) return true;
+  const status = String(source.status || source.paper_result?.status || source.partial_fill?.status || '').trim().toLowerCase();
+  if (status === 'partially_filled') return true;
+
+  const directRemaining = safeNumber(source.remaining_quantity ?? source.remaining_qty, 0);
+  if (directRemaining > 0) return true;
+
+  const partial = source.partial_fill && typeof source.partial_fill === 'object' ? source.partial_fill : null;
+  if (partial) {
+    const remaining = safeNumber(partial.remaining_quantity ?? partial.remaining_qty, 0);
+    const filled = safeNumber(partial.filled_quantity ?? partial.filled_qty, null);
+    const submitted = safeNumber(partial.submitted_quantity ?? partial.submitted_qty, null);
+    if (remaining > 0) return true;
+    if (Number.isFinite(filled) && Number.isFinite(submitted) && submitted > 0 && filled + 1e-6 < submitted) return true;
+  } else if (source.partial_fill === true) {
+    return true;
+  }
+
+  const partialState = source.partial_fill_state && typeof source.partial_fill_state === 'object' ? source.partial_fill_state : null;
+  if (partialState) {
+    const count = safeNumber(partialState.count, 0);
+    const reserved = safeNumber(partialState.reserved_buy_notional, 0);
+    const activeBuys = Array.isArray(partialState.partial_buys) ? partialState.partial_buys.length : 0;
+    const activeSells = Array.isArray(partialState.partial_sells) ? partialState.partial_sells.length : 0;
+    if (count > 0 || reserved > 0 || activeBuys > 0 || activeSells > 0) return true;
+  }
+
+  return false;
 }
 
 function readTailLines(filePath, maxBytes = 512 * 1024) {
@@ -1171,4 +1217,5 @@ module.exports = {
   reconcileAntiChurnState,
   saveAntiChurnState,
   summarizeAntiChurnState,
+  hasPartialFillProblem,
 };

@@ -386,7 +386,16 @@ function formatHotSlotRotationStatus(rotation) {
   if (rotation?.waitingForBrokerReconciliation) {
     return 'WAITING FOR BROKER RECONCILIATION';
   }
-  return formatMemeRuntimeStatus(rotation?.status || 'off');
+  const status = String(rotation?.status || 'off').toLowerCase();
+  const blockReason = String(rotation?.blockReason || '').toLowerCase();
+  const rotationEligible = Boolean(rotation?.rotationEligible);
+  if (rotation?.enabled && status === 'active' && !rotationEligible && blockReason === 'rotation_blocked_no_eligible_position') {
+    return 'ACTIVE, WAITING FOR ELIGIBLE POSITION';
+  }
+  if (rotation?.enabled && status === 'active' && !rotationEligible && blockReason) {
+    return `ACTIVE, WAITING (${blockReason.replace(/_/g, ' ')})`;
+  }
+  return formatMemeRuntimeStatus(status || 'off');
 }
 
 function formatMemeRuntimeStatus(value) {

@@ -360,6 +360,8 @@ function summarizeStopoutClustering(paperOutcomes = []) {
 
 function summarizeTradeDuration(paperOutcomes = []) {
   const durations = paperOutcomes.map((outcome) => {
+    const directDuration = safeNumber(outcome.trade_duration_seconds ?? outcome.holding_period_seconds ?? outcome.position_duration_seconds, null);
+    if (Number.isFinite(directDuration) && directDuration >= 0) return directDuration;
     const startedAt = new Date(outcome.entry_at || outcome.created_at || outcome.original_signal?.created_at || 0).getTime();
     const endedAt = new Date(outcome.recorded_at || outcome.filled_at || outcome.paper_result?.filled_at || 0).getTime();
     return Number.isFinite(startedAt) && Number.isFinite(endedAt) && startedAt > 0 && endedAt >= startedAt

@@ -23,6 +23,12 @@ function computePaperOutcome({
   estimated_entry_price = null,
   estimated_exit_price = null,
   estimated_fees = null,
+  entry_at = null,
+  exit_at = null,
+  holding_period_seconds = null,
+  trade_duration_seconds = null,
+  exit_reason = null,
+  exit_state = null,
 }) {
   const entry = Number(entry_price);
   const exitNumeric = Number(exit_price);
@@ -67,6 +73,12 @@ function computePaperOutcome({
 
   return {
     original_signal: original_signal || null,
+    entry_at: entry_at || original_signal?.created_at || null,
+    exit_at: exit_at || paper_result.filled_at || paper_result.filledAt || null,
+    holding_period_seconds: optionalNumber(holding_period_seconds, null),
+    trade_duration_seconds: optionalNumber(trade_duration_seconds, optionalNumber(holding_period_seconds, null)),
+    exit_reason: exit_reason || null,
+    exit_state: exit_state || null,
     paper_result: {
       ...paper_result,
       entry_price: Number.isFinite(entry) ? entry : null,

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildPolicyExitOverrides } = require('../scripts/start-stock-scanner');
+const { buildLiveEntryOverrides, buildLiveExitOverrides, buildPolicyExitOverrides } = require('../scripts/start-stock-scanner');
 
 test('stock scanner launcher maps live policy exit rules into scanner options', () => {
   const overrides = buildPolicyExitOverrides({
@@ -18,6 +18,38 @@ test('stock scanner launcher maps live policy exit rules into scanner options', 
     trailingProfitStartDollars: 0.8,
     trailingProfitGivebackDollars: 0.35,
   });
+});
+
+test('stock scanner launcher enforces live entry momentum floors over weak env defaults', () => {
+  const overrides = buildLiveEntryOverrides({
+    minMovePct: 0.1,
+    requireRecentMomentum: false,
+    minRecentMovePct: 0.02,
+    minRecentRangePct: 0.03,
+    minRecentCloseLocationPct: 50,
+  }, {
+    STOCK_SCANNER_MIN_MOVE_PCT: '0.2',
+    STOCK_SCANNER_MIN_RECENT_MOVE_PCT: '0.03',
+    STOCK_SCANNER_MIN_RECENT_RANGE_PCT: '0.05',
+    STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT: '60',
+  });
+
+  assert.deepEqual(overrides, {
+    minMovePct: 0.25,
+    requireRecentMomentum: false,
+    minRecentMovePct: 0.15,
+    minRecentRangePct: 0.15,
+    minRecentCloseLocationPct: 65,
+  });
+});
+
+test('stock scanner launcher enables stale and stalled winner exits in live mode', () => {
+  const overrides = buildLiveExitOverrides({});
+
+  assert.equal(overrides.stalePositionExitEnabled, true);
+  assert.equal(overrides.stalledWinnerExitEnabled, true);
+  assert.equal(overrides.stalePositionMaxHoldMinutes, 12);
+  assert.equal(overrides.stalledWinnerMaxHoldMinutes, 10);
 });
 
 test('stock scanner launcher preserves env-driven multi-source confirmation behavior', () => {
