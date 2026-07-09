@@ -60,6 +60,12 @@ replaceOnce(
 
 replaceOnce(
   'test/stock-scanner.test.js',
+  `    positionMarketValue: 192.5,\n    positionQuantity: 25,\n  }), 6.25);`,
+  `    positionMarketValue: 192.5,\n    positionQuantity: 25,\n  }), 1.4437);`,
+);
+
+replaceOnce(
+  'test/stock-scanner.test.js',
   `  assert.equal(oneShare, 1.13);\n  assert.equal(thirtyShares, 1.13);`,
   `  assert.equal(oneShare, 1.125);\n  assert.equal(thirtyShares, 1.125);`,
 );
