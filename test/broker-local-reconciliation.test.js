@@ -41,6 +41,21 @@ function outcome(symbol, side, quantity, price, pnl = null) {
   };
 }
 
+function nestedOutcome(symbol, side, quantity, price) {
+  return {
+    entry_type: 'paper_outcome',
+    record: {
+      original_signal: { symbol, side },
+      paper_result: {
+        status: 'filled',
+        filled_quantity: quantity,
+        average_fill_price: price,
+        original_signal: { symbol, side },
+      },
+    },
+  };
+}
+
 async function reconcile(options = {}) {
   const dirs = repo();
   return reconcileBrokerLocalState({
@@ -74,6 +89,40 @@ test('broker/local reconciliation detects local phantom positions', async () => 
 
   assert.equal(result.status, 'CRITICAL');
   assert.equal(result.local_phantom_positions[0].symbol, 'MU');
+});
+
+test('broker/local reconciliation closes nested historical sell outcomes', async () => {
+  const result = await reconcile({
+    executionAdapter: adapter({ positions: [] }),
+    localPerformanceHistory: [
+      nestedOutcome('GOOGL', 'buy', 0.5, 350),
+      nestedOutcome('GOOGL', 'sell', 0.5, 352),
+    ],
+  });
+
+  assert.equal(result.status, 'OK');
+  assert.deepEqual(result.local_position_assumptions, []);
+  assert.deepEqual(result.local_phantom_positions, []);
+});
+
+test('broker/local reconciliation does not treat legacy history as current runtime positions', async () => {
+  const dirs = repo();
+  fs.writeFileSync(
+    path.join(dirs.dataDir, 'performance-history.jsonl'),
+    `${JSON.stringify(outcome('GOOGL', 'buy', 1, 100))}\n`,
+  );
+  const result = await reconcileBrokerLocalState({
+    repoRoot: dirs.repoRoot,
+    dataDir: dirs.dataDir,
+    writeLatest: false,
+    executionAdapter: adapter({ positions: [{ symbol: 'MU', qty: '1', avg_entry_price: '100' }] }),
+    trailingState: { positions: { MU: { symbol: 'MU', current_unrealized_pl: 0.1 } } },
+  });
+
+  assert.equal(result.status, 'OK');
+  assert.deepEqual(result.local_position_assumptions.map((position) => position.symbol), ['MU']);
+  assert.deepEqual(result.historical_position_assumptions.map((position) => position.symbol), ['GOOGL']);
+  assert.deepEqual(result.local_phantom_positions, []);
 });
 
 test('broker/local reconciliation detects Alpaca position missing locally', async () => {

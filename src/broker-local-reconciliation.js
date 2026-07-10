@@ -26,6 +26,7 @@ async function reconcileBrokerLocalState(options = {}) {
     alpaca_positions: [],
     alpaca_open_orders: [],
     local_position_assumptions: [],
+    historical_position_assumptions: [],
     local_phantom_positions: [],
     broker_positions_missing_locally: [],
     quantity_mismatches: [],
@@ -49,6 +50,7 @@ async function reconcileBrokerLocalState(options = {}) {
   result.alpaca_open_orders = broker.openOrders.data.map(normalizeBrokerOrder).filter(Boolean);
   const localState = loadLocalState({ ...options, repoRoot, dataDir });
   result.local_position_assumptions = localState.positions;
+  result.historical_position_assumptions = localState.historicalPositions;
 
   comparePositions(result, result.alpaca_positions, localState.positions, tolerance);
   compareOpenOrders(result, result.alpaca_open_orders, localState.openOrders);
@@ -84,12 +86,32 @@ function loadLocalState(options = {}) {
     : readJsonl(options.performanceHistoryPath || path.join(options.dataDir, 'performance-history.jsonl'));
   const scannerRuntime = options.scannerRuntime || readJson(options.scannerRuntimePath || path.join(options.dataDir, 'state', 'scanner-runtime.json'));
   const trailingState = options.trailingState || loadTrailingState({ env: options.env || process.env, repoRoot: options.repoRoot });
+  const trailingPositions = trailingState?.positions || scannerRuntime?.trailing_state?.positions || scannerRuntime?.position_trailing_state?.positions || {};
+  const historicalPositions = deriveLocalPositions(historyEntries);
+  const useExplicitHistory = Array.isArray(options.localPerformanceHistory);
   return {
-    positions: options.localPositions || deriveLocalPositions(historyEntries),
+    positions: options.localPositions
+      || (useExplicitHistory ? historicalPositions : deriveRuntimePositions(trailingPositions, scannerRuntime)),
+    historicalPositions,
     openOrders: options.localOpenOrders || deriveLocalOpenOrders(scannerRuntime),
-    trailingPositions: trailingState?.positions || scannerRuntime?.trailing_state?.positions || scannerRuntime?.position_trailing_state?.positions || {},
+    trailingPositions,
     nextActions: deriveLocalNextActions(scannerRuntime),
   };
+}
+
+function deriveRuntimePositions(trailingPositions = {}, scannerRuntime = {}) {
+  const explicit = [
+    ...(Array.isArray(scannerRuntime?.broker_positions) ? scannerRuntime.broker_positions : []),
+    ...(Array.isArray(scannerRuntime?.live_positions) ? scannerRuntime.live_positions : []),
+  ].map(normalizeBrokerPosition).filter(Boolean);
+  if (explicit.length) return explicit.map((position) => ({ ...position, source: 'scanner-runtime' }));
+  return Object.entries(trailingPositions || {}).map(([key, value = {}]) => ({
+    symbol: normalizeSymbol(value.symbol || key),
+    quantity: optionalNumber(value.quantity ?? value.qty),
+    avg_entry_price: optionalNumber(value.avg_entry_price ?? value.avgEntryPrice ?? value.entry_price),
+    unrealized_pl: optionalNumber(value.current_unrealized_pl ?? value.unrealized_pl),
+    source: 'position-trailing-state',
+  })).filter((position) => position.symbol);
 }
 
 function deriveLocalPositions(entries = []) {
@@ -97,12 +119,26 @@ function deriveLocalPositions(entries = []) {
   for (const entry of entries) {
     const record = entry?.record || entry;
     if ((entry?.entry_type || record?.entry_type) !== 'paper_outcome' && !record?.paper_result) continue;
-    const symbol = normalizeSymbol(record.symbol || record.paper_result?.symbol);
+    const paperResult = record.paper_result || {};
+    const originalSignal = record.original_signal || paperResult.original_signal || {};
+    const symbol = normalizeSymbol(
+      record.symbol
+      || paperResult.symbol
+      || originalSignal.symbol,
+    );
     if (!symbol) continue;
-    const side = String(record.side || record.paper_result?.side || '').toLowerCase();
-    const quantity = Math.abs(safeNumber(record.paper_result?.filled_quantity ?? record.quantity, 0));
+    const side = String(
+      record.side
+      || paperResult.side
+      || originalSignal.side
+      || record.order?.side
+      || paperResult.order?.side
+      || '',
+    ).toLowerCase();
+    if (side !== 'buy' && side !== 'sell') continue;
+    const quantity = Math.abs(safeNumber(paperResult.filled_quantity ?? record.quantity, 0));
     if (!quantity) continue;
-    const fillPrice = safeNumber(record.paper_result?.average_fill_price ?? record.paper_result?.fill_price ?? record.entry_price, null);
+    const fillPrice = safeNumber(paperResult.average_fill_price ?? paperResult.fill_price ?? record.entry_price, null);
     const current = ledger.get(symbol) || { symbol, quantity: 0, avg_entry_price: null, unrealized_pl: null, source: 'performance-history' };
     if (side === 'sell') {
       current.quantity -= quantity;
@@ -155,7 +191,8 @@ function comparePositions(result, brokerPositions, localPositions, tolerance) {
       result.local_phantom_positions.push(local);
       continue;
     }
-    if (Math.abs(Math.abs(local.quantity) - Math.abs(broker.quantity)) > tolerance.quantity) {
+    if (Number.isFinite(local.quantity) && Number.isFinite(broker.quantity)
+      && Math.abs(Math.abs(local.quantity) - Math.abs(broker.quantity)) > tolerance.quantity) {
       const mismatch = { symbol: local.symbol, local_quantity: local.quantity, broker_quantity: broker.quantity };
       pushMismatch(result, 'QUANTITY_MISMATCH', local.symbol, 'critical', mismatch);
       result.quantity_mismatches.push(mismatch);
@@ -364,6 +401,12 @@ function writeLatestReconciliation(result, filePath) {
 
 function round(value) {
   return Math.round(Number(value) * 1_000_000) / 1_000_000;
+}
+
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 module.exports = {
