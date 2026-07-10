@@ -291,6 +291,37 @@ test('home summary reports dynamic top freshness from source data, not dashboard
   assert.equal(homeSummary.hotListStatus.sourceLabel, 'Regular stock process');
 });
 
+test('home summary surfaces useful regular watch warnings', () => {
+  const homeSummary = buildHomeSummary({
+    generated_at: '2026-07-03T14:00:00.000Z',
+    timestamp: '2026-07-03T14:00:00.000Z',
+    live: {
+      regular_watch_intelligence: {
+        enabled: true,
+        status: 'warn',
+        lastError: 'Regular Watch ignored 1 unsupported symbol (SMCI) in Alpaca snapshot requests. 2 symbols confirmed.',
+        symbolsChecked: 2,
+        moversFound: 1,
+        lastRunAt: '2026-07-03T13:02:00.000Z',
+      },
+      regular_watch_runtime: {
+        stale: false,
+        regularWatchIntelligence: {
+          enabled: true,
+          status: 'warn',
+          lastError: 'Regular Watch ignored 1 unsupported symbol (SMCI) in Alpaca snapshot requests. 2 symbols confirmed.',
+          lastRunAt: '2026-07-03T13:02:00.000Z',
+        },
+      },
+    },
+  });
+
+  assert.equal(homeSummary.hotListStatus.status, 'warn');
+  assert.equal(homeSummary.hotListStatus.stale, false);
+  assert.match(homeSummary.hotListStatus.lastError, /SMCI|unsupported symbol/i);
+  assert.doesNotMatch(homeSummary.hotListStatus.lastError, /HTTP 400/i);
+});
+
 test('home summary displays the score used for regular watch ranking', () => {
   const homeSummary = buildHomeSummary({
     generated_at: '2026-07-06T15:05:00.000Z',

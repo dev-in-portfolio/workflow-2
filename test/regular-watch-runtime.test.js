@@ -15,6 +15,7 @@ const {
   resolveRegularWatchStatusPath,
 } = require('../src/regular-watch/regular-watch-status');
 const { runRegularWatchSources } = require('../src/regular-watch/regular-watch-source-runner');
+const { createRegularWatchLoop } = require('../src/regular-watch/regular-watch-loop');
 
 function tempWorkspace() {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'regular-watch-runtime-'));
@@ -87,12 +88,16 @@ function parseRequestedSymbols(url) {
     .filter(Boolean);
 }
 
-function createFetchStub({ snapshots = {}, assets = [], haltedSymbols = [] } = {}) {
+function createFetchStub({ snapshots = {}, assets = [], haltedSymbols = [], rejectSymbols = [], rejectStatus = 400, rejectBody = null } = {}) {
   const requested = [];
   const stub = async (url) => {
     requested.push(url);
     if (String(url).includes('/v2/stocks/snapshots')) {
       const symbols = parseRequestedSymbols(url);
+      const rejectedSymbol = symbols.find((symbol) => rejectSymbols.map((entry) => String(entry).trim().toUpperCase()).includes(symbol));
+      if (rejectedSymbol) {
+        return makeResponse(rejectStatus, rejectBody || { message: `unsupported symbol ${rejectedSymbol}` });
+      }
       const response = {};
       for (const symbol of symbols) {
         response[symbol] = snapshots[symbol] || {
@@ -149,6 +154,37 @@ test('regular watch runner scans configured symbols and keeps scanner config unc
   assert.equal(requestedSymbols.includes('AAPL'), true);
   assert.equal(requestedSymbols.includes('MSFT'), true);
   assert.ok(fs.existsSync(resolveRegularWatchStatusPath({ dataDir })));
+});
+
+test('regular watch strips malformed symbols before Alpaca requests', async () => {
+  const { repoRoot, dataDir } = tempWorkspace();
+  const env = {
+    ...process.env,
+    STOCK_SCANNER_SYMBOLS: 'SPCX,/USD,SMCI,C/USD',
+    ALPACA_API_KEY_ID: 'key',
+    ALPACA_API_SECRET_KEY: 'secret',
+  };
+  writeEnabledState({ dataDir, env });
+  const fetchImpl = createFetchStub({
+    assets: [
+      { symbol: 'SPCX', tradable: true, status: 'active', asset_class: 'us_equity' },
+      { symbol: 'SMCI', tradable: true, status: 'active', asset_class: 'us_equity' },
+    ],
+  });
+
+  const status = await runRegularWatchSources({
+    env,
+    fetchImpl,
+    repoRoot,
+    dataDir,
+  });
+
+  const snapshotRequests = fetchImpl.requested.filter((url) => String(url).includes('/v2/stocks/snapshots'));
+  const requestedSymbols = [...new Set(snapshotRequests.flatMap((url) => parseRequestedSymbols(url)))];
+  assert.deepEqual(requestedSymbols.sort(), ['SMCI', 'SPCX']);
+  assert.equal(status.status, 'active');
+  assert.equal(status.stale, false);
+  assert.equal(status.lastError, null);
 });
 
 test('regular watch runner handles missing credentials without crashing', async () => {
@@ -224,6 +260,120 @@ test('regular watch loads broad Alpaca universe and rotates scan batches', async
   const snapshotRequests = fetchImpl.requested.filter((url) => String(url).includes('/v2/stocks/snapshots'));
   assert(snapshotRequests.length >= 4);
   assert(snapshotRequests.every((url) => parseRequestedSymbols(url).length <= 25));
+});
+
+test('regular watch isolates a rejected Alpaca batch and preserves successful batches', async () => {
+  const { repoRoot, dataDir } = tempWorkspace();
+  const env = {
+    ...process.env,
+    STOCK_SCANNER_SYMBOLS: 'SPCX,SMCI,AAPL',
+    ALPACA_API_KEY_ID: 'key',
+    ALPACA_API_SECRET_KEY: 'secret',
+    REGULAR_WATCH_MARKET_DATA_BATCH_SIZE: '2',
+  };
+  writeEnabledState({ dataDir, env });
+  const fetchImpl = createFetchStub({
+    assets: [
+      { symbol: 'SPCX', tradable: true, status: 'active', asset_class: 'us_equity' },
+      { symbol: 'SMCI', tradable: true, status: 'active', asset_class: 'us_equity' },
+      { symbol: 'AAPL', tradable: true, status: 'active', asset_class: 'us_equity' },
+    ],
+    rejectSymbols: ['SMCI'],
+    rejectBody: { message: 'unsupported symbol SMCI' },
+  });
+
+  const status = await runRegularWatchSources({
+    env,
+    fetchImpl,
+    repoRoot,
+    dataDir,
+  });
+
+  const symbols = new Map(status.regularWatchList.map((entry) => [entry.symbol, entry]));
+  const snapshotRequests = fetchImpl.requested.filter((url) => String(url).includes('/v2/stocks/snapshots'));
+  assert.equal(symbols.has('SPCX'), true);
+  assert.equal(symbols.has('AAPL'), true);
+  assert.equal(symbols.get('SPCX').sourceContributors.length > 0, true);
+  assert.equal(symbols.get('AAPL').sourceContributors.length > 0, true);
+  assert.equal(symbols.get('SMCI').sourceContributors.some((contributor) => contributor.source === 'alpacaMarket'), false);
+  assert.equal(symbols.get('SMCI').stale, false);
+  assert.equal(status.stale, false);
+  assert.equal(status.regularWatchIntelligence.status, 'warn');
+  assert.match(status.lastError || '', /SMCI|unsupported|ignored/i);
+  assert.doesNotMatch(status.lastError || '', /authorization|apikey|secret/i);
+  assert(snapshotRequests.length <= 4);
+  assert(snapshotRequests.some((url) => parseRequestedSymbols(url).join(',') === 'SPCX,SMCI'));
+  assert(snapshotRequests.some((url) => parseRequestedSymbols(url).length === 1 && parseRequestedSymbols(url)[0] === 'SMCI'));
+  assert(snapshotRequests.some((url) => parseRequestedSymbols(url).length === 1 && parseRequestedSymbols(url)[0] === 'AAPL'));
+});
+
+test('regular watch preserves successful batches and reports a bounded rate-limit cooldown', async () => {
+  const { repoRoot, dataDir } = tempWorkspace();
+  const env = {
+    ...process.env,
+    STOCK_SCANNER_SYMBOLS: 'AAPL,SPCX,SMCI',
+    ALPACA_API_KEY_ID: 'key',
+    ALPACA_API_SECRET_KEY: 'secret',
+    REGULAR_WATCH_MARKET_DATA_BATCH_SIZE: '2',
+    REGULAR_WATCH_RATE_LIMIT_COOLDOWN_SECONDS: '90',
+  };
+  writeEnabledState({ dataDir, env });
+  const fetchImpl = createFetchStub({
+    assets: [
+      { symbol: 'AAPL', tradable: true, status: 'active', asset_class: 'us_equity' },
+      { symbol: 'SPCX', tradable: true, status: 'active', asset_class: 'us_equity' },
+      { symbol: 'SMCI', tradable: true, status: 'active', asset_class: 'us_equity' },
+    ],
+    rejectSymbols: ['SMCI'],
+    rejectStatus: 429,
+    rejectBody: { message: 'rate limit exceeded' },
+  });
+
+  const status = await runRegularWatchSources({ env, fetchImpl, repoRoot, dataDir });
+  const alpacaMarket = status.regularWatchIntelligence.sources.find((source) => source.source === 'alpacaMarket');
+
+  assert.equal(alpacaMarket.status, 'warn');
+  assert.equal(alpacaMarket.blockedReason, 'rate_limited');
+  assert.equal(alpacaMarket.httpStatus, 429);
+  assert.equal(alpacaMarket.symbolsConfirmed, 2);
+  assert.equal(alpacaMarket.retryAfterSeconds, 90);
+  assert.equal(Number.isFinite(new Date(alpacaMarket.nextRetryAt).getTime()), true);
+  assert.match(status.lastError || '', /rate_limited batch failure/i);
+  assert.equal(status.regularWatchList.length, 3);
+});
+
+test('regular watch loop prevents overlapping refreshes and honors rate-limit cooldown', async () => {
+  const { repoRoot, dataDir } = tempWorkspace();
+  let releaseFirst;
+  let calls = 0;
+  const firstResult = new Promise((resolve) => { releaseFirst = resolve; });
+  const loop = createRegularWatchLoop({
+    repoRoot,
+    dataDir,
+    env: {},
+    runRegularWatchSources: async () => {
+      calls += 1;
+      if (calls === 1) return firstResult;
+      return { updated_at: new Date().toISOString(), sources: [] };
+    },
+  });
+
+  const firstRefresh = loop.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await loop.refresh();
+  assert.equal(calls, 1);
+  assert.equal(loop.getState().lastSkipReason, 'refresh_in_flight');
+
+  const nextRetryAt = new Date(Date.now() + 60_000).toISOString();
+  releaseFirst({
+    updated_at: new Date().toISOString(),
+    sources: [{ source: 'alpacaMarket', status: 'rate_limited', blockedReason: 'rate_limited', nextRetryAt }],
+  });
+  await firstRefresh;
+  await loop.refresh();
+  assert.equal(calls, 1);
+  assert.equal(loop.getState().lastSkipReason, 'rate_limit_cooldown');
+  assert.equal(loop.getState().nextRetryAt, nextRetryAt);
 });
 
 test('regular watch fast lane rescans prior movers while rotation continues', async () => {

@@ -11,14 +11,31 @@ function createRegularWatchLoop(options = {}) {
   const state = {
     running: false,
     timer: null,
+    inFlight: false,
     lastRunAt: null,
     lastError: null,
+    lastSkippedAt: null,
+    lastSkipReason: null,
+    nextRetryAt: null,
   };
   const refreshIntervalMs = Number.isFinite(Number(options.refreshIntervalMs))
     ? Number(options.refreshIntervalMs)
     : Math.max(5_000, Number(env.REGULAR_WATCH_REFRESH_SECONDS || 30) * 1000 || 30_000);
 
   async function refresh(runOptions = {}) {
+    const nowMs = Date.now();
+    if (state.inFlight) {
+      state.lastSkippedAt = new Date(nowMs).toISOString();
+      state.lastSkipReason = 'refresh_in_flight';
+      return loadCurrentStatus();
+    }
+    const nextRetryMs = state.nextRetryAt ? new Date(state.nextRetryAt).getTime() : 0;
+    if (!runOptions.force && Number.isFinite(nextRetryMs) && nextRetryMs > nowMs) {
+      state.lastSkippedAt = new Date(nowMs).toISOString();
+      state.lastSkipReason = 'rate_limit_cooldown';
+      return loadCurrentStatus();
+    }
+    state.inFlight = true;
     const runtimeState = loadRegularWatchState({
       env,
       repoRoot,
@@ -28,19 +45,36 @@ function createRegularWatchLoop(options = {}) {
       dataDir,
       filePath: options.statusPath || resolveRegularWatchStatusPath({ dataDir, repoRoot }),
     });
-    const result = await runRegularWatchSources({
-      env,
-      fetchImpl: options.fetchImpl || globalThis.fetch,
-      repoRoot,
+    try {
+      const result = await (options.runRegularWatchSources || runRegularWatchSources)({
+        env,
+        fetchImpl: options.fetchImpl || globalThis.fetch,
+        repoRoot,
+        dataDir,
+        runtimeState,
+        status: currentStatus,
+        timeoutMs: runOptions.timeoutMs || options.timeoutMs,
+        maxSymbolsPerRun: runOptions.maxSymbolsPerRun || options.maxSymbolsPerRun,
+      });
+      const alpacaMarket = findAlpacaMarketStatus(result);
+      state.lastRunAt = result.updated_at || result.generatedAt || null;
+      state.lastError = result.lastError || null;
+      state.nextRetryAt = String(alpacaMarket?.status || '').toLowerCase() === 'rate_limited'
+        || alpacaMarket?.blockedReason === 'rate_limited'
+        ? (alpacaMarket.nextRetryAt || alpacaMarket.retryAfterAt || null)
+        : null;
+      state.lastSkipReason = null;
+      return result;
+    } finally {
+      state.inFlight = false;
+    }
+  }
+
+  function loadCurrentStatus() {
+    return loadRegularWatchStatus({
       dataDir,
-      runtimeState,
-      status: currentStatus,
-      timeoutMs: runOptions.timeoutMs || options.timeoutMs,
-      maxSymbolsPerRun: runOptions.maxSymbolsPerRun || options.maxSymbolsPerRun,
+      filePath: options.statusPath || resolveRegularWatchStatusPath({ dataDir, repoRoot }),
     });
-    state.lastRunAt = result.updated_at || result.generatedAt || null;
-    state.lastError = result.lastError || null;
-    return result;
   }
 
   async function start() {
@@ -79,6 +113,11 @@ function createRegularWatchLoop(options = {}) {
     getState: () => ({ ...state }),
     isRunning: () => state.running,
   };
+}
+
+function findAlpacaMarketStatus(result = {}) {
+  const sources = result.sources || result.regularWatchIntelligence?.sources || [];
+  return (Array.isArray(sources) ? sources : []).find((source) => source?.source === 'alpacaMarket') || null;
 }
 
 module.exports = {
