@@ -4,7 +4,7 @@ const { scoreRegularWatchSymbol } = require('./regular-watch-score');
 const { buildScannerConfig } = require('../scanner-config');
 const { VOLATILE_STOCK_SYMBOLS, parseSymbolList, resolveRotatingStockSymbols } = require('../volatile-stock-universe');
 const { nowIso } = require('../util');
-const { fetchJsonWithTimeout, redactSourceMessage } = require('../source-fetch');
+const { buildSourceStatus, fetchJsonWithTimeout, redactSourceMessage } = require('../source-fetch');
 const { fetchAlpacaMarketSignals, fetchAlpacaAssetSignals, fetchNasdaqHaltsSignals, fetchSecEdgarSignals } = require('../meme-monitor/phase-a-source-runner');
 const { fetchPolygonMarketSignals } = require('../meme-monitor/sources/polygon-market-source');
 const { fetchAlphaVantageSignals } = require('../meme-monitor/sources/alpha-vantage-source');
@@ -15,7 +15,21 @@ function resolveRegularWatchSymbols(env = process.env) {
   const configured = Array.isArray(scannerConfig.symbols) && scannerConfig.symbols.length
     ? scannerConfig.symbols
     : resolveRotatingStockSymbols(env.STOCK_SCANNER_SYMBOLS);
-  return parseSymbolList(configured, []);
+  return normalizeRegularWatchSymbols(configured, []);
+}
+
+function normalizeRegularWatchSymbols(value, fallback = []) {
+  const parsed = parseSymbolList(value, fallback);
+  const cleaned = parsed.filter(isSupportedRegularWatchSymbol);
+  return cleaned.length ? [...new Set(cleaned)] : fallback.slice();
+}
+
+function isSupportedRegularWatchSymbol(symbol) {
+  const normalized = String(symbol || '').trim().toUpperCase();
+  if (!normalized) return false;
+  if (normalized.includes('/') || normalized.includes(' ')) return false;
+  if (normalized.length > 15) return false;
+  return /^[A-Z0-9]+(?:[.-][A-Z0-9]+)*$/.test(normalized);
 }
 
 function resolveRegularWatchSourceRuntime(env = process.env, runtimeState = null) {
@@ -146,7 +160,7 @@ async function runRegularWatchSources(options = {}) {
   const blockedSymbols = regularWatchList.filter((entry) => entry.status === 'blocked').length;
   const stale = regularWatchList.some((entry) => entry.stale) || sourceResults.anyStale;
   const activeSources = Object.values(sourceStatusMap).filter((entry) => ['active', 'warn'].includes(String(entry.status || '').toLowerCase()) && entry.source !== 'approvedUniverse');
-  const runtimeStatus = sourceResults.anyErrors || stale || blockedSymbols > 0
+  const runtimeStatus = sourceResults.anyErrors || sourceResults.lastError || stale || blockedSymbols > 0
     ? 'warn'
     : (activeSources.length ? 'active' : 'inactive');
 
@@ -209,7 +223,11 @@ async function runEnabledSources({ env, fetchImpl, repoRoot, symbols, timeoutMs,
 
   const addResult = (sourceName, result) => {
     sourceStatusMap[sourceName] = result.sourceStatus;
-    if (result.sourceStatus?.status && ['error', 'missing_credentials', 'rate_limited'].includes(String(result.sourceStatus.status).toLowerCase())) {
+    const status = String(result.sourceStatus?.status || '').toLowerCase();
+    if (result.sourceStatus?.lastError && !lastError && (status === 'warn' || result.sourceStatus?.partialFailure || Array.isArray(result.sourceStatus?.rejectedSymbols))) {
+      lastError = result.sourceStatus.lastError;
+    }
+    if (result.sourceStatus?.status && ['error', 'missing_credentials', 'rate_limited'].includes(status)) {
       anyErrors = true;
       lastError = lastError || result.sourceStatus.lastError || result.sourceStatus.blockedReason || `${sourceName}_failed`;
     }
@@ -367,7 +385,7 @@ async function resolveRegularWatchUniverse({
   timeoutMs = 5000,
   fallbackSymbols = [],
 } = {}) {
-  const configured = parseSymbolList(env.STOCK_SCANNER_SYMBOLS, []);
+  const configured = normalizeRegularWatchSymbols(env.STOCK_SCANNER_SYMBOLS, []);
   if (configured.length) {
     return {
       source: 'configured_stock_scanner_symbols',
@@ -380,7 +398,7 @@ async function resolveRegularWatchUniverse({
   if (source !== 'alpaca_assets') {
     return {
       source: 'built_in_volatile_stock_symbols',
-      symbols: parseSymbolList(fallbackSymbols, VOLATILE_STOCK_SYMBOLS),
+      symbols: normalizeRegularWatchSymbols(fallbackSymbols, VOLATILE_STOCK_SYMBOLS),
       fallback: true,
       warning: 'REGULAR_WATCH_UNIVERSE_SOURCE is not alpaca_assets.',
     };
@@ -389,14 +407,14 @@ async function resolveRegularWatchUniverse({
   if (fetched.ok && fetched.symbols.length) {
     return {
       source: 'alpaca_assets',
-      symbols: fetched.symbols,
+      symbols: normalizeRegularWatchSymbols(fetched.symbols, []),
       fallback: false,
       warning: null,
     };
   }
   return {
     source: 'built_in_volatile_stock_symbols',
-    symbols: parseSymbolList(fallbackSymbols, VOLATILE_STOCK_SYMBOLS),
+    symbols: normalizeRegularWatchSymbols(fallbackSymbols, VOLATILE_STOCK_SYMBOLS),
     fallback: true,
     warning: fetched.error || 'Alpaca asset universe unavailable; using built-in fallback list.',
   };
@@ -432,7 +450,7 @@ async function fetchAlpacaRegularStockUniverse({ env = process.env, fetchImpl = 
 }
 
 function selectRotatingSymbolBatch({ symbols = [], batchSize = 500, previousOffset = 0 } = {}) {
-  const unique = parseSymbolList(symbols, []);
+  const unique = normalizeRegularWatchSymbols(symbols, []);
   const size = Math.max(1, Math.floor(Number(batchSize) || 500));
   if (!unique.length) {
     return { symbols: [], offset: 0, next_offset: 0, batch_size: size, full_eligible_count: 0, wrapped: false };
@@ -467,7 +485,7 @@ function buildFastLaneSymbols({
   if (!enabled || max <= 0) {
     return { enabled: false, symbols: [], count: 0, limit: max, sources: {} };
   }
-  const universe = new Set(parseSymbolList(universeSymbols, []));
+  const universe = new Set(normalizeRegularWatchSymbols(universeSymbols, []));
   const sourceCounts = {};
   const candidates = [];
   const add = (symbol, source, score = 0) => {
@@ -514,6 +532,7 @@ function updateScannedTodaySymbols({ previousUniverse = {}, symbols = [], now = 
     : []);
   for (const symbol of symbols) {
     const normalized = String(symbol || '').trim().toUpperCase();
+    if (!isSupportedRegularWatchSymbol(normalized)) continue;
     if (normalized) scanned.add(normalized);
   }
   return {
@@ -551,20 +570,99 @@ function buildUniverseStatus({ universe, rotation, fastLane = null, mergedSymbol
 
 async function fetchAlpacaMarketSignalsBatched({ env, fetchImpl, repoRoot, symbols = [], timeoutMs } = {}) {
   const batchSize = Math.max(1, Number(env.REGULAR_WATCH_MARKET_DATA_BATCH_SIZE || 100) || 100);
-  const batches = chunk(symbols, batchSize);
+  const normalizedSymbols = normalizeRegularWatchSymbols(symbols, []);
+  const rejectedSymbols = [...new Set(parseSymbolList(symbols, []).filter((symbol) => !isSupportedRegularWatchSymbol(symbol)))];
+  const batches = chunk(normalizedSymbols, batchSize);
   const merged = {
     sourceStatus: null,
     symbols: [],
   };
-  for (const batch of batches) {
+  const diagnostics = {
+    rejectedSymbols: [...rejectedSymbols],
+    isolatedRejectedSymbols: [],
+    partialFailure: false,
+  };
+  let hardFailure = null;
+  const maxIsolationDepth = Math.max(2, Math.ceil(Math.log2(Math.max(2, batchSize))));
+
+  const processBatch = async (batch, depth = 0) => {
+    if (!batch.length || hardFailure) return;
     const result = await fetchAlpacaMarketSignals({ env, fetchImpl, repoRoot, symbols: batch, timeoutMs });
+    const status = String(result.sourceStatus?.status || '').toLowerCase();
+    const lastError = String(result.sourceStatus?.lastError || '');
+    const isBadRequest = status === 'error' && /HTTP 400|HTTP 422/i.test(lastError);
+    const isHardFailure = ['rate_limited', 'missing_credentials', 'timeout'].includes(status)
+      || (status === 'error' && !isBadRequest);
+
+    if (isBadRequest && batch.length > 1) {
+      diagnostics.partialFailure = true;
+      if (depth >= maxIsolationDepth) {
+        hardFailure = result.sourceStatus;
+        return;
+      }
+      const midpoint = Math.ceil(batch.length / 2);
+      await processBatch(batch.slice(0, midpoint), depth + 1);
+      await processBatch(batch.slice(midpoint), depth + 1);
+      return;
+    }
+
+    if (isBadRequest && batch.length === 1) {
+      diagnostics.partialFailure = true;
+      diagnostics.isolatedRejectedSymbols.push(batch[0]);
+      return;
+    }
+
+    if (isHardFailure) {
+      hardFailure = result.sourceStatus;
+      return;
+    }
+
     merged.symbols.push(...(result.symbols || []));
     merged.sourceStatus = mergeSourceStatus(merged.sourceStatus, result.sourceStatus, merged.symbols.length);
-    if (['rate_limited', 'error', 'timeout', 'missing_credentials'].includes(String(result.sourceStatus?.status || '').toLowerCase())) {
-      break;
-    }
+  };
+
+  for (const batch of batches) {
+    await processBatch(batch, 0);
+    if (hardFailure) break;
   }
   merged.sourceStatus = merged.sourceStatus || inactiveSource('alpacaMarket').sourceStatus;
+
+  const failedSymbols = [...new Set([...diagnostics.rejectedSymbols, ...diagnostics.isolatedRejectedSymbols])];
+  if (failedSymbols.length || diagnostics.partialFailure || hardFailure) {
+    const confirmed = merged.symbols.length;
+    const rateLimitCooldownSeconds = Math.max(5, Number(
+      hardFailure?.retryAfterSeconds
+      ?? env.REGULAR_WATCH_RATE_LIMIT_COOLDOWN_SECONDS
+      ?? 120,
+    ) || 120);
+    const nextRetryAt = hardFailure?.status === 'rate_limited'
+      ? (hardFailure.retryAfterAt || new Date(Date.now() + rateLimitCooldownSeconds * 1000).toISOString())
+      : null;
+    const issueLabel = failedSymbols.length
+      ? (failedSymbols.length === 1
+        ? `1 unsupported symbol (${failedSymbols[0]})`
+        : `${failedSymbols.length} unsupported symbols`)
+      : (hardFailure?.status ? `${hardFailure.status} batch failure` : 'Alpaca snapshot batch rejected');
+    const errorLabel = hardFailure?.lastError || (failedSymbols.length ? `Ignored ${issueLabel}` : 'Alpaca snapshot batch rejected');
+    merged.sourceStatus = buildSourceStatus({
+      ...(merged.sourceStatus || {}),
+      source: 'alpacaMarket',
+      enabled: true,
+      available: confirmed > 0 || Boolean(hardFailure?.available),
+      status: confirmed > 0 ? 'warn' : (hardFailure?.status || 'error'),
+      lastRunAt: confirmed > 0 ? nowIso() : null,
+      lastError: confirmed > 0
+        ? `Regular Watch ignored ${issueLabel} in Alpaca snapshot requests. ${confirmed} symbols confirmed.`
+        : errorLabel,
+      blockedReason: failedSymbols.length ? 'partial_request_failure' : (hardFailure?.blockedReason || 'source_not_found_or_inaccessible'),
+      symbolsConfirmed: confirmed,
+      rejectedSymbols: failedSymbols,
+      partialFailure: Boolean(diagnostics.partialFailure || failedSymbols.length),
+      httpStatus: hardFailure?.httpStatus ?? null,
+      retryAfterSeconds: hardFailure?.status === 'rate_limited' ? rateLimitCooldownSeconds : null,
+      nextRetryAt,
+    });
+  }
   return merged;
 }
 
@@ -595,7 +693,7 @@ function chunk(values = [], size = 100) {
 }
 
 function uniqueSymbols(values = []) {
-  return [...new Set(parseSymbolList(values, []))];
+  return [...new Set(normalizeRegularWatchSymbols(values, []))];
 }
 
 function alpacaHeaders(apiKeyId, apiSecretKey) {

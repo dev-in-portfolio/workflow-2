@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'dist', '.codex-remote-attachments']);
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'dist', 'data', '.codex-remote-attachments']);
 const SOURCE_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.ts', '.tsx', '.json']);
 
 function main() {

@@ -231,8 +231,22 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
     });
     const { response, body } = result;
     if (!response.ok) {
+      const retryAfterSeconds = resolveRetryAfterSeconds(response);
       return {
-        sourceStatus: buildSourceStatus({ source: 'alpacaMarket', enabled: true, available: false, status: response.status === 429 ? 'rate_limited' : 'error', symbolsConfirmed: 0, lastRunAt: null, lastError: `HTTP ${response.status}`, blockedReason: classifyHttpSourceStatus(response.status, body).blockedReason, cache: result.cache }),
+        sourceStatus: buildSourceStatus({
+          source: 'alpacaMarket',
+          enabled: true,
+          available: false,
+          status: response.status === 429 ? 'rate_limited' : 'error',
+          symbolsConfirmed: 0,
+          lastRunAt: null,
+          lastError: `HTTP ${response.status}`,
+          blockedReason: classifyHttpSourceStatus(response.status, body).blockedReason,
+          httpStatus: response.status,
+          retryAfterSeconds,
+          retryAfterAt: retryAfterSeconds !== null ? new Date(Date.now() + retryAfterSeconds * 1000).toISOString() : null,
+          cache: result.cache,
+        }),
         symbols: [],
       };
     }
@@ -294,6 +308,16 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
       symbols: [],
     };
   }
+}
+
+function resolveRetryAfterSeconds(response) {
+  const raw = response?.headers?.get?.('retry-after');
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds));
+  const retryAt = new Date(raw).getTime();
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
 }
 
 async function fetchAlpacaAssetSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000, repoRoot = process.cwd() } = {}) {
