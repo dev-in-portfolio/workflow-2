@@ -224,10 +224,15 @@ async function fetchAlpacaMarketSignals({ env, fetchImpl, symbols = [], timeoutM
   try {
     const encodedSymbols = encodeURIComponent(symbols.join(','));
     const url = `${trimTrailingSlash(baseUrl)}/v2/stocks/snapshots?symbols=${encodedSymbols}&feed=iex`;
+    const snapshotCacheSeconds = Math.max(0, Number(
+      env?.REGULAR_WATCH_ALPACA_SNAPSHOT_CACHE_SECONDS
+      ?? env?.MEME_PHASE_A_SOURCE_CACHE_SECONDS
+      ?? 15,
+    ) || 0);
     const result = await fetchJsonWithTimeout(fetchImpl, url, {
       timeoutMs,
       headers: alpacaHeaders(apiKeyId, apiSecretKey),
-      cache: sourceCacheOptions({ env, repoRoot, cacheKey: symbols.join(',') }, 'alpacaMarket', 'snapshots', timeoutMs),
+      cache: sourceCacheOptions({ env, repoRoot, cacheKey: symbols.join(',') }, 'alpacaMarket', 'snapshots', snapshotCacheSeconds),
     });
     const { response, body } = result;
     if (!response.ok) {

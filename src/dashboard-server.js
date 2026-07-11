@@ -2969,7 +2969,11 @@ function buildHomeHotListStatus(snapshot = {}) {
     || null;
   const regularWatchStale = Boolean(regularWatchRuntime?.stale);
   if (regularWatchEnabled || regularWatchStatus || regularWatchLastRunAt !== null) {
-    const status = regularWatchStatus && regularWatchStatus !== 'disabled'
+    const lastError = regularWatch.lastError || regularWatchRuntime?.regularWatchIntelligence?.lastError || regularWatchRuntime?.lastError || null;
+    const marketOpen = snapshot.regime?.market_open;
+    const status = marketOpen === false && !lastError
+      ? 'closed'
+      : regularWatchStatus && regularWatchStatus !== 'disabled'
       ? regularWatchStatus
       : (regularWatchEnabled ? 'active' : 'off');
     return {
@@ -2981,7 +2985,7 @@ function buildHomeHotListStatus(snapshot = {}) {
       secondaryCount: regularWatchMoverCount,
       secondaryLabel: 'movers',
       lastScoredAt: regularWatchLastRunAt,
-      lastError: regularWatch.lastError || regularWatchRuntime?.regularWatchIntelligence?.lastError || regularWatchRuntime?.lastError || null,
+      lastError,
       sourceLabel: 'Regular stock process',
       dynamicCount: regularWatchCount,
       hotHotCount: regularWatchMoverCount,
