@@ -28,6 +28,8 @@ function tempWorkspace() {
 function writeEnabledState({ dataDir, env, include = [] } = {}) {
   const filePath = resolveRegularWatchStatePath({ dataDir });
   const baseEnv = {
+    REGULAR_WATCH_MARKET_DATA_BATCH_DELAY_MS: '0',
+    REGULAR_WATCH_MARKET_DATA_BATCH_JITTER_MS: '0',
     REGULAR_WATCH_INTELLIGENCE_ENABLED: 'true',
     REGULAR_WATCH_MARKET_CONFIRMATION_ENABLED: 'true',
     REGULAR_WATCH_ASSET_VALIDATION_ENABLED: 'true',

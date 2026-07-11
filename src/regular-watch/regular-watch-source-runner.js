@@ -570,6 +570,8 @@ function buildUniverseStatus({ universe, rotation, fastLane = null, mergedSymbol
 
 async function fetchAlpacaMarketSignalsBatched({ env, fetchImpl, repoRoot, symbols = [], timeoutMs } = {}) {
   const batchSize = Math.max(1, Number(env.REGULAR_WATCH_MARKET_DATA_BATCH_SIZE || 100) || 100);
+  const batchDelayMs = Math.max(0, Number(env.REGULAR_WATCH_MARKET_DATA_BATCH_DELAY_MS ?? 250) || 0);
+  const batchJitterMs = Math.max(0, Number(env.REGULAR_WATCH_MARKET_DATA_BATCH_JITTER_MS ?? 100) || 0);
   const normalizedSymbols = normalizeRegularWatchSymbols(symbols, []);
   const rejectedSymbols = [...new Set(parseSymbolList(symbols, []).filter((symbol) => !isSupportedRegularWatchSymbol(symbol)))];
   const batches = chunk(normalizedSymbols, batchSize);
@@ -621,9 +623,14 @@ async function fetchAlpacaMarketSignalsBatched({ env, fetchImpl, repoRoot, symbo
     merged.sourceStatus = mergeSourceStatus(merged.sourceStatus, result.sourceStatus, merged.symbols.length);
   };
 
-  for (const batch of batches) {
+  for (let index = 0; index < batches.length; index += 1) {
+    const batch = batches[index];
     await processBatch(batch, 0);
     if (hardFailure) break;
+    if (index < batches.length - 1 && batchDelayMs > 0) {
+      const jitterMs = batchJitterMs > 0 ? Math.floor(Math.random() * (batchJitterMs + 1)) : 0;
+      await sleep(batchDelayMs + jitterMs);
+    }
   }
   merged.sourceStatus = merged.sourceStatus || inactiveSource('alpacaMarket').sourceStatus;
 
@@ -663,6 +670,15 @@ async function fetchAlpacaMarketSignalsBatched({ env, fetchImpl, repoRoot, symbo
       nextRetryAt,
     });
   }
+  merged.sourceStatus = buildSourceStatus({
+    ...merged.sourceStatus,
+    requestPacing: {
+      batchCount: batches.length,
+      batchSize,
+      batchDelayMs,
+      batchJitterMs,
+    },
+  });
   return merged;
 }
 
@@ -690,6 +706,10 @@ function chunk(values = [], size = 100) {
     out.push(values.slice(index, index + size));
   }
   return out;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function uniqueSymbols(values = []) {

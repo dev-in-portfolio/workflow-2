@@ -322,6 +322,33 @@ test('home summary surfaces useful regular watch warnings', () => {
   assert.doesNotMatch(homeSummary.hotListStatus.lastError, /HTTP 400/i);
 });
 
+test('home summary reports a clean closed state for expected after-hours staleness', () => {
+  const homeSummary = buildHomeSummary({
+    generated_at: '2026-07-10T22:00:00.000Z',
+    timestamp: '2026-07-10T22:00:00.000Z',
+    regime: { market_open: false },
+    live: {
+      regular_watch_intelligence: {
+        enabled: true,
+        status: 'warn',
+        lastError: null,
+        symbolsChecked: 989,
+        moversFound: 20,
+        lastRunAt: '2026-07-10T21:59:30.000Z',
+      },
+      regular_watch_runtime: {
+        stale: true,
+        status: 'warn',
+        lastError: null,
+      },
+    },
+  });
+
+  assert.equal(homeSummary.hotListStatus.status, 'closed');
+  assert.equal(homeSummary.hotListStatus.stale, true);
+  assert.equal(homeSummary.hotListStatus.lastError, null);
+});
+
 test('home summary displays the score used for regular watch ranking', () => {
   const homeSummary = buildHomeSummary({
     generated_at: '2026-07-06T15:05:00.000Z',

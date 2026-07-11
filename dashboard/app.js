@@ -358,7 +358,7 @@ function resolveHotListStatus(snapshot = {}) {
       : rawStatus.toUpperCase();
   const tone = label === 'RUNNING' && !status.stale
     ? 'ok-text'
-    : label === 'OFF'
+    : label === 'OFF' || label === 'CLOSED'
       ? 'warn-text'
       : 'loss-text';
   const age = status.lastScoredAt ? formatDataAge(status.lastScoredAt) : 'not scored yet';
@@ -366,12 +366,12 @@ function resolveHotListStatus(snapshot = {}) {
   const secondaryCount = Number(status.secondaryCount ?? status.moverCount ?? status.hotHotCount ?? 0);
   const primaryLabel = String(status.primaryLabel || 'approved symbols');
   const secondaryLabel = String(status.secondaryLabel || 'movers');
-  const stale = status.stale ? 'Stale. ' : '';
+  const stale = status.stale && label !== 'CLOSED' ? 'Stale. ' : '';
   const error = status.lastError ? ` Error: ${status.lastError}` : '';
   return {
     label,
     tone,
-    hint: `${stale}${formatCount(primaryCount)} ${primaryLabel}, ${formatCount(secondaryCount)} ${secondaryLabel}. ${age}.${error}`,
+    hint: `${label === 'CLOSED' ? 'Market closed. ' : ''}${stale}${formatCount(primaryCount)} ${primaryLabel}, ${formatCount(secondaryCount)} ${secondaryLabel}. ${age}.${error}`,
   };
 }
 
