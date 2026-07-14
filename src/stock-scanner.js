@@ -273,6 +273,14 @@ function createStockScanner(options = {}) {
   const candidateLifecycleEnabled = options.candidateLifecycleEnabled ?? parseBool(env.CANDIDATE_QUEUE_ENABLED, false);
   const candidateMinScansBeforeEntry = Math.max(1, Math.floor(safeNumber(options.candidateMinScansBeforeEntry ?? env.CANDIDATE_MIN_SCANS_BEFORE_ENTRY, 2)));
   const candidateMinSecondsBeforeEntry = Math.max(0, Math.floor(safeNumber(options.candidateMinSecondsBeforeEntry ?? env.CANDIDATE_MIN_SECONDS_BEFORE_ENTRY, 30)));
+  const finalQuoteCheckEnabled = options.finalQuoteCheckEnabled ?? parseBool(env.FINAL_QUOTE_CHECK_ENABLED, stricterLiveEntryDefaults);
+  const finalQuoteMaxAgeSeconds = Math.max(1, safeNumber(options.finalQuoteMaxAgeSeconds ?? env.FINAL_QUOTE_MAX_AGE_SECONDS, 5));
+  const adaptiveConfirmationEnabled = options.adaptiveConfirmationEnabled ?? parseBool(env.ADAPTIVE_CONFIRMATION_ENABLED, true);
+  const fastMomentumMinOpportunityScore = Math.max(0, safeNumber(options.fastMomentumMinOpportunityScore ?? env.FAST_MOMENTUM_MIN_OPPORTUNITY_SCORE, 90));
+  const fastMomentumMinOneMinuteReturnPct = Math.max(0, safeNumber(options.fastMomentumMinOneMinuteReturnPct ?? env.FAST_MOMENTUM_MIN_ONE_MINUTE_RETURN_PCT, 0.3));
+  const fastMomentumMinRelativeVolume = Math.max(1, safeNumber(options.fastMomentumMinRelativeVolume ?? env.FAST_MOMENTUM_MIN_RELATIVE_VOLUME, 2));
+  const fastMomentumMaxSpreadPct = Math.max(0, safeNumber(options.fastMomentumMaxSpreadPct ?? env.FAST_MOMENTUM_MAX_SPREAD_PCT, 0.25));
+  const fastMomentumMaxQuoteAgeSeconds = Math.max(1, safeNumber(options.fastMomentumMaxQuoteAgeSeconds ?? env.FAST_MOMENTUM_MAX_QUOTE_AGE_SECONDS, 5));
   const candidateMaxAgeSeconds = Math.max(1, Math.floor(safeNumber(options.candidateMaxAgeSeconds ?? env.CANDIDATE_MAX_AGE_SECONDS, 10 * 60)));
   const candidateConfirmationRequired = options.candidateConfirmationRequired ?? parseBool(env.CANDIDATE_CONFIRMATION_REQUIRED, true);
   const candidateQueueMaxSize = Math.max(1, Math.floor(safeNumber(options.candidateQueueMaxSize ?? env.CANDIDATE_QUEUE_MAX_SIZE, 12)));
@@ -813,6 +821,26 @@ function createStockScanner(options = {}) {
         sourceListsBySymbol: memeWatchConfig.sourceListsBySymbol || latestSourceListsBySymbol,
         candidateLifecycleEnabled,
         candidateLifecycleState: previousCandidateLifecycleState,
+        candidateMinScansBeforeEntry,
+        candidateMinSecondsBeforeEntry,
+        candidateMaxAgeSeconds,
+        candidateConfirmationRequired,
+        candidateQueueMaxSize,
+        rankConfidenceDecayEnabled,
+        rankConfidenceHalfLifeSeconds,
+        rankConfidenceMaxStaleSeconds,
+        huntToMonitorLatchEnabled,
+        monitorModeAllowsNewBuys,
+        manageOnlyBlocksBuys,
+        rotationSoftBandPoints,
+        rotationHardBandPoints,
+        rotationMinHoldScans,
+        adaptiveConfirmationEnabled,
+        fastMomentumMinOpportunityScore,
+        fastMomentumMinOneMinuteReturnPct,
+        fastMomentumMinRelativeVolume,
+        fastMomentumMaxSpreadPct,
+        fastMomentumMaxQuoteAgeSeconds,
         candidateLifecycleConfig: {
           minScansBeforeEntry: candidateMinScansBeforeEntry,
           minSecondsBeforeEntry: candidateMinSecondsBeforeEntry,
@@ -829,6 +857,12 @@ function createStockScanner(options = {}) {
           softBandPoints: rotationSoftBandPoints,
           hardBandPoints: rotationHardBandPoints,
           minHoldScans: rotationMinHoldScans,
+          adaptiveConfirmationEnabled,
+          fastMomentumMinOpportunityScore,
+          fastMomentumMinOneMinuteReturnPct,
+          fastMomentumMinRelativeVolume,
+          fastMomentumMaxSpreadPct,
+          fastMomentumMaxQuoteAgeSeconds,
         },
       });
       candidateLifecycleResult = computedCandidateLifecycleResult;
@@ -957,6 +991,26 @@ function createStockScanner(options = {}) {
           sourceListsBySymbol: memeWatchConfig.sourceListsBySymbol || latestSourceListsBySymbol,
           candidateLifecycleEnabled: false,
           candidateLifecycleState: previousCandidateLifecycleState,
+          candidateMinScansBeforeEntry,
+          candidateMinSecondsBeforeEntry,
+          candidateMaxAgeSeconds,
+          candidateConfirmationRequired,
+          candidateQueueMaxSize,
+          rankConfidenceDecayEnabled,
+          rankConfidenceHalfLifeSeconds,
+          rankConfidenceMaxStaleSeconds,
+          huntToMonitorLatchEnabled,
+          monitorModeAllowsNewBuys,
+          manageOnlyBlocksBuys,
+          rotationSoftBandPoints,
+          rotationHardBandPoints,
+          rotationMinHoldScans,
+          adaptiveConfirmationEnabled,
+          fastMomentumMinOpportunityScore,
+          fastMomentumMinOneMinuteReturnPct,
+          fastMomentumMinRelativeVolume,
+          fastMomentumMaxSpreadPct,
+          fastMomentumMaxQuoteAgeSeconds,
           candidateLifecycleConfig: {
             minScansBeforeEntry: candidateMinScansBeforeEntry,
             minSecondsBeforeEntry: candidateMinSecondsBeforeEntry,
@@ -1006,6 +1060,34 @@ function createStockScanner(options = {}) {
       const results = [];
       const postCandidate = async (candidate) => {
         if (!candidate) return null;
+        if (candidate.payload?.side === 'buy' && finalQuoteCheckEnabled) {
+          const finalQuote = await refreshFinalQuote({
+            fetchImpl: marketFetch,
+            apiKeyId,
+            apiSecretKey,
+            baseUrl,
+            symbol: candidate.symbol,
+            maxAgeSeconds: finalQuoteMaxAgeSeconds,
+          });
+          candidate.payload.market_context = candidate.payload.market_context || {};
+          candidate.payload.market_context.scanner = candidate.payload.market_context.scanner || {};
+          candidate.payload.market_context.scanner.final_quote_check = finalQuote;
+          if (!finalQuote.pass) {
+            const reason = finalQuote.reason_code || 'FINAL_QUOTE_CHECK_FAILED';
+            skipTracker.record(reason, { symbol: candidate.symbol, stage: 'market_data' });
+            const result = {
+              symbol: candidate.symbol,
+              move_pct: candidate.movePct,
+              spread_pct: candidate.spreadPct,
+              accepted: false,
+              transport_ok: false,
+              status: 'FINAL_QUOTE_REJECTED',
+              response: { accepted: false, reason_codes: [reason], final_quote_check: finalQuote },
+            };
+            results.push(result);
+            return result;
+          }
+        }
         assertSignalCandidate(candidate.payload);
         const response = await localFetch(`${localBaseUrl}/${candidate.endpoint || 'paper-order'}`, {
           method: 'POST',
@@ -1972,6 +2054,45 @@ async function fetchStockBundle({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, sy
   return { snapshots, latestQuotes };
 }
 
+async function refreshFinalQuote({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, symbol, maxAgeSeconds }) {
+  try {
+    const bundle = await fetchStockBundle({
+      fetchImpl,
+      apiKeyId,
+      apiSecretKey,
+      baseUrl,
+      symbols: [symbol],
+    });
+    const snapshot = bundle.snapshots?.[symbol] || null;
+    const quote = bundle.latestQuotes?.[symbol] || snapshot?.latestQuote || snapshot?.latest_quote || null;
+    const timestamp = quote?.t || snapshot?.latestTrade?.t || snapshot?.latest_trade?.t || null;
+    const timestampMs = timestamp ? Date.parse(timestamp) : Number.NaN;
+    const ageSeconds = Number.isFinite(timestampMs) ? Math.max(0, (Date.now() - timestampMs) / 1000) : Number.POSITIVE_INFINITY;
+    if (!quote || !Number.isFinite(timestampMs)) {
+      return { pass: false, checked_at: nowIso(), reason_code: 'FINAL_QUOTE_UNAVAILABLE', quote_timestamp: timestamp || null, quote_age_seconds: null };
+    }
+    if (ageSeconds > maxAgeSeconds) {
+      return { pass: false, checked_at: nowIso(), reason_code: 'FINAL_QUOTE_STALE', quote_timestamp: timestamp, quote_age_seconds: Number(ageSeconds.toFixed(3)), max_age_seconds: maxAgeSeconds };
+    }
+    const bid = safeNumber(quote.bp ?? quote.bid_price, null);
+    const ask = safeNumber(quote.ap ?? quote.ask_price, null);
+    const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : null;
+    return {
+      pass: true,
+      checked_at: nowIso(),
+      reason_code: null,
+      quote_timestamp: timestamp,
+      quote_age_seconds: Number(ageSeconds.toFixed(3)),
+      max_age_seconds: maxAgeSeconds,
+      bid,
+      ask,
+      mid,
+    };
+  } catch (error) {
+    return { pass: false, checked_at: nowIso(), reason_code: 'FINAL_QUOTE_CHECK_FAILED', error: error?.message || 'Unable to refresh final quote.' };
+  }
+}
+
 async function fetchPositions({ fetchImpl, apiKeyId, apiSecretKey, baseUrl }) {
   const headers = {
     'APCA-API-KEY-ID': apiKeyId,
@@ -2158,6 +2279,12 @@ function normalizeTwelveDataQuotes(body, symbols) {
 
 function buildCandidates(bundle, options = {}) {
   const now = options.receivedAt || nowIso();
+  const adaptiveConfirmationEnabled = Boolean(options.adaptiveConfirmationEnabled);
+  const fastMomentumMinOpportunityScore = Math.max(0, safeNumber(options.fastMomentumMinOpportunityScore, 90));
+  const fastMomentumMinOneMinuteReturnPct = Math.max(0, safeNumber(options.fastMomentumMinOneMinuteReturnPct, 0.3));
+  const fastMomentumMinRelativeVolume = Math.max(1, safeNumber(options.fastMomentumMinRelativeVolume, 2));
+  const fastMomentumMaxSpreadPct = Math.max(0, safeNumber(options.fastMomentumMaxSpreadPct, 0.25));
+  const fastMomentumMaxQuoteAgeSeconds = Math.max(1, safeNumber(options.fastMomentumMaxQuoteAgeSeconds, 5));
   const symbols = Object.keys(bundle.snapshots || {});
   const positionsBySymbol = buildPositionLookup(options.positions || []);
   const openOrdersBySymbol = buildOpenOrderLookup(options.openOrders || []);
@@ -2356,6 +2483,26 @@ function buildCandidates(bundle, options = {}) {
         && safeNumber(selectionV2.features?.one_minute_return_pct, 0) > 0
         && safeNumber(selectionV2.features?.relative_volume, 0) >= 1,
       );
+      const features = selectionV2?.features || {};
+      const quoteAgeSeconds = safeNumber(features.quote_age_seconds, Number.POSITIVE_INFINITY);
+      const fastPathReasons = [];
+      if (!adaptiveConfirmationEnabled) fastPathReasons.push('FAST_PATH_DISABLED');
+      if (!selectionV2?.qualified || !options.scannerSelectionV2AuthorityEnabled) fastPathReasons.push('SELECTION_V2_NOT_AUTHORITATIVE');
+      if (safeNumber(selectionV2?.final_opportunity_score, 0) < fastMomentumMinOpportunityScore) fastPathReasons.push('OPPORTUNITY_BELOW_FAST_THRESHOLD');
+      if (safeNumber(features.one_minute_return_pct, 0) < fastMomentumMinOneMinuteReturnPct) fastPathReasons.push('ONE_MINUTE_MOMENTUM_WEAK');
+      if (safeNumber(features.relative_volume, 0) < fastMomentumMinRelativeVolume) fastPathReasons.push('RELATIVE_VOLUME_WEAK');
+      if (safeNumber(scannerContext.spread_pct, Number.POSITIVE_INFINITY) > fastMomentumMaxSpreadPct) fastPathReasons.push('SPREAD_TOO_WIDE');
+      if (quoteAgeSeconds > fastMomentumMaxQuoteAgeSeconds) fastPathReasons.push('FINAL_QUOTE_NOT_FRESH');
+      if (!singleProviderEligible && !secondaryConfirmationAvailable) fastPathReasons.push('SECONDARY_UNAVAILABLE_WITHOUT_OVERRIDE');
+      const fastPathEligible = candidate.payload.side === 'buy' && fastPathReasons.length === 0;
+      scannerContext.adaptive_confirmation = {
+        path: fastPathEligible ? 'fast' : 'normal',
+        fast_path_eligible: fastPathEligible,
+        fast_path_reason_codes: fastPathReasons,
+        final_quote_age_seconds: Number.isFinite(quoteAgeSeconds) ? quoteAgeSeconds : null,
+        configured_scan_requirement: options.candidateMinScansBeforeEntry,
+        configured_time_requirement_seconds: options.candidateMinSecondsBeforeEntry,
+      };
       if (singleProviderEligible) {
         const eligibility = {
           enabled: true,
@@ -2462,6 +2609,7 @@ function buildCandidates(bundle, options = {}) {
       softBandPoints: options.rotationSoftBandPoints,
       hardBandPoints: options.rotationHardBandPoints,
       minHoldScans: options.rotationMinHoldScans,
+      adaptiveConfirmationEnabled: options.adaptiveConfirmationEnabled,
     });
     const selectedKey = candidateLifecycleResult.selection?.selected_key || candidateLifecycleResult.state?.selected_key || null;
     if (selectedKey) {

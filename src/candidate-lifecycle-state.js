@@ -149,6 +149,9 @@ function normalizeCandidateEntry(entry = {}, fallbackKey = null) {
     stale_seconds: Math.max(0, Math.floor(safeNumber(entry.stale_seconds, 0))),
     confirmation_scans_required: Math.max(0, Math.floor(safeNumber(entry.confirmation_scans_required, 0))),
     confirmation_seconds_required: Math.max(0, Math.floor(safeNumber(entry.confirmation_seconds_required, 0))),
+    confirmation_path: ['fast', 'normal'].includes(String(entry.confirmation_path || '').toLowerCase()) ? String(entry.confirmation_path).toLowerCase() : 'normal',
+    fast_path_eligible: Boolean(entry.fast_path_eligible),
+    fast_path_reason_codes: normalizeReasonCodes(entry.fast_path_reason_codes),
     queue_reason: normalizeText(entry.queue_reason || null) || null,
     scanner_mode: normalizeMode(entry.scanner_mode || 'hunt'),
   };
@@ -289,6 +292,7 @@ function reconcileCandidateLifecycleState({
   softBandPoints = 4,
   hardBandPoints = 12,
   minHoldScans = 1,
+  adaptiveConfirmationEnabled = false,
 } = {}) {
   const state = normalizeCandidateLifecycleState(previousState);
   const currentMode = resolveScannerMode({
@@ -347,7 +351,9 @@ function reconcileCandidateLifecycleState({
     const expired = maxAge > 0 && ageSeconds >= maxAge;
     const aboveFloor = decayedRank >= floor;
     const persistedAboveFloor = !confirmationRequired || history.filter((entry) => safeNumber(entry.decayed_rank, 0) >= floor).length + 1 >= minScans;
-    const persistenceSatisfied = scansSeen >= minScans && ageSeconds >= minSeconds && aboveFloor && persistedAboveFloor;
+    const adaptive = candidate.payload?.market_context?.scanner?.adaptive_confirmation || {};
+    const fastPathEligible = Boolean(adaptiveConfirmationEnabled && adaptive.fast_path_eligible);
+    const persistenceSatisfied = fastPathEligible || (scansSeen >= minScans && ageSeconds >= minSeconds && aboveFloor && persistedAboveFloor);
     const previousStatus = normalizeStatus(previous.status || 'watching');
     const reasonCodes = new Set([
       ...(normalizeReasonCodes(previous.reason_codes)),
@@ -390,6 +396,7 @@ function reconcileCandidateLifecycleState({
         eligibleAt = eligibleAt || now;
         reasonCodes.add(CandidateLifecycleReason.CANDIDATE_QUEUE_ELIGIBLE);
         if (confirmationRequired) reasonCodes.add(CandidateLifecycleReason.CANDIDATE_CONFIRMATION_REQUIRED);
+        if (fastPathEligible) reasonCodes.add('ADAPTIVE_FAST_MOMENTUM_CONFIRMED');
       } else {
         status = 'watching';
         queueReason = CandidateLifecycleReason.CANDIDATE_QUEUE_WATCHING;
@@ -437,6 +444,9 @@ function reconcileCandidateLifecycleState({
       stale_seconds: staleSeconds,
       confirmation_scans_required: minScans,
       confirmation_seconds_required: minSeconds,
+      confirmation_path: fastPathEligible ? 'fast' : 'normal',
+      fast_path_eligible: fastPathEligible,
+      fast_path_reason_codes: Array.isArray(adaptive.fast_path_reason_codes) ? adaptive.fast_path_reason_codes : [],
       queue_reason: queueReason,
       scanner_mode: currentMode,
     };

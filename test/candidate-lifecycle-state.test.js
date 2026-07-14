@@ -29,6 +29,37 @@ function candidate(symbol, setupKey, rankScore) {
   };
 }
 
+test('exceptional fresh momentum can use the bounded adaptive fast path', () => {
+  const fast = candidate('FAST', 'breakout', 98);
+  fast.payload.market_context.scanner.adaptive_confirmation = {
+    fast_path_eligible: true,
+    fast_path_reason_codes: [],
+  };
+  const result = reconcileCandidateLifecycleState({
+    previousState: {}, candidates: [fast], now: '2026-06-19T15:00:00.000Z',
+    queueEnabled: true, confirmationRequired: true, minScansBeforeEntry: 2,
+    minSecondsBeforeEntry: 30, rankFloor: 60, scannerMode: 'hunt',
+    huntToMonitorLatchEnabled: false, adaptiveConfirmationEnabled: true,
+  });
+  const entry = result.state.candidates['FAST::breakout'];
+  assert.equal(entry.status, 'selected');
+  assert.equal(entry.confirmation_path, 'fast');
+  assert(entry.reason_codes.includes('ADAPTIVE_FAST_MOMENTUM_CONFIRMED'));
+});
+
+test('ordinary candidates retain the configured normal scan and time confirmation', () => {
+  const result = reconcileCandidateLifecycleState({
+    previousState: {}, candidates: [candidate('NORMAL', 'breakout', 98)], now: '2026-06-19T15:00:00.000Z',
+    queueEnabled: true, confirmationRequired: true, minScansBeforeEntry: 2,
+    minSecondsBeforeEntry: 8, rankFloor: 60, scannerMode: 'hunt',
+    huntToMonitorLatchEnabled: false, adaptiveConfirmationEnabled: true,
+  });
+  const entry = result.state.candidates['NORMAL::breakout'];
+  assert.equal(entry.status, 'watching');
+  assert.equal(entry.confirmation_path, 'normal');
+  assert.equal(entry.confirmation_seconds_required, 8);
+});
+
 test('candidate lifecycle progresses from watching to eligible after enough scans and time', () => {
   const first = reconcileCandidateLifecycleState({
     previousState: {},
