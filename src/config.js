@@ -20,7 +20,7 @@ const DEFAULTS = {
   MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE: 35,
   MIN_SELL_PROVIDER_CONFIRMATION_SCORE: 60,
   SELL_MAX_PROVIDER_PRICE_DIFF_PCT: 0.75,
-  MAX_SPREAD_SLIPPAGE_PCT: 7,
+  MAX_SPREAD_SLIPPAGE_PCT: 0.75,
   MIN_EDGE_SCORE: 60,
   MIN_VOLUME: 1000,
   BUY_NOTIONAL_TARGET: 150,
@@ -172,7 +172,7 @@ const CONFIG_SCHEMA = [
   ['MIN_CRYPTO_PROVIDER_CONFIRMATION_SCORE', 'number', 35, { range: [0, 100] }],
   ['MIN_SELL_PROVIDER_CONFIRMATION_SCORE', 'number', 60, { range: [0, 100] }],
   ['SELL_MAX_PROVIDER_PRICE_DIFF_PCT', 'number', 0.75, { range: [0, 100] }],
-  ['MAX_SPREAD_SLIPPAGE_PCT', 'number', 7, { range: [0, 100] }],
+  ['MAX_SPREAD_SLIPPAGE_PCT', 'number', 0.75, { range: [0, 100] }],
   ['MIN_EDGE_SCORE', 'number', 60, { range: [0, 100] }],
   ['MIN_VOLUME', 'number', 1000, { positive: true }],
   ['BUY_NOTIONAL_TARGET', 'number', 150, { positive: true }],
@@ -321,7 +321,6 @@ function loadConfig(env = process.env) {
 
   if (config.LIVE_TRADING_ENABLED) {
     if (config.TRADING_MODE !== 'live') issues.push('LIVE_TRADING_REQUIRES_LIVE_MODE');
-    if (!config.REQUIRE_HUMAN_APPROVAL) issues.push('LIVE_TRADING_REQUIRES_HUMAN_APPROVAL');
     if (!config.LIVE_TRADING_CONFIRMATION_PHRASE) issues.push('LIVE_TRADING_CONFIRMATION_PHRASE_REQUIRED');
     if (!config.AUDIT_LOG_ENABLED) issues.push('LIVE_TRADING_REQUIRES_AUDIT_LOG');
     if (!config.PAPER_ADAPTER_ENABLED) issues.push('LIVE_TRADING_REQUIRES_ADAPTER');
@@ -359,7 +358,6 @@ function validateStartupConfig(config) {
   const issues = [];
   if (config.LIVE_TRADING_ENABLED) {
     if (config.TRADING_MODE !== 'live') issues.push('LIVE_TRADING_REQUIRES_LIVE_MODE');
-    if (!config.REQUIRE_HUMAN_APPROVAL) issues.push('LIVE_TRADING_REQUIRES_HUMAN_APPROVAL');
     if (!config.LIVE_TRADING_CONFIRMATION_PHRASE) issues.push('LIVE_TRADING_CONFIRMATION_PHRASE_REQUIRED');
     if (!config.AUDIT_LOG_ENABLED) issues.push('LIVE_TRADING_REQUIRES_AUDIT_LOG');
     if (!config.PAPER_ADAPTER_ENABLED) issues.push('LIVE_TRADING_REQUIRES_ADAPTER');

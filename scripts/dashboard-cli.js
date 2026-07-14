@@ -45,6 +45,7 @@ function main(env = process.env) {
     dashboardDir: path.join(resolveRepoRoot(), 'dashboard'),
     dataDir: resolveDataPath(),
     cacheMaxAgeMs: 2_000,
+    backgroundRefresh: true,
     regularWatchAutoStart: true,
   });
 

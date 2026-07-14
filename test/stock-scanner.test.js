@@ -10,11 +10,28 @@ const {
   calculateEffectiveStopLossDollars,
   calculateSpreadRankPenalty,
   createStockScanner,
+  fetchAlpacaMarketLeaders,
   buildScannerConfig,
   normalizeRecentTradePenaltyMap,
   rankScannerBuyCandidates,
   resolveScannerWatchConfig,
 } = require('../src');
+
+test('market leader intake merges gainers, actives, and losers without duplicates', async () => {
+  const result = await fetchAlpacaMarketLeaders({
+    fetchImpl: async (url) => ({
+      ok: true,
+      json: async () => url.includes('/movers')
+        ? { gainers: [{ symbol: 'GAIN' }, { symbol: 'BOTH' }], losers: [{ symbol: 'LOSS' }] }
+        : { most_actives: [{ symbol: 'BOTH' }, { symbol: 'ACTIVE' }] },
+    }),
+    apiKeyId: 'key',
+    apiSecretKey: 'secret',
+    baseUrl: 'https://data.alpaca.markets',
+  });
+  assert.deepEqual(result.symbols, ['GAIN', 'BOTH', 'ACTIVE', 'LOSS']);
+  assert.equal(result.status, 'active');
+});
 const { APPROVED_LIVE_MARKET_SYMBOLS } = require('../src/volatile-stock-universe');
 const { updateMemeMonitorFeatureState } = require('../src/meme-monitor-state');
 
@@ -719,6 +736,28 @@ test('stock scanner keeps a symbol eligible with only one recent stop exit', () 
   assert.equal(candidate.payload.symbol, 'ABSI');
 });
 
+test('stock scanner blocks immediate re-entry using the broker filled-sell timestamp', () => {
+  const skips = [];
+  const candidate = buildStockCandidateForSymbol('ABSI', rankedSnapshot({
+    bid: 10.18,
+    ask: 10.20,
+    previousClose: 7.37,
+    volume: 350000,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), { bp: 10.18, ap: 10.20, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    allowContrarianEntries: true,
+    recentBrokerSellAt: '2026-06-16T19:59:56.000Z',
+    antiChurnRapidRoundTripSeconds: 600,
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  });
+
+  assert.equal(candidate, null);
+  assert.equal(skips[0].reason, 'BROKER_REENTRY_COOLDOWN_ACTIVE');
+  assert.equal(skips[0].details.remaining_seconds, 595);
+});
+
 test('stock scanner skips buy candidates above the scanner risk limit before posting', () => {
   const skips = [];
   const candidate = buildStockCandidateForSymbol('VTAK', rankedSnapshot({
@@ -783,6 +822,8 @@ test('stock scanner applies capped spread rank pressure without hard-blocking bu
     receivedAt: '2026-06-16T20:00:01.000Z',
     notional: 150,
     allowContrarianEntries: true,
+    twelveDataQuote: { price: 44, close: 44, volume: 241651, timestamp },
+    maxBuyRiskScore: 100,
   });
   const wide = buildStockCandidateForSymbol('DFTX', rankedSnapshot({
     bid: 43.61,
@@ -794,6 +835,8 @@ test('stock scanner applies capped spread rank pressure without hard-blocking bu
     receivedAt: '2026-06-16T20:00:01.000Z',
     notional: 150,
     allowContrarianEntries: true,
+    twelveDataQuote: { price: 44.1, close: 44.1, volume: 241651, timestamp },
+    maxBuyRiskScore: 100,
   });
 
   assert(tight);
@@ -1783,7 +1826,7 @@ test('stock scanner runtime snapshot includes candidate lifecycle details when e
 
 test('stock scanner batches large stock universes into multiple market-data requests', async () => {
   const requestedUrls = [];
-  const symbols = Array.from({ length: 26 }, (_, index) => `T${String(index + 1).padStart(2, '0')}`);
+  const symbols = Array.from({ length: 101 }, (_, index) => `T${String(index + 1).padStart(3, '0')}`);
   const snapshotPayload = Object.fromEntries(symbols.map((symbol) => ([
     symbol,
     {

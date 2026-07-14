@@ -45,7 +45,7 @@ test('phase A adapters surface market, tradability, halt, and SEC signals', asyn
             latestTrade: { p: 28.12, s: 1200 },
             latestQuote: { ap: 28.2, bp: 28.05 },
             dailyBar: { o: 26.5, c: 27.8, v: 1823000 },
-            previousDailyBar: { c: 25.8, v: 1542000 },
+            prevDailyBar: { c: 25.8, v: 1542000 },
           },
         },
       });
@@ -92,6 +92,8 @@ test('phase A adapters surface market, tradability, halt, and SEC signals', asyn
   assert.equal(market.symbols[0].symbol, 'GME');
   assert.equal(market.symbols[0].available, true);
   assert.equal(market.symbols[0].details.currentPrice, 28.12);
+  assert.equal(market.symbols[0].details.previousClose, 25.8);
+  assert.equal(market.symbols[0].details.averageVolume, 1542000);
 
   const assets = await fetchAlpacaAssetSignals({
     env: {

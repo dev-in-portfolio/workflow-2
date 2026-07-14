@@ -122,7 +122,9 @@ function resolveBuyOrderSizing(signal, options = {}) {
     ?? signal.fractional_shares
     ?? (assetType === 'crypto' || symbol.includes('/'));
   const preserveSignalSizing = Boolean(options.respectSignalQuantity)
-    || String(signal.sizing_method || signal.sizing_mode || '').trim().toLowerCase() === 'risk_budget';
+    || ['risk_budget', 'buying_power'].includes(
+      String(signal.sizing_method || signal.sizing_mode || '').trim().toLowerCase(),
+    );
 
   if (!Number.isFinite(price) || price <= 0) {
     return {
@@ -140,7 +142,12 @@ function resolveBuyOrderSizing(signal, options = {}) {
   const signalQuantity = safeNumber(signal.quantity, null);
   const signalNotional = safeNumber(signal.notional, null);
   if (preserveSignalSizing && Number.isFinite(signalQuantity) && signalQuantity > 0) {
-    const scaledQuantity = signalQuantity * sizeMultiplier;
+    const signalSizingMethod = String(signal.sizing_method || signal.sizing_mode || '').trim().toLowerCase();
+    // Buying-power sizing has already applied deployment, reserve, buffer, and
+    // whole-share limits against the live broker balance. Scaling it again here
+    // silently discards deployable cash.
+    const appliedSizeMultiplier = signalSizingMethod === 'buying_power' ? 1 : sizeMultiplier;
+    const scaledQuantity = signalQuantity * appliedSizeMultiplier;
     const quantity = supportsFractionalShares ? floorToDecimals(scaledQuantity, 6) : Math.floor(scaledQuantity);
     if (!(quantity > 0)) {
       return {
@@ -150,7 +157,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
         price,
         supports_fractional_shares: Boolean(supportsFractionalShares),
         sizing_mode: 'signal_whole_share_qty',
-        size_multiplier: sizeMultiplier,
+        size_multiplier: appliedSizeMultiplier,
       };
     }
     return {
@@ -162,7 +169,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
       supports_fractional_shares: Boolean(supportsFractionalShares),
       sizing_mode: supportsFractionalShares ? 'signal_fractional_qty' : 'signal_whole_share_qty',
       respected_signal_quantity: true,
-      size_multiplier: sizeMultiplier,
+      size_multiplier: appliedSizeMultiplier,
       reason_codes: [],
     };
   }

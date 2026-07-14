@@ -56,7 +56,7 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     });
   }
 
-  if (riskDecision.decision !== 'APPROVED_FOR_PAPER') {
+  if (!['APPROVED_FOR_PAPER', 'APPROVED_FOR_EXECUTION'].includes(riskDecision.decision)) {
     return {
       accepted: false,
       stage: 'decision',
@@ -230,6 +230,16 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
       ?? null,
     null,
   );
+  const entryPriceSource = Number.isFinite(safeNumber(signal.position_avg_entry_price, null))
+    ? 'broker_position_avg_entry_price'
+    : Number.isFinite(safeNumber(signal.position_entry_price ?? signal.avg_entry_price, null))
+      ? 'broker_position_entry_price'
+      : Number.isFinite(safeNumber(signalExitState.entry_price, null)) ? 'scanner_exit_state' : null;
+  const liveExecution = String(paperResult.execution_mode || '').toLowerCase() === 'live';
+  const accountingReasonCodes = [];
+  if (sellSide && liveExecution && paperResult.broker_fill_price_confirmed !== true) accountingReasonCodes.push('BROKER_FILL_PRICE_UNCONFIRMED');
+  if (sellSide && !Number.isFinite(costBasis)) accountingReasonCodes.push('BROKER_COST_BASIS_UNAVAILABLE');
+  const accountingValid = !sellSide || accountingReasonCodes.length === 0;
   const entryPrice = sellSide && Number.isFinite(costBasis)
     ? costBasis
     : safeNumber(paperResult.average_fill_price ?? signal.entry_price ?? signal.price, null);
@@ -259,6 +269,9 @@ function recordPaperOutcome(performance, signal, paperResult, exitSnapshot = nul
     trade_duration_seconds: holdingPeriodSeconds,
     exit_reason: signalExitState.exit_reason ?? null,
     exit_state: Object.keys(signalExitState).length ? signalExitState : null,
+    accounting_valid: accountingValid,
+    accounting_reason_codes: accountingReasonCodes,
+    entry_price_source: entryPriceSource,
   });
 
   if (typeof performance.recordPaperOutcome === 'function') {

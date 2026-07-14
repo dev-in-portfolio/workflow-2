@@ -85,6 +85,7 @@ function createDashboardServer(options = {}) {
     startedAt: options.startedAt || nowIso(),
     cache: null,
     cacheAtMs: 0,
+    cacheRefreshPromise: null,
     dashboardPort: options.port || DEFAULT_DASHBOARD_PORT,
     brokerSyncInFlight: false,
   };
@@ -230,10 +231,12 @@ function createDashboardServer(options = {}) {
         if (controlManager?.refresh) {
           await controlManager.refresh();
         }
+        const supervisor = readJsonFileIfPresent(path.join(dataDir, 'runtime', 'workflow-supervisor.json'));
+        const control = applySupervisorState(controlManager?.getState?.() || null, supervisor);
         return sendJson(res, 200, {
           status: 'ok',
           timestamp: nowIso(),
-          control: controlManager?.getState?.() || null,
+          control,
         });
       } catch (error) {
         return sendJson(res, 500, {
@@ -628,6 +631,26 @@ async function getCachedSnapshot(state, options, context) {
   if (state.cache && (nowMs - state.cacheAtMs) < (options.cacheMaxAgeMs || DEFAULT_REFRESH_MAX_AGE_MS)) {
     return state.cache;
   }
+  if (options.backgroundRefresh === true) {
+    if (!state.cache) {
+      state.cache = buildLocalSummarySnapshot(options, context, state);
+      state.cacheAtMs = nowMs;
+    }
+    if (!state.cacheRefreshPromise) {
+      state.cacheRefreshPromise = buildDashboardSnapshot(options, context, state)
+        .then((snapshot) => {
+          state.cache = snapshot;
+          state.cacheAtMs = Date.now();
+        })
+        .catch((error) => {
+          state.lastCacheRefreshError = error.message || String(error);
+        })
+        .finally(() => {
+          state.cacheRefreshPromise = null;
+        });
+    }
+    return state.cache;
+  }
   const snapshot = await buildDashboardSnapshot(options, context, state);
   state.cache = snapshot;
   state.cacheAtMs = nowMs;
@@ -718,7 +741,10 @@ function buildLocalSummarySnapshot(options = {}, context = {}, state = {}) {
       regular_watch_intelligence: watch.regularWatchIntelligence || null,
       regular_watch_runtime: regularWatchStatus || null,
     },
-    control: context.controlManager?.getState?.() || null,
+    control: applySupervisorState(
+      context.controlManager?.getState?.() || null,
+      readJsonFileIfPresent(path.join(dataDir, 'runtime', 'workflow-supervisor.json')),
+    ),
     regime: {},
     automation: {},
     alerts: [],
@@ -795,7 +821,11 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const refreshedControlState = context.controlManager?.refresh
     ? await context.controlManager.refresh()
     : undefined;
-  const controlState = refreshedControlState ?? (context.controlManager?.getState?.() || null);
+  const rawControlState = refreshedControlState ?? (context.controlManager?.getState?.() || null);
+  const controlState = applySupervisorState(
+    rawControlState,
+    readJsonFileIfPresent(path.join(dataDir, 'runtime', 'workflow-supervisor.json')),
+  );
   const controlTraderBaseUrl = controlState?.trader?.status === 'running'
     ? controlState.trader.base_url
     : null;
@@ -808,27 +838,19 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
       ...parsePortList(runtimeEnv.DASHBOARD_TRADER_PORTS, DEFAULT_TRADER_PORTS),
     ]),
   });
-  const processDiscovery = await discoverRepoProcesses();
-
   const traderBaseUrl = traderDiscovery.baseUrl;
-  const liveAccount = await fetchBrokerAccount({
-    fetchImpl,
-    env: runtimeEnv,
-  });
-  const livePositions = await fetchBrokerPositions({
-    fetchImpl,
-    env: runtimeEnv,
-  });
-  const liveOpenOrders = await fetchBrokerOpenOrders({
-    fetchImpl,
-    env: runtimeEnv,
-  });
-  const liveStatus = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/status');
-  const dailyLiveResults = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/daily-live-results');
-  const riskPolicy = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/risk-policy');
-  const performanceTuning = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/performance/tuning');
-  const policyEffectiveness = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/policy-effectiveness');
-  const overnightStatus = await fetchEndpointJson(fetchImpl, traderBaseUrl, '/overnight-status');
+  const [processDiscovery, liveAccount, livePositions, liveOpenOrders, liveStatus, dailyLiveResults, riskPolicy, performanceTuning, policyEffectiveness, overnightStatus] = await Promise.all([
+    discoverRepoProcesses(),
+    fetchBrokerAccount({ fetchImpl, env: runtimeEnv }),
+    fetchBrokerPositions({ fetchImpl, env: runtimeEnv }),
+    fetchBrokerOpenOrders({ fetchImpl, env: runtimeEnv }),
+    fetchEndpointJson(fetchImpl, traderBaseUrl, '/status'),
+    fetchEndpointJson(fetchImpl, traderBaseUrl, '/daily-live-results'),
+    fetchEndpointJson(fetchImpl, traderBaseUrl, '/risk-policy'),
+    fetchEndpointJson(fetchImpl, traderBaseUrl, '/performance/tuning'),
+    fetchEndpointJson(fetchImpl, traderBaseUrl, '/policy-effectiveness'),
+    fetchEndpointJson(fetchImpl, traderBaseUrl, '/overnight-status'),
+  ]);
 
   const overnightStatusFilePath = path.join(dataDir, 'logs', 'overnight-status.json');
   const overnightStatusFile = readJsonFileIfPresent(overnightStatusFilePath);
@@ -1760,7 +1782,7 @@ function summarizeRecentEntries(entries = []) {
   let lastBuyAt = null;
   let lastSellAt = null;
   for (const entry of entries) {
-    if (entry.entry_type === 'paper_outcome') {
+    if (['paper_outcome', 'execution_outcome'].includes(entry.entry_type)) {
       const recordedAt = entry.record?.recorded_at || null;
       const side = String(entry.record?.paper_result?.side || entry.record?.side || '').toLowerCase();
       const orderAt = entry.record?.paper_result?.filled_at || entry.record?.paper_result?.paper_order_request?.created_at || recordedAt || null;
@@ -1910,7 +1932,7 @@ function buildOperatorTimeline(operatorEvents = [], recentEntries = {}, scannerR
       type: 'risk.decision',
       title: decision.decision || 'Risk decision',
       message: Array.isArray(decision.reasons) && decision.reasons.length ? decision.reasons.join(', ') : 'No reasons',
-      severity: decision.decision === 'APPROVED_FOR_PAPER' ? 'info' : 'warning',
+      severity: ['APPROVED_FOR_PAPER', 'APPROVED_FOR_EXECUTION'].includes(decision.decision) ? 'info' : 'warning',
       source: 'performance-history',
       details: decision,
     });
@@ -2728,10 +2750,23 @@ function compactExecutionQualitySummary(summary = null) {
 function buildCompactControlSummary(control = {}) {
   return {
     status: control.status || null,
+    supervisor: control.supervisor || null,
     trader: control.trader || null,
     scanner: control.scanner || null,
     workflow: control.workflow || null,
   };
+}
+
+function applySupervisorState(control, supervisor) {
+  if (!control || !supervisor) return control;
+  const merged = { ...control, supervisor };
+  if (supervisor.status !== 'healthy') return merged;
+  merged.workflow = { ...(control.workflow || {}), status: 'healthy', issues: [] };
+  for (const name of ['trader', 'scanner']) {
+    const service = supervisor.services?.[name];
+    if (service?.status === 'running') merged[name] = { ...(control[name] || {}), ...service, status: 'running' };
+  }
+  return merged;
 }
 
 function buildCompactMemeFeatureState(state = {}) {
@@ -2967,15 +3002,22 @@ function buildHomeHotListStatus(snapshot = {}) {
     || regularWatchRuntime?.lastRunAt
     || regularWatchRuntime?.generatedAt
     || null;
-  const regularWatchStale = Boolean(regularWatchRuntime?.stale);
+  const aggregateRegularWatchStale = Boolean(regularWatchRuntime?.stale);
   if (regularWatchEnabled || regularWatchStatus || regularWatchLastRunAt !== null) {
     const lastError = regularWatch.lastError || regularWatchRuntime?.regularWatchIntelligence?.lastError || regularWatchRuntime?.lastError || null;
+    const lastRunMs = Date.parse(regularWatchLastRunAt || '');
+    const regularWatchStale = aggregateRegularWatchStale
+      && (!Number.isFinite(lastRunMs) || Date.now() - lastRunMs > 180_000);
     const marketOpen = snapshot.regime?.market_open;
-    const status = marketOpen === false && !lastError
+    let status = marketOpen === false && !lastError
       ? 'closed'
       : regularWatchStatus && regularWatchStatus !== 'disabled'
       ? regularWatchStatus
       : (regularWatchEnabled ? 'active' : 'off');
+    // The runtime's aggregate `stale` flag means at least one symbol in the
+    // broad universe is stale. A fresh successful run should not make the
+    // entire regular-stock feed look unhealthy on Home.
+    if (status === 'warn' && aggregateRegularWatchStale && !regularWatchStale && !lastError) status = 'active';
     return {
       enabled: regularWatchEnabled,
       status,
@@ -3318,12 +3360,13 @@ function buildRegularWatchEntry(symbol, { candidate = null, recentSkip = null, r
     spread: safeNumber(candidate?.spread_pct, null),
     spreadPct: safeNumber(candidate?.spread_pct, null),
     volumeMultiple,
-    scannerScore: safeNumber(candidate?.adjusted_rank_score ?? candidate?.rank_score, null),
+    scannerScore: safeNumber(candidate?.opportunity_score, null),
     displayedRankScore: safeNumber(candidate?.rank_score, null),
     executionStatus: candidate?.execution_status || null,
     waitingReason: candidate?.waiting_reason || recentSkip?.reason || null,
     sizingExplanation: candidate?.sizing_explanation || null,
-    regularWatchScore: safeNumber(regularWatchEntry?.score, null),
+    regularWatchScore: safeNumber(regularWatchEntry?.rawScore ?? regularWatchEntry?.regularWatchScore ?? regularWatchEntry?.score, null),
+    rotationAdjustedScore: safeNumber(regularWatchEntry?.score, null),
     status,
     reason: hasCandidate ? null : recentSkip?.reason || 'market_data_unavailable',
     reasonCodes: [...new Set(reasonCodes.filter(Boolean))],
@@ -3355,8 +3398,8 @@ function buildRegularWatchCandidateComparison({
   partialFillSummary = null,
 } = {}) {
   if (!regularWatchEntry) return null;
-  const scannerScore = safeNumber(scannerEntry?.adjusted_rank_score ?? scannerEntry?.rank_score, null);
-  const regularWatchScore = safeNumber(regularWatchEntry?.score, null);
+  const scannerScore = safeNumber(scannerEntry?.opportunity_score, null);
+  const regularWatchScore = safeNumber(regularWatchEntry?.rawScore ?? regularWatchEntry?.regularWatchScore ?? regularWatchEntry?.score, null);
   const scoreDelta = Number.isFinite(scannerScore) && Number.isFinite(regularWatchScore)
     ? Number((regularWatchScore - scannerScore).toFixed(2))
     : null;
@@ -3364,6 +3407,7 @@ function buildRegularWatchCandidateComparison({
     symbol: regularWatchEntry.symbol || scannerEntry?.symbol || null,
     scannerScore,
     regularWatchScore,
+    rotationAdjustedScore: safeNumber(regularWatchEntry?.score, null),
     scoreDelta,
     regularWatchStatus: regularWatchEntry.status || null,
     sourceStatus: Array.isArray(regularWatchEntry.sourceStatus) ? regularWatchEntry.sourceStatus.slice() : [],
@@ -4099,7 +4143,7 @@ function renderDynamicTopSymbolsMarkup(items = []) {
               <span class="tag cyan">${escapeHtml(item?.source || 'unknown')}</span>
             </div>
             <div class="top-symbol-card-grid">
-              <span><b>Score</b> ${escapeHtml(formatNumber(item?.score, 1))}</span>
+              <span><b>Discovery score</b> ${escapeHtml(formatNumber(item?.score, 1))}</span>
               <span><b>Source rank</b> ${escapeHtml(formatCount(item?.source_rank))}</span>
               <span class="top-symbol-provenance"><b>Provenance</b> ${escapeHtml(provenanceText)}</span>
               <span><b>Reason codes</b> ${escapeHtml(formatReasonList(item?.reason_codes))}</span>

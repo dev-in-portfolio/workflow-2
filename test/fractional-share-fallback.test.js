@@ -1,6 +1,22 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { executeOrder, isRecoverableFractionalShareError } = require('../src/trading/execution-orchestrator');
+const { assertLiveBuyApproval, executeOrder, isRecoverableFractionalShareError } = require('../src/trading/execution-orchestrator');
+
+test('live buys require a recent human approval while sells remain automatic', () => {
+  const options = {
+    executionAdapter: { paperTrading: false },
+    policy: { requireHumanApproval: true },
+  };
+  assert.throws(
+    () => assertLiveBuyApproval(baseRequest(), baseSignal(), options),
+    (error) => error.code === 'LIVE_BUY_HUMAN_APPROVAL_REQUIRED',
+  );
+  assert.equal(assertLiveBuyApproval(baseRequest({ side: 'sell' }), baseSignal({ side: 'sell' }), options), true);
+  assert.equal(assertLiveBuyApproval(baseRequest({
+    human_approval_id: 'approval-1',
+    human_approval_at: new Date().toISOString(),
+  }), baseSignal(), options), true);
+});
 
 function baseSignal(overrides = {}) {
   return {

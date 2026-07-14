@@ -3,6 +3,7 @@ const { parseBool } = require('./config');
 const { nowIso, safeNumber, clamp, hashObject, resolveRepoRoot } = require('./util');
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
 const { writeScannerRuntimeState } = require('./scanner-runtime-state');
+const { isApprovedPostResult, summarizePostResult } = require('./scanner/post-result');
 const { loadRecentSymbolMap, saveRecentSymbolMap } = require('./scanner-recent-symbols');
 const { createLogger } = require('./logger');
 const { fail } = require('./result');
@@ -174,19 +175,23 @@ function createOvernightScanner(options = {}) {
         });
         let responseBody = null;
         try {
-          responseBody = await response.json();
-        } catch {
-          responseBody = { accepted: response.ok };
+          if (typeof response.json === 'function') responseBody = await response.json();
+          else if (typeof response.text === 'function') responseBody = JSON.parse(await response.text());
+          else throw new Error('Local trading service response had no readable body.');
+        } catch (error) {
+          responseBody = { accepted: false, stage: 'transport', reason_codes: ['INVALID_LOCAL_RESPONSE'], error: error?.message || 'Invalid local response.' };
         }
+        const approved = isApprovedPostResult({ accepted: response.ok, response: responseBody });
         results.push({
           symbol: candidate.symbol,
           move_pct: candidate.movePct,
           spread_pct: candidate.spreadPct,
-          accepted: response.ok,
+          accepted: approved,
+          transport_ok: response.ok,
           status: responseBody?.final_decision || responseBody?.status || null,
           response: responseBody,
         });
-        if (!(response.ok && (responseBody?.final_decision === 'APPROVED_FOR_PAPER' || responseBody?.accepted === true))) {
+        if (!approved) {
           const reasons = responseBody?.reason_codes || responseBody?.riskDecision?.reason_codes || responseBody?.risk_decision?.reason_codes || [];
           for (const reason of Array.isArray(reasons) ? reasons : [reasons].filter(Boolean)) {
             skipTracker.record(reason || 'RISK_REJECTED', { symbol: candidate.symbol, stage: 'risk' });
@@ -199,7 +204,7 @@ function createOvernightScanner(options = {}) {
       state.lastScanError = null;
       state.lastCandidateCount = candidates.length;
       state.lastPostedCount = results.length;
-      state.lastApprovedCount = results.filter((result) => result.status === 'APPROVED_FOR_PAPER' || result.response?.accepted === true).length;
+      state.lastApprovedCount = results.filter(isApprovedPostResult).length;
       state.lastRejectedCount = results.length - state.lastApprovedCount;
       writeRuntimeSnapshot({
         mode: 'crypto-only',
@@ -297,8 +302,9 @@ function createOvernightScanner(options = {}) {
       last_scan_error: error,
       candidate_count: candidates.length,
       posted_count: results.length,
-      approved_count: results.filter((result) => result.status === 'APPROVED_FOR_PAPER' || result.response?.accepted === true).length,
-      rejected_count: results.filter((result) => !(result.status === 'APPROVED_FOR_PAPER' || result.response?.accepted === true)).length,
+      approved_count: results.filter(isApprovedPostResult).length,
+      rejected_count: results.filter((result) => !isApprovedPostResult(result)).length,
+      post_results: results.map(summarizePostResult),
       skip_summary: skipSummary || {
         allocation_block: allocation?.accepted === false ? 1 : 0,
         max_position_or_cash_block: allocation?.accepted === false ? allocation.reason : null,

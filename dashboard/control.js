@@ -364,6 +364,7 @@ function render() {
   const trader = control.trader || {};
   const scanner = control.scanner || {};
   const workflow = control.workflow || {};
+  const supervisor = control.supervisor || {};
   const meme = state.meme || snapshot?.live?.meme_monitor_state || {};
   const memeStatus = state.memeStatus || snapshot?.memeMonitor || snapshot?.live?.meme_monitor_runtime || {};
   const regularWatch = state.regularWatch || snapshot?.regularWatchIntelligence || snapshot?.live?.regular_watch_intelligence || {};
@@ -398,13 +399,19 @@ function render() {
   $('scheduleBadge').textContent = formatScheduleBadge(automation);
   $('scheduleBadge').className = `tag ${formatScheduleBadgeKind(automation)}`;
   $('scheduleHint').textContent = automation.note || 'Upcoming schedule';
-  $('traderStatusPill').textContent = statusLabel(workflow.status || trader.status || summary.trader_status || (state.error ? 'degraded' : 'unknown'));
-  $('traderStatusPill').className = `pill ${state.error || workflow.status === 'degraded' ? 'critical' : workflow.status === 'running' ? 'ok' : workflow.status === 'starting' ? 'warn' : 'warn'}`;
+  const workflowStatus = supervisor.status || workflow.status || trader.status || summary.trader_status || (state.error ? 'degraded' : 'unknown');
+  $('traderStatusPill').textContent = statusLabel(workflowStatus);
+  $('traderStatusPill').className = `pill ${state.error || ['failed', 'degraded'].includes(workflowStatus) ? 'critical' : workflowStatus === 'healthy' || workflowStatus === 'running' ? 'ok' : 'warn'}`;
   $('actionStatus').innerHTML = state.actionMessage
     ? `<span class="tag ${state.actionKind === 'ok' ? 'green' : state.actionKind === 'error' ? 'red' : 'amber'}">${escapeHtml(state.actionKind || 'info')}</span> ${escapeHtml(state.actionMessage)}`
     : 'No action yet.';
 
   $('traderState').innerHTML = renderStateRows([
+    ['workflow', supervisor.status || workflow.status || '-'],
+    ['attempt', supervisor.attempt ? `${supervisor.attempt} / ${supervisor.max_attempts || '-'}` : '-'],
+    ['failed component', supervisor.failed_component || 'none'],
+    ['last failure', supervisor.last_failure || 'none'],
+    ['recommended action', supervisor.recommended_action || 'none'],
     ['workflow', workflow.status || '-'],
     ['workflow type', 'Live Market'],
     ['issues', Array.isArray(workflow.issues) && workflow.issues.length ? workflow.issues.join(', ') : 'none'],

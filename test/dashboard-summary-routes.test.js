@@ -489,9 +489,9 @@ test('dashboard summary endpoints and page shells expose the lightweight views',
 
     const homeHtml = await fetch(`http://127.0.0.1:${dashboardPort}/`).then((response) => response.text());
     const watchHtml = await fetch(`http://127.0.0.1:${dashboardPort}/watch`).then((response) => response.text());
-    assert.equal(homeHtml.includes('Dynamic Top 10'), true);
+    assert.equal(homeHtml.includes('Regular Stock Top 10'), true);
     assert.equal(homeHtml.includes('dynamicTopList'), true);
-    assert.equal(homeHtml.includes('Hot List'), true);
+    assert.equal(homeHtml.includes('Regular Watch'), true);
     assert.equal((homeHtml.match(/top-symbol-card/g) || []).length, 0);
     assert.equal(watchHtml.includes('Regular Watch List'), true);
     assert.equal(watchHtml.includes('Regular Watch Movers List'), true);

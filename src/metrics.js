@@ -1,4 +1,5 @@
 const { clamp, nowIso, safeNumber } = require('./util');
+const { isOutcomeAccountingValid } = require('./paper-outcomes');
 
 const DEFAULT_MAX_OPEN_POSITIONS = 2;
 
@@ -8,19 +9,24 @@ function generateDailySummary({ date, signals = [], riskDecisions = [], orders =
 
 function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = [], paperOutcomes = [], events = [], policySnapshot = null }) {
   const summaryDate = date || nowIso().slice(0, 10);
+  const invalidAccountingOutcomes = paperOutcomes.filter((outcome) => !isOutcomeAccountingValid(outcome));
+  paperOutcomes = paperOutcomes.filter(isOutcomeAccountingValid);
   const blockedCount = riskDecisions.filter((decision) => decision.decision === 'BLOCKED').length;
-  const approvedCount = riskDecisions.filter((decision) => decision.decision === 'APPROVED_FOR_PAPER').length;
+  const approvedCount = riskDecisions.filter((decision) => ['APPROVED_FOR_PAPER', 'APPROVED_FOR_EXECUTION'].includes(decision.decision)).length;
   const alertOnlyCount = riskDecisions.filter((decision) => decision.decision === 'ALERT_ONLY').length;
-  const paperPnl = paperOutcomes.reduce((sum, outcome) => sum + safeNumber(outcome.pnl, 0), 0);
-  const drawdown = calculateDrawdown(paperOutcomes);
-  const executionDrag = paperOutcomes.reduce((sum, outcome) => sum + safeNumber(outcome.execution_drag, 0), 0);
-  const executionDragRatio = paperOutcomes.length
-    ? paperOutcomes.reduce((sum, outcome) => {
+  const liveOutcomes = paperOutcomes.filter((outcome) => outcome.execution_mode === 'live' || outcome.paper_result?.execution_mode === 'live');
+  const simulatedOutcomes = paperOutcomes.filter((outcome) => !liveOutcomes.includes(outcome));
+  const paperPnl = simulatedOutcomes.reduce((sum, outcome) => sum + safeNumber(outcome.pnl, 0), 0);
+  const livePnl = liveOutcomes.reduce((sum, outcome) => sum + safeNumber(outcome.pnl, 0), 0);
+  const drawdown = calculateDrawdown(simulatedOutcomes);
+  const executionDrag = simulatedOutcomes.reduce((sum, outcome) => sum + safeNumber(outcome.execution_drag, 0), 0);
+  const executionDragRatio = simulatedOutcomes.length
+    ? simulatedOutcomes.reduce((sum, outcome) => {
       const drag = safeNumber(outcome.execution_drag, 0);
       const pnl = Math.abs(safeNumber(outcome.pnl, 0));
       const fallbackRatio = drag > 0 ? drag / Math.max(1, pnl + drag) : 0;
       return sum + safeNumber(outcome.execution_drag_ratio, fallbackRatio);
-    }, 0) / paperOutcomes.length
+    }, 0) / simulatedOutcomes.length
     : 0;
   const fillQualitySummary = summarizeFillQuality(paperOutcomes);
   const pnlByExitReason = summarizePnlBy(paperOutcomes, 'exit_reason');
@@ -64,13 +70,19 @@ function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = []
 
   return {
     date: summaryDate,
+    invalid_accounting_outcome_count: invalidAccountingOutcomes.length,
+    accounting_status: invalidAccountingOutcomes.length ? 'DEGRADED_INVALID_OUTCOMES_EXCLUDED' : 'VALID',
     signal_count: signals.length,
     blocked_count: blockedCount,
     approved_count: approvedCount,
     alert_only_count: alertOnlyCount,
-    paper_orders: paperOutcomes.length,
-    paper_fills: paperOutcomes.filter((outcome) => outcome.win_loss !== 'unknown' || outcome.paper_result).length,
+    accounting_scope: 'separated_live_and_simulated',
+    paper_orders: simulatedOutcomes.length,
+    paper_fills: simulatedOutcomes.filter((outcome) => outcome.win_loss !== 'unknown' || outcome.paper_result).length,
     paper_pnl: paperPnl,
+    live_orders: liveOutcomes.length,
+    live_fills: liveOutcomes.filter((outcome) => outcome.win_loss !== 'unknown' || outcome.paper_result).length,
+    live_pnl: livePnl,
     drawdown,
     execution_drag: executionDrag,
     execution_drag_ratio: executionDragRatio,
@@ -102,8 +114,9 @@ function generateDailyLiveResultsReport({ date, signals = [], riskDecisions = []
     recommended_max_open_positions: recommendedMaxOpenPositions,
     data_quality_issues: events.filter((event) => String(event.event_type || '').includes('data')).length,
     recommended_tuning_notes: buildTuningNotes({ signals, riskDecisions, orders: paperOutcomes }),
-    paper_outcomes: paperOutcomes,
-    paper_outcome_count: paperOutcomes.length,
+    paper_outcomes: simulatedOutcomes,
+    live_outcomes: liveOutcomes,
+    paper_outcome_count: simulatedOutcomes.length,
     realized_paper_pnl: paperPnl,
     unrealized_paper_pnl: 0,
     max_drawdown: drawdown,

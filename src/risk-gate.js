@@ -116,7 +116,10 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
   const reasonCodes = [...scannerResult.reasonCodes, ...portfolioResult.reasonCodes, ...signalResult.reasonCodes, ...brokerResult.reasonCodes];
   const warnings = [...scannerResult.warnings, ...portfolioResult.warnings, ...signalResult.warnings, ...brokerResult.warnings];
 
-  let decision = RiskDecision.APPROVED_FOR_PAPER;
+  const approvedDecision = config.tradingMode === 'live' && config.liveTradingEnabled
+    ? RiskDecision.APPROVED_FOR_EXECUTION
+    : RiskDecision.APPROVED_FOR_PAPER;
+  let decision = approvedDecision;
   for (const code of reasonCodes) {
     const sev = REASON_SEVERITY[code];
     if (sev === RiskDecision.BLOCKED) { decision = RiskDecision.BLOCKED; break; }
@@ -135,7 +138,7 @@ function evaluateRiskGate(signal, portfolio = {}, riskConfig = {}, marketContext
 
   return {
     decision,
-    pass: decision === RiskDecision.APPROVED_FOR_PAPER,
+    pass: decision === approvedDecision,
     reason_codes: reasonCodes,
     warnings,
     explanation: humanReadable,

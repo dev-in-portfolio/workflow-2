@@ -1,5 +1,6 @@
 const { summarizeFillQuality } = require('./metrics');
 const { safeNumber } = require('./util');
+const { isOutcomeAccountingValid } = require('./paper-outcomes');
 
 const DEFAULT_MAX_OPEN_POSITIONS = 2;
 
@@ -85,6 +86,7 @@ function buildThresholdProposal({
   paperOutcomes = [],
   riskDecisions = [],
 } = {}) {
+  paperOutcomes = paperOutcomes.filter(isOutcomeAccountingValid);
   const bucketStats = summarizeOutcomeBuckets(paperOutcomes);
   const signalStats = summarizeSignalQuality(signals);
   const outcomeStats = summarizeOutcomePerformance(paperOutcomes);

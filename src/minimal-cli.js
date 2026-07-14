@@ -73,6 +73,19 @@ function startMinimalTradingServer(env = process.env, options = {}) {
   const startedAt = nowIso();
   const policyPath = options.policyPath || resolvePolicyPath(runtimeEnv);
   const existingPolicySnapshot = options.startupPolicyPatch ? null : readExistingPolicySnapshot(policyPath);
+  const operationalPolicyPatch = {
+    source: existingPolicySnapshot?.source || 'startup-config',
+    captured_at: nowIso(),
+    report_date: nowIso().slice(0, 10),
+    reason_codes: [...new Set([...(existingPolicySnapshot?.reason_codes || []), 'RUNTIME_MODE_AUTHORITATIVE'])],
+    policy: {
+      requireHumanApproval: config.REQUIRE_HUMAN_APPROVAL,
+      maxSpreadSlippagePct: config.MAX_SPREAD_SLIPPAGE_PCT,
+      tradingMode: config.TRADING_MODE,
+      liveTradingEnabled: config.LIVE_TRADING_ENABLED,
+      executionMode: config.TRADING_MODE === 'live' && config.LIVE_TRADING_ENABLED ? 'live' : 'paper',
+    },
+  };
   const startupPolicyPatch = options.startupPolicyPatch || (!existingPolicySnapshot ? {
     source: 'startup-config',
     captured_at: nowIso(),
@@ -111,8 +124,11 @@ function startMinimalTradingServer(env = process.env, options = {}) {
       trailingProfitGivebackDollars: Number(runtimeEnv.TRAILING_PROFIT_GIVEBACK_DOLLARS || config.TRAILING_PROFIT_GIVEBACK_DOLLARS || 0.3),
       sellProfitThresholdPct: Number(runtimeEnv.OVERNIGHT_SCANNER_SELL_PROFIT_THRESHOLD_PCT || runtimeEnv.STOCK_SCANNER_SELL_PROFIT_THRESHOLD_PCT || 5),
       sellNetProfitFloorDollars: Number(runtimeEnv.SELL_NET_PROFIT_FLOOR_DOLLARS || runtimeEnv.OVERNIGHT_SCANNER_SELL_NET_PROFIT_FLOOR_DOLLARS || 1),
+      tradingMode: config.TRADING_MODE,
+      liveTradingEnabled: config.LIVE_TRADING_ENABLED,
+      executionMode: config.TRADING_MODE === 'live' && config.LIVE_TRADING_ENABLED ? 'live' : 'paper',
     },
-  } : null);
+  } : operationalPolicyPatch);
   const server = createMinimalTradingServer({
     ...options.serverOptions,
     executionAdapter,

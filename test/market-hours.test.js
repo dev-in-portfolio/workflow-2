@@ -46,6 +46,35 @@ test('market-aware scanner chooses stock path during market hours and crypto out
   closedScanner.stop();
 });
 
+test('market-aware daytime path uses the same live policy as the dedicated stock launcher', () => {
+  let receivedOptions = null;
+  const scanner = createMarketAwareScanner({
+    env: { BUY_NOTIONAL_TARGET: '1000', MAX_SPREAD_SLIPPAGE_PCT: '7' },
+    localBaseUrl: 'http://127.0.0.1:65535',
+    nowProvider: () => new Date('2026-06-16T14:00:00Z'),
+    livePolicy: {
+      buyNotionalTarget: 150,
+      minMovePct: 0.25,
+      minRecentMovePct: 0.15,
+      minRecentRangePct: 0.15,
+      minRecentCloseLocationPct: 65,
+      requireRecentMomentum: true,
+      allowContrarianEntries: false,
+      minAdjustedRankScore: 8,
+    },
+    stockScannerFactory: (options) => {
+      receivedOptions = options;
+      return makeScanner('stocks', options, []);
+    },
+  });
+  scanner.start();
+  scanner.stop();
+  assert.equal(receivedOptions.notional, 150);
+  assert.equal(receivedOptions.allowContrarianEntries, false);
+  assert.equal(receivedOptions.minMovePct, 0.25);
+  assert.equal(Object.hasOwn(receivedOptions, 'maxSpreadPct'), false);
+});
+
 function makeScanner(name, options, calls) {
   return {
     start() {

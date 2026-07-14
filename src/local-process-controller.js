@@ -65,6 +65,7 @@ function createLocalProcessController(options = {}) {
   const traderPort = Number.isFinite(Number(options.traderPort)) ? Number(options.traderPort) : 3001;
   const runtimeEnv = options.runtimeEnv || loadRuntimeEnv(env, repoRoot);
   const startupConfig = options.startupConfig || loadConfig(runtimeEnv);
+  const traderReadinessTimeoutMs = Math.max(10_000, Number(options.traderReadinessTimeoutMs || runtimeEnv.WORKFLOW_TRADER_READINESS_TIMEOUT_MS || 30_000));
   const workflowStatePath = options.workflowStatePath || path.join(repoRoot, 'data', 'workflow-state.json');
   const legacyScannerProfilesAllowed = options.allowLegacyScannerProfiles === true;
   const persisted = readPersistedWorkflowState();
@@ -205,7 +206,7 @@ function createLocalProcessController(options = {}) {
     }
     let child = null;
     try {
-      child = launchNodeScript('src/trader-cli.js', {
+      child = await launchNodeScript('src/trader-cli.js', {
         PORT: String(traderPort),
         SERVER_PORT: String(traderPort),
       });
@@ -231,10 +232,13 @@ function createLocalProcessController(options = {}) {
       managed: true,
       lock: lockResult,
     };
-    const ready = await waitForUrl(state.trader.base_url, 10_000);
+    const ready = await waitForUrl(state.trader.base_url, traderReadinessTimeoutMs);
     state.trader.status = ready ? 'running' : 'starting';
     state.updated_at = nowIso();
-    return markAction('start-trader', true, ready ? 'Trader started' : 'Trader launch in progress');
+    return markAction('start-trader', ready, ready ? 'Trader started' : `Trader did not become ready at ${state.trader.base_url} within ${traderReadinessTimeoutMs}ms`, {
+      command: `${process.execPath} ${path.join(repoRoot, 'src/trader-cli.js')}`,
+      pid: child.pid,
+    });
   }
 
   async function stopTrader() {
@@ -283,7 +287,7 @@ function createLocalProcessController(options = {}) {
     }
     let child = null;
     try {
-      child = launchNodeScript(script, buildScannerEnv(nextProfile));
+      child = await launchNodeScript(script, buildScannerEnv(nextProfile));
     } catch (error) {
       releaseProcessLock({ repoRoot, name: 'scanner', pid: process.pid });
       return markAction('start-scanner', false, error.message);
@@ -422,11 +426,17 @@ function createLocalProcessController(options = {}) {
     };
   }
 
-  function launchNodeScript(scriptRelativePath, extraEnv = {}) {
+  async function launchNodeScript(scriptRelativePath, extraEnv = {}) {
     const scriptPath = path.join(repoRoot, scriptRelativePath);
     if (!fs.existsSync(scriptPath)) {
       throw new Error(`Missing launcher script: ${scriptRelativePath}`);
     }
+    const command = `${process.execPath} ${scriptPath}`;
+    const serviceName = scriptRelativePath.includes('trader') ? 'trader' : 'scanner';
+    const logDir = path.join(repoRoot, 'data', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const outFd = fs.openSync(path.join(logDir, `${serviceName}-supervised.out.log`), 'a');
+    const errFd = fs.openSync(path.join(logDir, `${serviceName}-supervised.err.log`), 'a');
     const child = spawnImpl(process.execPath, [scriptPath], {
       cwd: repoRoot,
       env: {
@@ -435,9 +445,18 @@ function createLocalProcessController(options = {}) {
         PATH: env.PATH,
       },
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', outFd, errFd],
       windowsHide: true,
     });
+    try { await new Promise((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', (error) => {
+        const wrapped = new Error(`Failed to launch ${scriptRelativePath}: ${command}; ${error.code || error.name}: ${error.message}`);
+        wrapped.code = error.code;
+        wrapped.cause = error;
+        reject(wrapped);
+      });
+    }); } finally { fs.closeSync(outFd); fs.closeSync(errFd); }
     if (child.unref) child.unref();
     return child;
   }

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { hashObject, nowIso, resolveRepoRoot } = require('./util');
+const { rotateJsonlIfNeeded } = require('./jsonl-retention');
 
 function resolveScannerOutcomeShadowPath({ env = process.env, repoRoot = resolveRepoRoot() } = {}) {
   return path.resolve(env.SCANNER_OUTCOME_SHADOW_PATH || path.join(repoRoot, 'data', 'runtime', 'scanner-selection-shadow-outcomes.jsonl'));
@@ -92,7 +93,7 @@ function recordScannerDecisionCycle({
     mode,
     market_regime: marketRegime,
     approved_symbol_count: Array.isArray(approvedSymbols) ? approvedSymbols.length : 0,
-    approved_symbols: Array.isArray(approvedSymbols) ? approvedSymbols.slice(0, 500) : [],
+    approved_symbols: Array.isArray(approvedSymbols) ? approvedSymbols.slice(0, 100) : [],
     symbol_universe: symbolUniverse,
     candidate_count: fullCandidates.length,
     selected_key: candidateLifecycle?.state?.selected_key || candidateLifecycle?.selection?.selected_key || null,
@@ -115,7 +116,7 @@ function recordScannerDecisionCycle({
     skip_summary: skipSummary || {},
     recent_skips: Array.isArray(recentSkips) ? recentSkips.slice(0, 50) : [],
     decision_trace_count: normalizedTraces.length,
-    decision_traces: normalizedTraces.slice(0, 2000),
+    decision_traces: normalizedTraces.slice(0, 250),
     candidate_lifecycle_summary: candidateLifecycle?.summary || null,
     post_results: (Array.isArray(results) ? results : []).map(summarizePostResult),
     broker_state: brokerState ? {
@@ -129,6 +130,7 @@ function recordScannerDecisionCycle({
     outcome_windows_pending: ['1m', '5m', '15m', '30m', '60m', 'eod'],
   };
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  rotateJsonlIfNeeded(targetPath, { maxBytes: Number(env.SCANNER_DECISION_LOG_MAX_BYTES || 50 * 1024 * 1024), keepArchives: 3 });
   fs.appendFileSync(targetPath, `${JSON.stringify(record)}\n`, 'utf8');
   return { recorded: 1, path: targetPath, candidate_count: fullCandidates.length };
 }

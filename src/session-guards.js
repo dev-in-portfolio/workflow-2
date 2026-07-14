@@ -3,6 +3,7 @@ const path = require('path');
 const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
 const { readPaperOutcomesFromHistory, summarizeSetupFatigueState } = require('./setup-fatigue');
 const { resolveIntradayStockRegime } = require('./market-hours');
+const { isOutcomeAccountingValid } = require('./paper-outcomes');
 
 const SessionGuardReason = {
   DAILY_DRAWDOWN_GUARD_ACTIVE: 'DAILY_DRAWDOWN_GUARD_ACTIVE',
@@ -50,7 +51,7 @@ async function evaluateSessionGuards(options = {}) {
   const outcomes = Array.isArray(options.paperOutcomes)
     ? options.paperOutcomes
     : readPaperOutcomesFromHistory(options.performanceHistoryPath || path.join(repoRoot, 'data', 'performance-history.jsonl'), safeNumber(options.historyMaxBytes, DEFAULTS.historyMaxBytes));
-  const normalizedOutcomes = normalizeOutcomeList(outcomes, now)
+  const normalizedOutcomes = normalizeOutcomeList(outcomes.filter(isOutcomeAccountingValid), now)
     .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
 
   const recentOutcomes = normalizedOutcomes.filter((outcome) => isWithinHours(outcome.recorded_at, now, safeNumber(options.rollingWindowHours, DEFAULTS.rollingWindowHours)));

@@ -106,7 +106,7 @@ function render(snapshot) {
   const scannerAgeLabel = formatDataAge(live?.scanner_runtime?.last_scan_time || live?.scanner_runtime?.updated_at || null);
   const freshness = evaluateFreshness(snapshot?.generated_at || snapshot?.timestamp || null);
   const scannerFreshness = evaluateFreshness(live?.scanner_runtime?.last_scan_time || live?.status?.last_request_at || null, { staleSeconds: 30, criticalSeconds: 120 });
-  const workflowState = snapshot?.control?.workflow?.status || summary.workflow_state || 'unknown';
+  const workflowState = snapshot?.control?.supervisor?.status || snapshot?.control?.workflow?.status || summary.workflow_state || 'unknown';
   const botStatus = resolveBotStatus({ freshness, workflowState, status: live?.status });
   const brokerStatus = resolveBrokerStatus(live);
   const scannerStatus = resolveScannerStatus(live, scannerFreshness, snapshot?.control);
@@ -713,7 +713,7 @@ function buildProfitNote(gross, summary = {}, snapshot = {}) {
   if (!Number.isFinite(grossValue)) {
     return 'No live performance data yet.';
   }
-  const workflow = String(summary.workflow_state || snapshot?.control?.workflow?.status || 'unknown').toLowerCase();
+  const workflow = String(snapshot?.control?.supervisor?.status || summary.workflow_state || snapshot?.control?.workflow?.status || 'unknown').toLowerCase();
   const positions = Number.isFinite(Number(summary.open_positions_count)) ? Number(summary.open_positions_count) : null;
   const stop = formatCurrency(summary.stop_loss_dollars ?? snapshot?.regime?.stop_loss_dollars ?? 10);
   const start = formatCurrency(summary.trailing_profit_start_dollars ?? snapshot?.regime?.trailing_profit_start_dollars ?? 5);

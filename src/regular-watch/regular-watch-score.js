@@ -40,6 +40,9 @@ function scoreRegularWatchSymbol(symbol, context = {}, options = {}) {
   const marketConfirmationScore = safeNumber(context.marketConfirmationScore ?? context.marketConfirmation?.score ?? null, null);
   const polygonScore = safeNumber(context.polygonScore ?? context.polygonConfirmationScore ?? null, null);
   const alphaScore = safeNumber(context.alphaVantageScore ?? context.alphaScore ?? null, null);
+  const independentlyConfirmed = Number.isFinite(polygonScore) || Number.isFinite(alphaScore);
+  const elapsedSessionFraction = resolveElapsedSessionFraction(context.receivedAt ?? context.received_at ?? options.receivedAt);
+  let relativeVolume = null;
 
   if (assetStatus === 'blocked' || tradable === false) {
     reasonCodes.add('not_tradable');
@@ -70,19 +73,29 @@ function scoreRegularWatchSymbol(symbol, context = {}, options = {}) {
   }
 
   if (Number.isFinite(movePct)) {
-    const absMove = Math.abs(movePct);
-    if (absMove >= 8) {
+    if (movePct >= 8) {
       score += 34;
       reasonCodes.add('very_strong_mover');
-    } else if (absMove >= 4) {
+    } else if (movePct >= 4) {
       score += 26;
       reasonCodes.add('strong_mover');
-    } else if (absMove >= 2) {
+    } else if (movePct >= 2) {
       score += 18;
       reasonCodes.add('moving');
-    } else if (absMove >= 0.75) {
+    } else if (movePct >= 0.75) {
       score += 8;
       reasonCodes.add('quiet_mover');
+    } else if (movePct <= -8) {
+      score -= 24;
+      reasonCodes.add('sharp_decline_long_block');
+      riskWarnings.add('negative_momentum');
+    } else if (movePct <= -4) {
+      score -= 14;
+      reasonCodes.add('declining_long_candidate');
+      riskWarnings.add('negative_momentum');
+    } else if (movePct < 0) {
+      score -= 4;
+      reasonCodes.add('negative_move');
     } else {
       score += 3;
       reasonCodes.add('quiet_symbol');
@@ -92,11 +105,13 @@ function scoreRegularWatchSymbol(symbol, context = {}, options = {}) {
   }
 
   if (Number.isFinite(volatilityPct)) {
-    score += clamp(volatilityPct * 2, 0, 10);
+    score += movePct >= 0 ? clamp(volatilityPct * 2, 0, 10) : 0;
   }
 
   if (Number.isFinite(volume) && Number.isFinite(averageVolume) && averageVolume > 0) {
-    const ratio = volume / averageVolume;
+    const comparableVolume = Math.max(averageVolume * elapsedSessionFraction, averageVolume * 0.05);
+    const ratio = volume / comparableVolume;
+    relativeVolume = ratio;
     if (ratio >= 3) {
       score += 18;
       reasonCodes.add('volume_surging');
@@ -170,6 +185,13 @@ function scoreRegularWatchSymbol(symbol, context = {}, options = {}) {
     riskWarnings.add('sec_risk_present');
   }
 
+  if (!independentlyConfirmed) {
+    reasonCodes.add('independent_confirmation_unavailable');
+    riskWarnings.add('single_provider_evidence');
+  } else {
+    reasonCodes.add('independent_confirmation_present');
+  }
+
   if (stale) {
     score -= 14;
     reasonCodes.add('stale_market_data');
@@ -178,9 +200,13 @@ function scoreRegularWatchSymbol(symbol, context = {}, options = {}) {
 
   if (Number.isFinite(openPrice) && Number.isFinite(currentPrice) && openPrice > 0 && currentPrice > 0) {
     const openMovePct = ((currentPrice - openPrice) / openPrice) * 100;
-    if (Math.abs(openMovePct) >= 2.5) {
+    if (openMovePct >= 2.5) {
       score += 8;
       reasonCodes.add('session_momentum');
+    } else if (openMovePct <= -2.5) {
+      score -= 6;
+      reasonCodes.add('negative_session_momentum');
+      riskWarnings.add('negative_momentum');
     }
   }
 
@@ -206,6 +232,7 @@ function scoreRegularWatchSymbol(symbol, context = {}, options = {}) {
     reasonCodes: [...reasonCodes],
     riskWarnings: [...riskWarnings],
     marketConfirmationScore: Number.isFinite(marketConfirmationScore) ? marketConfirmationScore : null,
+    independentlyConfirmed,
     spreadPct: Number.isFinite(spreadPct) ? Number(spreadPct.toFixed(4)) : null,
     movePct: Number.isFinite(movePct) ? Number(movePct.toFixed(4)) : null,
     volatilityPct: Number.isFinite(volatilityPct) ? Number(volatilityPct.toFixed(4)) : null,
@@ -214,10 +241,23 @@ function scoreRegularWatchSymbol(symbol, context = {}, options = {}) {
     previousClose: Number.isFinite(previousClose) ? previousClose : null,
     volume: Number.isFinite(volume) ? volume : null,
     averageVolume: Number.isFinite(averageVolume) ? averageVolume : null,
+    relativeVolume: Number.isFinite(relativeVolume) ? Number(relativeVolume.toFixed(3)) : null,
+    relativeVolumeMethod: Number.isFinite(relativeVolume) ? 'previous_day_time_adjusted' : null,
     bid: Number.isFinite(bid) ? bid : null,
     ask: Number.isFinite(ask) ? ask : null,
     sourceContributors: Array.isArray(context.sourceContributors) ? context.sourceContributors.slice() : [],
   };
+}
+
+function resolveElapsedSessionFraction(value = null) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return 1;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit',
+  }).formatToParts(date);
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value || 0);
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value || 0);
+  return clamp(((hour * 60 + minute) - 570) / 390, 0.05, 1);
 }
 
 function buildBlockedScore(symbol, { score = 0, reasonCodes = new Set(), riskWarnings = new Set(), blockedReason = 'blocked', status = 'blocked', context = {}, marketConfirmationScore = null } = {}) {

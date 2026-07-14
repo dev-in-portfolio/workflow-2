@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { rotateJsonlIfNeeded } = require('./jsonl-retention');
 const { computePaperOutcome } = require('./paper-outcomes');
 const { calculateDrawdown, generateDailyLiveResultsReport, summarizeFillQuality, summarizeExecutionQuality } = require('./metrics');
 const { buildThresholdProposal } = require('./performance-tuning');
@@ -27,6 +28,7 @@ class PerformanceStore {
     this.executionQualityDecayPerHour = Math.max(0, safeNumber(options.executionQualityDecayPerHour, 0));
     this.executionQualityMinSizeMultiplier = Math.max(0.5, Math.min(1, safeNumber(options.executionQualityMinSizeMultiplier, 0.5)));
     this.startupPolicyPatch = options.startupPolicyPatch || null;
+    this.protectedPolicyPatch = options.startupPolicyPatch || null;
     this.signals = [];
     this.riskDecisions = [];
     this.paperOutcomes = [];
@@ -111,7 +113,7 @@ class PerformanceStore {
     record.execution_quality_classification = executionQuality.classification;
     record.execution_quality_state = updatedQuality.summary;
     this.paperOutcomes.push(record);
-    this.appendHistoryRecord('paper_outcome', record);
+    this.appendHistoryRecord(record.execution_mode === 'live' || record.paper_result?.execution_mode === 'live' ? 'execution_outcome' : 'paper_outcome', record);
     return record;
   }
 
@@ -214,7 +216,9 @@ class PerformanceStore {
   }
 
   setPolicySnapshot(snapshot) {
-    const record = normalizePolicySnapshot(snapshot);
+    const record = normalizePolicySnapshot(this.protectedPolicyPatch
+      ? mergePolicySnapshot(snapshot, this.protectedPolicyPatch)
+      : snapshot);
     this.policySnapshot = record;
     this.policyHistory.push(record);
     if (this.policyPath) {
@@ -278,7 +282,7 @@ class PerformanceStore {
       if (!normalized) continue;
       if (normalized.entry_type === 'signal') this.signals.push(normalized.record);
       if (normalized.entry_type === 'risk_decision') this.riskDecisions.push(normalized.record);
-      if (normalized.entry_type === 'paper_outcome') this.paperOutcomes.push(normalized.record);
+      if (['paper_outcome', 'execution_outcome'].includes(normalized.entry_type)) this.paperOutcomes.push(normalized.record);
       if (normalized.entry_type === 'event') this.events.push(normalized.record);
     }
   }
@@ -287,10 +291,11 @@ class PerformanceStore {
     if (!this.historyPath) return;
     assertPerformanceRecord({ entry_type: entryType, record });
     fs.mkdirSync(path.dirname(this.historyPath), { recursive: true });
+    rotateJsonlIfNeeded(this.historyPath, { maxBytes: 100 * 1024 * 1024, keepArchives: 3 });
     const payload = JSON.stringify({
       entry_type: entryType,
       record,
-    });
+    }, compactHistoryReplacer);
     fs.appendFileSync(this.historyPath, `${payload}\n`, 'utf8');
   }
 
@@ -735,7 +740,7 @@ function defaultPolicySnapshot() {
       minCryptoProviderConfirmationScore: 35,
       minSellProviderConfirmationScore: 60,
       sellMaxProviderPriceDiffPct: 0.75,
-      maxSpreadSlippagePct: 7,
+      maxSpreadSlippagePct: 0.75,
       minEdgeScore: 60,
       blockedCalibrationBuckets: [],
       maxContradictionScore: 50,
@@ -790,6 +795,9 @@ function normalizePolicySnapshot(snapshot) {
       killSwitch: Boolean(policy.killSwitch ?? false),
       paperAdapterEnabled: Boolean(policy.paperAdapterEnabled ?? true),
       requireHumanApproval: policy.requireHumanApproval ?? true,
+      tradingMode: String(policy.tradingMode || 'paper').toLowerCase() === 'live' ? 'live' : 'paper',
+      liveTradingEnabled: Boolean(policy.liveTradingEnabled ?? false),
+      executionMode: String(policy.executionMode || policy.tradingMode || 'paper').toLowerCase() === 'live' ? 'live' : 'paper',
       minConfidenceForPaper: safeNumber(policy.minConfidenceForPaper ?? 72, 72),
       minFreshnessScore: safeNumber(policy.minFreshnessScore ?? 55, 55),
       minSourceQualityScore: safeNumber(policy.minSourceQualityScore ?? 40, 40),
@@ -797,7 +805,7 @@ function normalizePolicySnapshot(snapshot) {
       minCryptoProviderConfirmationScore: safeNumber(policy.minCryptoProviderConfirmationScore ?? 35, 35),
       minSellProviderConfirmationScore: safeNumber(policy.minSellProviderConfirmationScore ?? 60, 60),
       sellMaxProviderPriceDiffPct: safeNumber(policy.sellMaxProviderPriceDiffPct ?? 0.75, 0.75),
-      maxSpreadSlippagePct: safeNumber(policy.maxSpreadSlippagePct ?? 7, 7),
+      maxSpreadSlippagePct: safeNumber(policy.maxSpreadSlippagePct ?? 0.75, 0.75),
       minEdgeScore: safeNumber(policy.minEdgeScore ?? 60, 60),
       blockedCalibrationBuckets: Array.isArray(policy.blockedCalibrationBuckets) ? policy.blockedCalibrationBuckets.slice() : [],
       maxContradictionScore: safeNumber(policy.maxContradictionScore ?? 50, 50),
@@ -949,6 +957,20 @@ function withinRange(value, from, to) {
     if (!Number.isNaN(toTime) && time > toTime) return false;
   }
   return true;
+}
+
+const COMPACT_HISTORY_OMIT_KEYS = new Set([
+  'raw_payload',
+  'execution_quality_state',
+  'partial_fill_state',
+  'anti_churn_state',
+  'setup_fatigue_state',
+  'sourceStatus',
+  'sources',
+]);
+
+function compactHistoryReplacer(key, value) {
+  return COMPACT_HISTORY_OMIT_KEYS.has(key) ? undefined : value;
 }
 
 module.exports = {

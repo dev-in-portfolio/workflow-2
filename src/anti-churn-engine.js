@@ -1,7 +1,8 @@
-const fs = require('fs');
 const path = require('path');
+const { isOutcomeAccountingValid } = require('./paper-outcomes');
 const { nowIso, safeNumber, resolveRepoRoot } = require('./util');
 const { JsonFileStore } = require('./storage');
+const { readCompleteJsonlTail } = require('./history-tail-reader');
 
 const AntiChurnClassification = {
   CLEAN_WIN: 'clean_win',
@@ -686,7 +687,7 @@ async function reconcileAntiChurnState({
   }
   const historyPath = performanceHistoryPath || path.join(repoRoot, 'data', 'performance-history.jsonl');
   const outcomes = Array.isArray(paperOutcomes) ? paperOutcomes : readPaperOutcomesFromHistory(historyPath, config.historyMaxBytes || 512 * 1024);
-  const recentOutcomes = normalizeOutcomeList(outcomes)
+  const recentOutcomes = normalizeOutcomeList(outcomes.filter(isOutcomeAccountingValid))
     .filter(isExitOutcome)
     .filter((outcome) => require('./setup-fatigue').isWithinRetentionWindow(outcome.recorded_at, now, retentionHours))
     .sort((a, b) => new Date(a.recorded_at || 0).getTime() - new Date(b.recorded_at || 0).getTime());
@@ -1032,12 +1033,12 @@ function isExitOutcome(outcome = {}) {
 
 function readPaperOutcomesFromHistory(historyPath, maxBytes = 512 * 1024) {
   try {
-    const lines = readTailLines(historyPath, maxBytes);
     const records = [];
-    for (const line of lines) {
-      const parsed = parseJsonLine(line);
-      if (!parsed) continue;
-      if (parsed.entry_type === 'paper_outcome' && parsed.record) {
+    for (const parsed of readCompleteJsonlTail(historyPath, maxBytes, {
+      includeArchives: true,
+      matches: (entry) => ['paper_outcome', 'execution_outcome'].includes(entry?.entry_type) && Boolean(entry.record),
+    })) {
+      if (['paper_outcome', 'execution_outcome'].includes(parsed.entry_type) && parsed.record) {
         records.push(parsed.record);
       }
     }
@@ -1076,31 +1077,6 @@ function hasPartialFillProblem(source = {}) {
   }
 
   return false;
-}
-
-function readTailLines(filePath, maxBytes = 512 * 1024) {
-  try {
-    const stat = fs.statSync(filePath);
-    const start = Math.max(0, stat.size - maxBytes);
-    const buffer = Buffer.alloc(stat.size - start);
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      fs.readSync(fd, buffer, 0, buffer.length, start);
-    } finally {
-      fs.closeSync(fd);
-    }
-    return buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function parseJsonLine(line) {
-  try {
-    return JSON.parse(line);
-  } catch {
-    return null;
-  }
 }
 
 function resolveSetupKey(source = {}) {

@@ -4,7 +4,7 @@ const { summarizeAntiChurnState } = require('../anti-churn-engine');
 const { summarizeSetupFatigueState } = require('../setup-fatigue');
 const { summarizeSessionGuards } = require('../session-guards');
 const { summarizeCandidateLifecycleState } = require('../candidate-lifecycle-state');
-const { isApprovedPostResult, summarizePostResult } = require('./candidate-builder');
+const { isApprovedPostResult, summarizePostResult } = require('./post-result');
 const { summarizeRecentTradePenalties } = require('./rank-penalties');
 
 function writeRuntimeSnapshot(state, closureVars) {
@@ -83,6 +83,8 @@ function writeRuntimeSnapshot(state, closureVars) {
       .filter((candidate) => candidate.payload?.side === 'buy')
       .map((candidate) => ({
         symbol: candidate.symbol,
+        opportunity_score: roundScore(candidate.payload?.opportunity_score ?? candidate.payload?.confidence_score),
+        execution_eligible: Boolean(candidate.payload?.execution_eligible && !candidate.payload?.execution_blocked),
         setup_key: candidate.setupKey || null,
         rank_score: roundScore(candidate.rankScore),
         base_rank_score: roundScore(candidate.baseRankScore ?? candidate.rankScore),

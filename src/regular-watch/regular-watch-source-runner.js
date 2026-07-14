@@ -70,6 +70,11 @@ async function runRegularWatchSources(options = {}) {
   const displayedTopLimit = Math.max(1, Number(options.displayedTopLimit || env.REGULAR_WATCH_DISPLAY_LIMIT || 100) || 100);
   const fastLaneEnabled = String(options.fastLaneEnabled ?? env.REGULAR_WATCH_FAST_LANE_ENABLED ?? 'true').toLowerCase() !== 'false';
   const fastLaneLimit = Math.max(0, Number(options.fastLaneLimit || env.REGULAR_WATCH_FAST_LANE_LIMIT || 250) || 250);
+  const explorationShare = clampRatio(options.explorationShare ?? env.REGULAR_WATCH_EXPLORATION_SHARE, 0.8);
+  const maxConsecutiveFastLaneRuns = Math.max(1, Math.floor(Number(options.maxConsecutiveFastLaneRuns || env.REGULAR_WATCH_FAST_LANE_MAX_CONSECUTIVE_RUNS || 3) || 3));
+  const incumbentDecayPoints = Math.max(0, Number(options.incumbentDecayPoints || env.REGULAR_WATCH_INCUMBENT_DECAY_POINTS || 5) || 5);
+  const discoveryDisplayShare = clampRatio(options.discoveryDisplayShare ?? env.REGULAR_WATCH_DISCOVERY_DISPLAY_SHARE, 0.25);
+  const effectiveFastLaneLimit = Math.min(fastLaneLimit, Math.max(0, Math.floor(maxSymbols * (1 - explorationShare))));
   const sourceRuntime = resolveRegularWatchSourceRuntime(env, runtimeState);
   const now = nowIso();
   const previousStatus = loadRegularWatchStatus({ dataDir, repoRoot, filePath: statusPath });
@@ -82,7 +87,8 @@ async function runRegularWatchSources(options = {}) {
   });
   const fastLane = buildFastLaneSymbols({
     enabled: fastLaneEnabled,
-    limit: fastLaneLimit,
+    limit: effectiveFastLaneLimit,
+    maxConsecutiveRuns: maxConsecutiveFastLaneRuns,
     previousStatus,
     dynamicHotList: loadDynamicHotList({
       dataDir,
@@ -145,14 +151,21 @@ async function runRegularWatchSources(options = {}) {
     ...sourceResults.sourceStatusMap,
   };
   const sourceSignals = sourceResults.sourceSignals;
-  const symbolEntries = buildSymbolEntries({
+  const rawSymbolEntries = buildSymbolEntries({
     symbols,
     sourceSignals,
     sourceStatusMap,
     now,
   });
-
-  const regularWatchList = symbolEntries.slice().sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || a.symbol.localeCompare(b.symbol));
+  const symbolEntries = applyIncumbencyDecay(rawSymbolEntries, {
+    previousStatus,
+    fastLaneSymbols: fastLane.symbols,
+    decayPoints: incumbentDecayPoints,
+  });
+  const regularWatchList = buildDiversifiedRanking(symbolEntries, {
+    displayedTopLimit,
+    discoveryDisplayShare,
+  });
   const moverThreshold = Number.isFinite(Number(env.REGULAR_WATCH_MOVER_SCORE_THRESHOLD))
     ? Number(env.REGULAR_WATCH_MOVER_SCORE_THRESHOLD)
     : 55;
@@ -181,6 +194,10 @@ async function runRegularWatchSources(options = {}) {
       currentBatchSize: symbols.length,
       rotationBatchSize: rotation.symbols.length,
       fastLaneCandidateCount: fastLane.symbols.length,
+      fastLaneMaxConsecutiveRuns: maxConsecutiveFastLaneRuns,
+      explorationShare,
+      discoveryDisplayShare,
+      incumbentDecayPoints,
       scannedTodayCount: scannedToday.symbols.length,
       features: {
         marketConfirmation: Boolean(sourceRuntime.marketConfirmation),
@@ -440,6 +457,7 @@ async function fetchAlpacaRegularStockUniverse({ env = process.env, fetchImpl = 
       .filter((asset) => String(asset?.asset_class || asset?.class || '').toLowerCase() === 'us_equity')
       .filter((asset) => String(asset?.status || '').toLowerCase() === 'active')
       .filter((asset) => asset?.tradable === true)
+      .filter(isSuitableRegularWatchAsset)
       .map((asset) => String(asset?.symbol || '').trim().toUpperCase())
       .filter((symbol) => symbol && !symbol.includes('/') && !symbol.includes(' '))
       .sort((a, b) => a.localeCompare(b));
@@ -480,6 +498,7 @@ function buildFastLaneSymbols({
   previousStatus = {},
   dynamicHotList = null,
   universeSymbols = [],
+  maxConsecutiveRuns = 3,
 } = {}) {
   const max = Math.max(0, Math.floor(Number(limit) || 0));
   if (!enabled || max <= 0) {
@@ -488,18 +507,19 @@ function buildFastLaneSymbols({
   const universe = new Set(normalizeRegularWatchSymbols(universeSymbols, []));
   const sourceCounts = {};
   const candidates = [];
-  const add = (symbol, source, score = 0) => {
+  const add = (symbol, source, score = 0, streak = 0) => {
     const normalized = String(symbol || '').trim().toUpperCase();
     if (!normalized || (universe.size && !universe.has(normalized))) return;
+    if (source.startsWith('previous_regular_watch') && Number(streak || 0) >= maxConsecutiveRuns) return;
     sourceCounts[source] = (sourceCounts[source] || 0) + 1;
     candidates.push({ symbol: normalized, source, score: Number(score) || 0 });
   };
   for (const entry of Array.isArray(previousStatus?.regularWatchMovers) ? previousStatus.regularWatchMovers : []) {
-    add(entry?.symbol, 'previous_regular_watch_movers', entry?.score ?? entry?.regularWatchScore);
+    add(entry?.symbol, 'previous_regular_watch_movers', entry?.score ?? entry?.regularWatchScore, entry?.fastLaneStreak);
   }
   for (const entry of Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList.slice(0, max) : []) {
     if (String(entry?.status || '').toLowerCase() === 'blocked') continue;
-    add(entry?.symbol, 'previous_regular_watch_top', entry?.score ?? entry?.regularWatchScore);
+    add(entry?.symbol, 'previous_regular_watch_top', entry?.score ?? entry?.regularWatchScore, entry?.fastLaneStreak);
   }
   for (const entry of Array.isArray(dynamicHotList?.dynamicHotList) ? dynamicHotList.dynamicHotList : []) {
     add(entry?.symbol, 'dynamic_hot_list', entry?.marketConfirmationScore ?? entry?.memeHeatScore);
@@ -522,6 +542,68 @@ function buildFastLaneSymbols({
     limit: max,
     sources: sourceCounts,
   };
+}
+
+function isSuitableRegularWatchAsset(asset = {}) {
+  const symbol = String(asset.symbol || '').trim().toUpperCase();
+  const name = String(asset.name || '').trim();
+  if (!symbol) return false;
+  if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/.test(symbol)) return false;
+  if (/\b(warrant|right|unit|preferred)\b/i.test(name)) return false;
+  if (/\b(2x|3x|ultrapro|leveraged|inverse)\b/i.test(name)) return false;
+  if (LEVERAGED_OR_VOLATILITY_ETFS.has(symbol)) return false;
+  return true;
+}
+
+const LEVERAGED_OR_VOLATILITY_ETFS = new Set([
+  'AGQ', 'BOIL', 'BZQ', 'DIG', 'DUST', 'EDC', 'ERY', 'FAS', 'FAZ', 'GDXU', 'JNUG', 'KOLD',
+  'LABD', 'LABU', 'NUGT', 'QLD', 'SCO', 'SDOW', 'SOXL', 'SOXS', 'SPXU', 'SSO', 'SVIX',
+  'TBT', 'TECL', 'TECS', 'TMF', 'TMV', 'TNA', 'TQQQ', 'TZA', 'UCO', 'UGL', 'UPRO', 'UVIX',
+  'UVXY', 'VIXY', 'VXX', 'YANG', 'YINN', 'ZSL',
+]);
+
+function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbols = [], decayPoints = 5 } = {}) {
+  const previous = new Map((Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList : [])
+    .map((entry) => [String(entry?.symbol || '').toUpperCase(), entry]));
+  const fastLane = new Set(normalizeRegularWatchSymbols(fastLaneSymbols, []));
+  return entries.map((entry) => {
+    const symbol = String(entry?.symbol || '').toUpperCase();
+    const prior = previous.get(symbol);
+    const fastLaneStreak = fastLane.has(symbol) ? Math.max(1, Number(prior?.fastLaneStreak || 0) + 1) : 0;
+    const rawScore = Number(entry?.score || 0);
+    const incumbencyPenalty = fastLaneStreak > 1 ? Math.max(0, fastLaneStreak - 1) * Math.max(0, Number(decayPoints) || 0) : 0;
+    return {
+      ...entry,
+      rawScore,
+      score: Math.max(0, rawScore - incumbencyPenalty),
+      incumbencyPenalty,
+      fastLaneStreak,
+      discoveryCandidate: !fastLane.has(symbol),
+    };
+  });
+}
+
+function buildDiversifiedRanking(entries = [], { displayedTopLimit = 100, discoveryDisplayShare = 0.25 } = {}) {
+  const eligible = entries.filter((entry) => !entry.stale && entry.status !== 'blocked');
+  const ineligible = entries.filter((entry) => entry.stale || entry.status === 'blocked');
+  const ranked = eligible.sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || a.symbol.localeCompare(b.symbol));
+  const topLimit = Math.min(ranked.length, Math.max(1, Math.floor(Number(displayedTopLimit) || 100)));
+  const discoveryTarget = Math.min(topLimit, Math.floor(topLimit * clampRatio(discoveryDisplayShare, 0.25)));
+  if (!discoveryTarget) return [...ranked, ...ineligible];
+  const discoveries = ranked.filter((entry) => entry.discoveryCandidate).slice(0, discoveryTarget);
+  const incumbents = ranked.filter((entry) => !entry.discoveryCandidate).slice(0, topLimit - discoveries.length);
+  const selectedSymbols = new Set([...discoveries, ...incumbents].map((entry) => entry.symbol));
+  const fill = ranked.filter((entry) => !selectedSymbols.has(entry.symbol)).slice(0, topLimit - discoveries.length - incumbents.length);
+  const visible = [...incumbents, ...discoveries, ...fill]
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || a.symbol.localeCompare(b.symbol));
+  const visibleSymbols = new Set(visible.map((entry) => entry.symbol));
+  return [...visible, ...ranked.filter((entry) => !visibleSymbols.has(entry.symbol)), ...ineligible];
+}
+
+function clampRatio(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(1, Math.max(0, numeric));
 }
 
 function updateScannedTodaySymbols({ previousUniverse = {}, symbols = [], now = nowIso() } = {}) {
@@ -744,6 +826,7 @@ function buildSymbolEntries({ symbols, sourceSignals, sourceStatusMap, now } = {
   return [...lookup.values()].map((entry) => {
     const result = scoreRegularWatchSymbol(entry.symbol, entry, {
       sourceContributors: entry.sourceContributors,
+      receivedAt: now,
     });
     const sourceList = entry.sourceContributors.slice();
     const status = result.status;
@@ -763,9 +846,12 @@ function buildSymbolEntries({ symbols, sourceSignals, sourceStatusMap, now } = {
       ageSeconds: result.ageSeconds,
       volume: result.volume,
       averageVolume: result.averageVolume,
+      relativeVolume: result.relativeVolume,
+      independentlyConfirmed: Boolean(result.independentlyConfirmed),
       volumeMultiple: Number.isFinite(result.volume) && Number.isFinite(result.averageVolume) && result.averageVolume > 0
-        ? Number((result.volume / result.averageVolume).toFixed(2))
+        ? result.relativeVolume
         : entry.volumeMultiple ?? null,
+      volumeMultipleMethod: result.relativeVolumeMethod || null,
       spreadPct: result.spreadPct,
       bid: result.bid,
       ask: result.ask,
@@ -930,6 +1016,10 @@ module.exports = {
   buildContextSourceStatus,
   buildIdleStatus,
   buildSymbolEntries,
+  buildDiversifiedRanking,
+  applyIncumbencyDecay,
+  buildFastLaneSymbols,
+  isSuitableRegularWatchAsset,
   createTimedFetch,
   resolveRegularWatchSourceRuntime,
   resolveRegularWatchSymbols,

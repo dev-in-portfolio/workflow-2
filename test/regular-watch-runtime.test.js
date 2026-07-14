@@ -14,7 +14,12 @@ const {
   loadRegularWatchStatus,
   resolveRegularWatchStatusPath,
 } = require('../src/regular-watch/regular-watch-status');
-const { runRegularWatchSources } = require('../src/regular-watch/regular-watch-source-runner');
+const {
+  applyIncumbencyDecay,
+  buildDiversifiedRanking,
+  buildFastLaneSymbols,
+  runRegularWatchSources,
+} = require('../src/regular-watch/regular-watch-source-runner');
 const { createRegularWatchLoop } = require('../src/regular-watch/regular-watch-loop');
 
 function tempWorkspace() {
@@ -413,6 +418,40 @@ test('regular watch fast lane rescans prior movers while rotation continues', as
   assert.equal(second.universe.scanned_today_count, 110);
   assert(firstSymbols.slice(0, 10).some((symbol) => secondSymbols.includes(symbol)));
   assert(secondSymbols.some((symbol) => !firstSymbols.includes(symbol)));
+});
+
+test('regular watch expires repeat incumbents and decays their score', () => {
+  const previousStatus = {
+    regularWatchMovers: [{ symbol: 'FAV', score: 90, fastLaneStreak: 3 }],
+    regularWatchList: [
+      { symbol: 'FAV', score: 90, fastLaneStreak: 3 },
+      { symbol: 'KEEP', score: 85, fastLaneStreak: 1 },
+    ],
+  };
+  const fastLane = buildFastLaneSymbols({
+    enabled: true,
+    limit: 10,
+    maxConsecutiveRuns: 3,
+    previousStatus,
+    universeSymbols: ['FAV', 'KEEP', 'NEW'],
+  });
+  assert.deepEqual(fastLane.symbols, ['KEEP']);
+
+  const decayed = applyIncumbencyDecay([
+    { symbol: 'KEEP', score: 85 },
+    { symbol: 'NEW', score: 82 },
+  ], { previousStatus, fastLaneSymbols: fastLane.symbols, decayPoints: 5 });
+  assert.equal(decayed.find((entry) => entry.symbol === 'KEEP').score, 80);
+  assert.equal(decayed.find((entry) => entry.symbol === 'NEW').score, 82);
+});
+
+test('regular watch visible ranking reserves space for discoveries', () => {
+  const entries = [
+    ...Array.from({ length: 10 }, (_, index) => ({ symbol: `OLD${index}`, score: 100 - index, discoveryCandidate: false })),
+    ...Array.from({ length: 5 }, (_, index) => ({ symbol: `NEW${index}`, score: 50 - index, discoveryCandidate: true })),
+  ];
+  const ranked = buildDiversifiedRanking(entries, { displayedTopLimit: 10, discoveryDisplayShare: 0.3 });
+  assert.equal(ranked.slice(0, 10).filter((entry) => entry.discoveryCandidate).length, 3);
 });
 
 test('regular watch blocks halted and not-tradable symbols', async () => {

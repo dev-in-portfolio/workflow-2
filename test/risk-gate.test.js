@@ -41,6 +41,15 @@ function basePolicy(overrides = {}) {
   };
 }
 
+test('live risk decisions use execution terminology', () => {
+  const decision = evaluateRiskGate(baseSignal(), { available: true, open_positions_count: 0 }, basePolicy({
+    tradingMode: 'live',
+    liveTradingEnabled: true,
+  }));
+  assert.equal(decision.pass, true);
+  assert.equal(decision.decision, 'APPROVED_FOR_EXECUTION');
+});
+
 test('risk gate max-open-position cap blocks buys only', () => {
   const fullPortfolio = {
     available: true,

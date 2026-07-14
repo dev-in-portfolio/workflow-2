@@ -121,7 +121,7 @@ test('buy sizing preserves scanner-provided whole-share risk-budget quantity', (
   assert.equal(order.supports_fractional_shares, false);
 });
 
-test('buy sizing ignores stale scanner quantity for buying-power orders', () => {
+test('buy sizing preserves scanner-provided buying-power quantity without applying a second size reduction', () => {
   const order = buildPaperOrderRequestFromSignal({
     signal_id: 'sig-buying-power-stale',
     action_candidate: 'paper_buy',
@@ -135,12 +135,12 @@ test('buy sizing ignores stale scanner quantity for buying-power orders', () => 
   }, {
     buyNotionalTarget: 150,
     policy: {
-      positionSizeMultiplier: 1,
+      positionSizeMultiplier: 0.7,
     },
   });
 
-  assert.equal(order.quantity, 10);
-  assert.equal(order.notional, 147.8);
+  assert.equal(order.quantity, 11);
+  assert.equal(order.notional, 162.58);
   assert.equal(order.sizing_method, 'buying_power');
 });
 

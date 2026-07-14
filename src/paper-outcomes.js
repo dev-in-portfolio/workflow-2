@@ -29,6 +29,9 @@ function computePaperOutcome({
   trade_duration_seconds = null,
   exit_reason = null,
   exit_state = null,
+  accounting_valid = true,
+  accounting_reason_codes = [],
+  entry_price_source = null,
 }) {
   const entry = Number(entry_price);
   const exitNumeric = Number(exit_price);
@@ -47,9 +50,11 @@ function computePaperOutcome({
   const maxAdverseExcursion = Number.isFinite(entry) && Number.isFinite(low) && entry > 0
     ? buySide ? Math.max(0, entry - low) * qty : Math.max(0, high - entry) * qty
     : null;
-  const gross_pnl = Number.isFinite(entry) && exit !== null
+  const calculatedGrossPnl = Number.isFinite(entry) && exit !== null
     ? (buySide ? (exit - entry) : (entry - exit)) * qty
     : null;
+  const accountingValid = accounting_valid !== false;
+  const gross_pnl = accountingValid ? calculatedGrossPnl : null;
   const normalizedEstimatedEntry = optionalNumber(estimated_entry_price, optionalNumber(paper_result?.average_fill_price, null));
   const normalizedEstimatedExit = optionalNumber(estimated_exit_price, optionalNumber(paper_result?.average_exit_price, null));
   const normalizedEstimatedFees = optionalNumber(estimated_fees, optionalNumber(paper_result?.estimated_fees, null));
@@ -72,6 +77,7 @@ function computePaperOutcome({
   const status = normalizeFillStatus(paper_result);
 
   return {
+    execution_mode: paper_result.execution_mode || 'paper',
     original_signal: original_signal || null,
     entry_at: entry_at || original_signal?.created_at || null,
     exit_at: exit_at || paper_result.filled_at || paper_result.filledAt || null,
@@ -79,6 +85,10 @@ function computePaperOutcome({
     trade_duration_seconds: optionalNumber(trade_duration_seconds, optionalNumber(holding_period_seconds, null)),
     exit_reason: exit_reason || null,
     exit_state: exit_state || null,
+    accounting_version: '2026-07-13.broker-fill.1',
+    accounting_valid: accountingValid,
+    accounting_reason_codes: [...new Set(accounting_reason_codes || [])],
+    entry_price_source: entry_price_source || null,
     paper_result: {
       ...paper_result,
       entry_price: Number.isFinite(entry) ? entry : null,
@@ -130,5 +140,13 @@ function normalizeFillStatus(paperResult = {}) {
 module.exports = {
   calibrationBucketForConfidence,
   computePaperOutcome,
+  isOutcomeAccountingValid,
   normalizeFillStatus,
 };
+
+function isOutcomeAccountingValid(outcome = {}) {
+  if (outcome.accounting_valid === false) return false;
+  const live = outcome.execution_mode === 'live' || outcome.paper_result?.execution_mode === 'live';
+  if (live && !outcome.accounting_version) return false;
+  return true;
+}

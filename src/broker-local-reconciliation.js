@@ -118,7 +118,7 @@ function deriveLocalPositions(entries = []) {
   const ledger = new Map();
   for (const entry of entries) {
     const record = entry?.record || entry;
-    if ((entry?.entry_type || record?.entry_type) !== 'paper_outcome' && !record?.paper_result) continue;
+    if (!['paper_outcome', 'execution_outcome'].includes(entry?.entry_type || record?.entry_type) && !record?.paper_result) continue;
     const paperResult = record.paper_result || {};
     const originalSignal = record.original_signal || paperResult.original_signal || {};
     const symbol = normalizeSymbol(

@@ -8,6 +8,14 @@ const { parseSymbolList } = require('./volatile-stock-universe');
 const { createLogger } = require('./logger');
 const { fail } = require('./result');
 const { ScannerError } = require('./errors');
+const {
+  buildPolicyExitOverrides,
+  buildLiveEntryOverrides,
+  buildLiveRiskOverrides,
+  buildLiveExitOverrides,
+  readLivePolicy,
+  resolvePolicyPath,
+} = require('../scripts/start-stock-scanner');
 
 function createMarketAwareScanner(options = {}) {
   const env = options.env || process.env;
@@ -42,6 +50,13 @@ function createMarketAwareScanner(options = {}) {
   const overnightSymbols = options.overnightSymbols || runtimeEnv.OVERNIGHT_SCANNER_SYMBOLS || env.OVERNIGHT_SCANNER_SYMBOLS;
 
   const stockScannerConfig = buildScannerConfig({ ...runtimeEnv, ...env });
+  const livePolicy = options.livePolicy || readLivePolicy(resolvePolicyPath(runtimeEnv)) || {};
+  const liveStockOverrides = {
+    ...buildLiveEntryOverrides(livePolicy, runtimeEnv),
+    ...buildLiveExitOverrides(livePolicy),
+    ...buildPolicyExitOverrides(livePolicy),
+    ...buildLiveRiskOverrides(livePolicy),
+  };
 
   function buildStockScanner() {
     return (options.stockScannerFactory || createStockScanner)({
@@ -53,12 +68,10 @@ function createMarketAwareScanner(options = {}) {
       symbols: stockSymbols,
       intervalMs: options.stockIntervalMs || 30_000,
       cooldownMs: options.stockCooldownMs || 4 * 60_000,
-      minMovePct: options.stockMinMovePct || 0.2,
-      maxSpreadPct: options.stockMaxSpreadPct || 7.0,
       maxCandidatesPerRun: options.stockMaxCandidatesPerRun || 8,
-      notional: Number(runtimeEnv.BUY_NOTIONAL_TARGET || 150),
+      notional: Number(livePolicy.buyNotionalTarget || runtimeEnv.BUY_NOTIONAL_TARGET || 150),
       sellProfitThresholdPct: stockSellProfitThresholdPct,
-      allowContrarianEntries: true,
+      ...liveStockOverrides,
       logger: options.logger,
     });
   }

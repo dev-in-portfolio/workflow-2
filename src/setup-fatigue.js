@@ -1,8 +1,9 @@
-const fs = require('fs');
 const path = require('path');
 const { classifyExitOutcome } = require('./anti-churn-engine');
 const { nowIso, safeNumber, minutesBetween, resolveRepoRoot } = require('./util');
 const { JsonFileStore } = require('./storage');
+const { readCompleteJsonlTail } = require('./history-tail-reader');
+const { isOutcomeAccountingValid } = require('./paper-outcomes');
 
 const SetupFatigueReason = {
   SETUP_FATIGUE_ACTIVE: 'SETUP_FATIGUE_ACTIVE',
@@ -137,6 +138,7 @@ async function reconcileSetupFatigueState({
     ? paperOutcomes
     : readPaperOutcomesFromHistory(performanceHistoryPath || path.join(repoRoot, 'data', 'performance-history.jsonl'), historyMaxBytes);
   const normalizedOutcomes = outcomes
+    .filter(isOutcomeAccountingValid)
     .map((outcome) => normalizePaperOutcome(outcome))
     .filter(Boolean)
     .filter(isExitOutcome)
@@ -413,12 +415,12 @@ function normalizePaperOutcome(record = {}) {
 
 function readPaperOutcomesFromHistory(historyPath, maxBytes = DEFAULTS.historyMaxBytes) {
   try {
-    const lines = readTailLines(historyPath, maxBytes);
     const records = [];
-    for (const line of lines) {
-      const parsed = parseJsonLine(line);
-      if (!parsed) continue;
-      if (parsed.entry_type === 'paper_outcome' && parsed.record) {
+    for (const parsed of readCompleteJsonlTail(historyPath, maxBytes, {
+      includeArchives: true,
+      matches: (entry) => ['paper_outcome', 'execution_outcome'].includes(entry?.entry_type) && Boolean(entry.record),
+    })) {
+      if (['paper_outcome', 'execution_outcome'].includes(parsed.entry_type) && parsed.record) {
         records.push(parsed.record);
       }
     }
@@ -478,31 +480,6 @@ function hasPartialFillProblem(source = {}) {
   }
 
   return false;
-}
-
-function readTailLines(filePath, maxBytes = DEFAULTS.historyMaxBytes) {
-  try {
-    const stat = fs.statSync(filePath);
-    const start = Math.max(0, stat.size - maxBytes);
-    const buffer = Buffer.alloc(stat.size - start);
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      fs.readSync(fd, buffer, 0, buffer.length, start);
-    } finally {
-      fs.closeSync(fd);
-    }
-    return buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function parseJsonLine(line) {
-  try {
-    return JSON.parse(line);
-  } catch {
-    return null;
-  }
 }
 
 function isWithinRetentionWindow(recordedAt, now, retentionHours) {

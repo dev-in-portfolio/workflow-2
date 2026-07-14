@@ -166,8 +166,8 @@ function renderRegularWatchList(items) {
         <span><b>Halt status</b> ${escapeHtml(item.haltStatus || 'unknown')}</span>
         <span><b>Market data</b> ${escapeHtml(item.marketDataState || 'unknown')}</span>
         <span><b>Displayed rank</b> ${escapeHtml(formatNumber(item.displayedRankScore ?? item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
-        <span><b>Execution score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
-        <span><b>Regular score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
+        <span><b>Execution score</b> ${Number.isFinite(Number(item.scannerScore)) ? escapeHtml(formatNumber(item.scannerScore)) : 'Not qualified yet'}</span>
+        <span><b>Discovery score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
         <span><b>Execution status</b> ${escapeHtml(item.executionStatus || 'watching')}</span>
         <span><b>Comparison</b> ${escapeHtml(formatCandidateComparison(item.candidateComparison))}</span>
         <span><b>Sources</b> ${escapeHtml(formatSources(item.sourceStatus || item.sourceDetails || item.sourceContributors || item.sources))}</span>
@@ -195,8 +195,8 @@ function renderMovers(items, snapshot) {
         <span><b>Volume multiple</b> ${escapeHtml(formatNumber(item.volumeMultiple))}</span>
         <span><b>Spread</b> ${escapeHtml(formatPercent(item.spread ?? item.spreadPct))}</span>
         <span><b>Displayed rank</b> ${escapeHtml(formatNumber(item.displayedRankScore ?? item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
-        <span><b>Execution score</b> ${escapeHtml(formatNumber(item.scannerScore ?? item.regularWatchScore ?? item.score))}</span>
-        <span><b>Regular score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
+        <span><b>Execution score</b> ${Number.isFinite(Number(item.scannerScore)) ? escapeHtml(formatNumber(item.scannerScore)) : 'Not qualified yet'}</span>
+        <span><b>Discovery score</b> ${escapeHtml(formatNumber(item.regularWatchScore ?? item.candidateComparison?.regularWatchScore))}</span>
         <span><b>Execution status</b> ${escapeHtml(item.executionStatus || 'watching')}</span>
         <span><b>Comparison</b> ${escapeHtml(formatCandidateComparison(item.candidateComparison))}</span>
         <span><b>Sources</b> ${escapeHtml(formatSources(item.sourceStatus || item.sourceDetails || item.sourceContributors || item.sources))}</span>

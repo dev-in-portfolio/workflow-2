@@ -13,6 +13,29 @@ const {
   saveAntiChurnState,
   summarizeAntiChurnState,
 } = require('../src');
+const { readCompleteJsonlTail } = require('../src/history-tail-reader');
+
+test('history tail reader expands past oversized outcome records', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'history-tail-'));
+  const filePath = path.join(tempDir, 'performance-history.jsonl');
+  const oversized = 'x'.repeat(700 * 1024);
+  const records = Array.from({ length: 3 }, (_, index) => ({
+    entry_type: 'paper_outcome',
+    record: {
+      symbol: `TEST${index}`,
+      side: 'sell',
+      net_pnl: -1,
+      exit_reason: 'STOP_LOSS_DOLLARS',
+      recorded_at: `2026-07-13T14:0${index}:00.000Z`,
+      diagnostic_snapshot: oversized,
+    },
+  }));
+  fs.writeFileSync(filePath, `${records.map(JSON.stringify).join('\n')}\n`);
+
+  const parsed = readCompleteJsonlTail(filePath, 512 * 1024, { minimumRecords: 2 });
+  assert(parsed.length >= 2);
+  assert.equal(parsed.at(-1).record.symbol, 'TEST2');
+});
 
 test('anti-churn classifies clean wins, trailing wins, and small wins distinctly', () => {
   const clean = calculateAntiChurnPenalty({

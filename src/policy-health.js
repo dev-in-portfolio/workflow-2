@@ -50,7 +50,7 @@ function evaluatePolicyHealth(options = {}) {
   checkPositiveThreshold(policy, 'minVolume', criticalFailures, suspiciousFields);
 
   const maxSpread = safeNumber(policy.maxSpreadSlippagePct, null);
-  if (Number.isFinite(maxSpread) && maxSpread > 25) {
+  if (Number.isFinite(maxSpread) && maxSpread > 2) {
     suspiciousFields.push({ field: 'maxSpreadSlippagePct', value: maxSpread, reason: 'OVERLY_PERMISSIVE_SPREAD_THRESHOLD' });
     criticalFailures.push('POLICY_MAX_SPREAD_TOO_PERMISSIVE');
   }

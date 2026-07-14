@@ -137,24 +137,28 @@ async function confirmBrokerOrder(executionAdapter, orderId, options = {}) {
 function buildPaperResultFromOrder({ signal, paperOrderRequest, paperOrder, confirmation }) {
   const order = confirmation?.order || paperOrder || {};
   const status = normalizeOrderStatus(order) || normalizeOrderStatus(paperOrder) || confirmation?.confirmation_status || 'unknown';
+  const executionMode = order.execution_mode || paperOrder.execution_mode || paperOrderRequest.execution_mode || 'paper';
   const filledAt = order.fill?.at
     || order.filled_at
     || order.external_order?.filled_at
     || order.updated_at
     || signal.created_at
     || nowIso();
-  const averageFillPrice = safeNumber(
+  const brokerFillPrice = safeNumber(
     order.fill?.average_fill_price
       ?? order.average_fill_price
+      ?? order.filled_avg_price
+      ?? order.avg_fill_price
+      ?? order.fill_price
       ?? order.external_order?.filled_avg_price
-      ?? order.external_order?.avg_fill_price
-      ?? order.limit_price
-      ?? paperOrderRequest.entry_price
-      ?? paperOrderRequest.limit_price
-      ?? signal.entry_price
-      ?? signal.price,
+      ?? order.external_order?.avg_fill_price,
     null,
   );
+  const fallbackFillPrice = safeNumber(order.limit_price ?? paperOrderRequest.limit_price ?? paperOrderRequest.entry_price ?? signal.entry_price ?? signal.price, null);
+  const brokerFillPriceConfirmed = Number.isFinite(brokerFillPrice);
+  const averageFillPrice = brokerFillPriceConfirmed
+    ? brokerFillPrice
+    : executionMode === 'live' ? null : fallbackFillPrice;
   const filledQuantity = safeNumber(
     order.fill?.filled_quantity
       ?? order.filled_quantity
@@ -180,12 +184,15 @@ function buildPaperResultFromOrder({ signal, paperOrderRequest, paperOrder, conf
   return {
     order_id: order.order_id || paperOrder.order_id || paperOrderRequest.request_id || signal.signal_id || null,
     status,
+    execution_mode: executionMode,
     filled_at: filledAt,
     average_fill_price: Number.isFinite(averageFillPrice) ? averageFillPrice : null,
     filled_quantity: Number.isFinite(filledQuantity) ? filledQuantity : null,
     submitted_quantity: Number.isFinite(submittedQuantity) ? submittedQuantity : null,
     remaining_quantity: Number.isFinite(remainingQuantity) ? remainingQuantity : null,
     estimated_fees: safeNumber(order.fill?.estimated_fees ?? order.estimated_fees ?? 0, 0),
+    broker_fill_price_confirmed: brokerFillPriceConfirmed,
+    fill_price_source: brokerFillPriceConfirmed ? 'broker_order' : executionMode === 'live' ? 'missing_broker_fill' : 'simulation_fallback',
     original_signal: signal,
     paper_order_request: paperOrderRequest,
   };
@@ -255,6 +262,7 @@ async function executeOrder(paperOrderRequest, signal, options = {}) {
 
 async function submitOrderWithWholeShareFallback(paperOrderRequest, signal, options = {}) {
   const adapter = options.executionAdapter;
+  assertLiveBuyApproval(paperOrderRequest, signal, options);
   const submitOptions = {
     market: options.reconciledMarketContext,
     requireHumanApproval: options.policy?.requireHumanApproval,
@@ -297,6 +305,27 @@ async function submitOrderWithWholeShareFallback(paperOrderRequest, signal, opti
       original_rejection: error.message,
     });
   }
+}
+
+function assertLiveBuyApproval(request = {}, signal = {}, options = {}) {
+  const adapter = options.executionAdapter;
+  const liveBroker = adapter?.paperTrading === false;
+  const buy = String(request.side || signal.side || '').trim().toLowerCase() === 'buy';
+  const required = Boolean(options.policy?.requireHumanApproval);
+  if (!liveBroker || !buy || !required) return true;
+
+  const approvalId = String(request.human_approval_id || signal.human_approval_id || '').trim();
+  const approvedAt = request.human_approval_at || signal.human_approval_at || null;
+  const approvedAtMs = new Date(approvedAt || 0).getTime();
+  const maxAgeMs = Math.max(60_000, Number(options.humanApprovalMaxAgeMs || 15 * 60_000) || 15 * 60_000);
+  const ageMs = Date.now() - approvedAtMs;
+  if (!approvalId || !Number.isFinite(approvedAtMs) || ageMs < 0 || ageMs > maxAgeMs) {
+    const error = new Error('Live buy blocked: a valid, recent human approval is required.');
+    error.code = 'LIVE_BUY_HUMAN_APPROVAL_REQUIRED';
+    error.reason_codes = ['LIVE_BUY_HUMAN_APPROVAL_REQUIRED'];
+    throw error;
+  }
+  return true;
 }
 
 async function maybeSelectWholeShareFromAssetMetadata(paperOrderRequest, signal, options = {}) {
@@ -516,6 +545,7 @@ module.exports = {
   confirmBrokerOrder,
   detectOpenOrderConflict,
   executeOrder,
+  assertLiveBuyApproval,
   isRecoverableFractionalShareError,
   submitOrderWithWholeShareFallback,
   sleep,

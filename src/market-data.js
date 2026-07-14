@@ -261,6 +261,7 @@ function confirmMarketPair(primaryRecord, secondaryRecord, options = {}) {
 
   if (!primaryProvider || primaryProvider === 'unknown') reasons.push('PRIMARY_PROVIDER_REQUIRED');
   if (!secondaryProvider || secondaryProvider === 'unknown') reasons.push('SECONDARY_PROVIDER_REQUIRED');
+  if (providerFamily(primaryProvider) === providerFamily(secondaryProvider)) reasons.push('INDEPENDENT_PROVIDER_REQUIRED');
   if (options.expectedPrimaryProvider && primaryProvider !== options.expectedPrimaryProvider) reasons.push('PRIMARY_PROVIDER_MISMATCH');
   if (options.expectedSecondaryProvider && secondaryProvider !== options.expectedSecondaryProvider) reasons.push('SECONDARY_PROVIDER_MISMATCH');
   if (primaryRecord?.symbol !== secondaryRecord?.symbol) reasons.push('SYMBOL_MISMATCH');
@@ -303,6 +304,13 @@ function confirmMarketPair(primaryRecord, secondaryRecord, options = {}) {
     discrepancy_score: clamp((priceDiffPct || 0) * 10 + (timeDiffSeconds || 0) / 2, 0, 100),
     reason_codes: reasons,
   };
+}
+
+function providerFamily(provider) {
+  const normalized = normalizeProviderName(provider);
+  if (normalized.startsWith('alpaca')) return 'alpaca';
+  if (normalized === 'twelve_data') return 'twelvedata';
+  return normalized;
 }
 
 function isNormalizedMarketRecord(record) {

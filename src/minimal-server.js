@@ -239,6 +239,7 @@ function serializeMinimalResult(result) {
     paper_order: result.paperOrder || null,
     order_confirmation: result.confirmation || null,
     paper_result: result.paperResult || null,
+    execution_outcome: result.paperOutcome || null,
     paper_outcome: result.paperOutcome || null,
   };
 }

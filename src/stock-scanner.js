@@ -83,6 +83,8 @@ const SCANNER_SOURCE_LABELS = {
   hot_hot_list: 'Hot Hot List',
 };
 
+const stockSnapshotFallbackCache = new Map();
+
 function normalizeScannerSymbolSource(value = 'dynamic') {
   const normalized = String(value || '').trim().toLowerCase();
   return SCANNER_SYMBOL_SOURCE_ALIASES[normalized] || 'dynamic';
@@ -137,6 +139,9 @@ function createStockScanner(options = {}) {
   const scannerSymbolSource = normalizeScannerSymbolSource(options.scannerSymbolSource
     ?? scannerConfig.scannerSymbolSource
     ?? (Object.prototype.hasOwnProperty.call(env, 'SCANNER_SYMBOL_SOURCE') ? env.SCANNER_SYMBOL_SOURCE : 'approved'));
+  const marketLeadersEnabled = options.marketLeadersEnabled ?? parseBool(env.STOCK_SCANNER_MARKET_LEADERS_ENABLED, true);
+  const marketMoversTop = Math.max(1, Math.min(50, Math.floor(safeNumber(options.marketMoversTop ?? env.STOCK_SCANNER_MARKET_MOVERS_TOP, 50))));
+  const marketMostActivesTop = Math.max(1, Math.min(100, Math.floor(safeNumber(options.marketMostActivesTop ?? env.STOCK_SCANNER_MARKET_MOST_ACTIVES_TOP, 100))));
   const excludedBuySymbols = parseSymbolList(options.excludedBuySymbols ?? env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS, []);
   const intervalMs = Math.max(5_000, Number(options.intervalMs ?? Number(env.STOCK_SCANNER_INTERVAL_SECONDS || 10) * 1000) || 10_000);
   const maxCandidatesPerRun = Math.max(1, Number(options.maxCandidatesPerRun ?? env.STOCK_SCANNER_MAX_CANDIDATES ?? 2) || 2);
@@ -161,6 +166,9 @@ function createStockScanner(options = {}) {
   const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? Boolean(twelveDataApiKey);
   const singleSourceMomentumEnabled = options.singleSourceMomentumEnabled ?? parseBool(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_ENABLED, false);
   const singleSourceMomentumMinRankScore = Math.max(0, safeNumber(options.singleSourceMomentumMinRankScore ?? env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_MIN_RANK_SCORE, 500));
+  const singleProviderQualifiedEnabled = options.singleProviderQualifiedEnabled ?? parseBool(env.STOCK_SCANNER_SINGLE_PROVIDER_QUALIFIED_ENABLED, true);
+  const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MIN_OPPORTUNITY_SCORE, 70));
+  const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MAX_SPREAD_PCT, 0.75));
   const minMovePct = Math.max(0, safeNumber(options.minMovePct ?? scannerConfig.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minMovePct : 0));
   const requireRecentMomentum = options.requireRecentMomentum ?? scannerConfig.requireRecentMomentum ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, stricterLiveEntryDefaults);
   const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? scannerConfig.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03));
@@ -219,6 +227,8 @@ function createStockScanner(options = {}) {
   const minAdjustedRankScore = safeNumber(options.minAdjustedRankScore ?? env.STOCK_SCANNER_MIN_ADJUSTED_RANK_SCORE, Number.NEGATIVE_INFINITY);
   const keepAlive = options.keepAlive ?? true;
   const runtimeStateEnabled = options.runtimeStateEnabled ?? parseBool(env.SCANNER_RUNTIME_STATE_ENABLED, false);
+  const brokerReentryGuardEnabled = options.brokerReentryGuardEnabled
+    ?? parseBool(env.BROKER_REENTRY_GUARD_ENABLED, runtimeStateEnabled && keepAlive);
   const requireMarketOpen = options.requireMarketOpen ?? parseBool(env.STOCK_SCANNER_REQUIRE_MARKET_OPEN, true);
   const openingNoiseMinutes = Math.max(0, safeNumber(options.openingNoiseMinutes ?? env.STOCK_SCANNER_OPENING_NOISE_MINUTES, 5));
   const nearCloseManageOnlyMinutes = Math.max(0, safeNumber(options.nearCloseManageOnlyMinutes ?? env.STOCK_SCANNER_NEAR_CLOSE_MANAGE_ONLY_MINUTES, 15));
@@ -318,6 +328,33 @@ function createStockScanner(options = {}) {
       scannerSymbolSource,
       currentDate: receivedAt,
     });
+    const marketLeaders = marketLeadersEnabled
+      ? await fetchAlpacaMarketLeaders({
+        fetchImpl: marketFetch,
+        apiKeyId,
+        apiSecretKey,
+        baseUrl,
+        moversTop: marketMoversTop,
+        mostActivesTop: marketMostActivesTop,
+      })
+      : { symbols: [], gainers: [], losers: [], mostActives: [], status: 'disabled' };
+    if (marketLeaders.symbols.length) {
+      const scanLimit = Math.max(sourceUniverse.activeSymbols.length, marketLeaders.symbols.length);
+      sourceUniverse.activeSymbols = uniqueNormalizedSymbols([...marketLeaders.symbols, ...sourceUniverse.activeSymbols]).slice(0, scanLimit);
+      sourceUniverse.sourceCounts = {
+        ...(sourceUniverse.sourceCounts || {}),
+        market_leaders: marketLeaders.symbols.length,
+        market_gainers: marketLeaders.gainers.length,
+        market_losers: marketLeaders.losers.length,
+        market_most_actives: marketLeaders.mostActives.length,
+      };
+      for (const symbol of marketLeaders.symbols) {
+        const existing = sourceUniverse.sourceListsBySymbol.get(symbol);
+        const prior = Array.isArray(existing) ? existing : (existing ? [existing] : []);
+        sourceUniverse.sourceListsBySymbol.set(symbol, [...new Set(['Market Leaders', ...prior])]);
+      }
+    }
+    sourceUniverse.marketLeaders = marketLeaders;
     const memeWatchConfig = resolveScannerWatchConfig({
       env,
       repoRoot,
@@ -392,6 +429,14 @@ function createStockScanner(options = {}) {
       const openOrders = openOrdersState.data;
       const account = accountState.data;
       const brokerState = buildScannerBrokerState({ accountState, positionsState, openOrdersState });
+      const recentBrokerSellTimes = brokerReentryGuardEnabled ? await fetchRecentFilledSellOrderTimes({
+        fetchImpl: marketFetch,
+        apiKeyId,
+        apiSecretKey,
+        baseUrl: accountBaseUrl,
+        now: receivedAt,
+        windowSeconds: antiChurnRapidRoundTripSeconds,
+      }) : {};
       const positionEntryTimes = await fetchRecentFilledBuyOrderTimes({
         fetchImpl: marketFetch,
         apiKeyId,
@@ -458,9 +503,11 @@ function createStockScanner(options = {}) {
         decayPerHour: executionQualityDecayPerHour,
         minSizeMultiplier: minExecutionQualitySizeMultiplier,
       });
-      const previousAntiChurnState = options.antiChurnState || loadAntiChurnState({ env, repoRoot: resolveRepoRoot() });
+      const previousAntiChurnState = antiChurnEnabled
+        ? (options.antiChurnState || loadAntiChurnState({ env, repoRoot: resolveRepoRoot() }))
+        : {};
       let antiChurnState = normalizeAntiChurnState(previousAntiChurnState);
-      if (!options.antiChurnState) {
+      if (antiChurnEnabled && !options.antiChurnState) {
         try {
           antiChurnState = await reconcileAntiChurnState({
             previousState: previousAntiChurnState,
@@ -501,9 +548,11 @@ function createStockScanner(options = {}) {
       }
       const antiChurnSummary = summarizeAntiChurnState(antiChurnState);
       const performanceHistoryPath = resolvePerformanceHistoryPath(env, resolveRepoRoot());
-      const previousSetupFatigueState = options.setupFatigueState || loadSetupFatigueState({ env, repoRoot: resolveRepoRoot() });
+      const previousSetupFatigueState = setupFatigueEnabled
+        ? (options.setupFatigueState || loadSetupFatigueState({ env, repoRoot: resolveRepoRoot() }))
+        : {};
       let setupFatigueState = normalizeSetupFatigueState(previousSetupFatigueState);
-      if (!options.setupFatigueState) {
+      if (setupFatigueEnabled && !options.setupFatigueState) {
         try {
           setupFatigueState = await reconcileSetupFatigueState({
             previousState: previousSetupFatigueState,
@@ -676,6 +725,9 @@ function createStockScanner(options = {}) {
         requireMultiSourceConfirmation,
         singleSourceMomentumEnabled,
         singleSourceMomentumMinRankScore,
+        singleProviderQualifiedEnabled,
+        singleProviderMinOpportunityScore,
+        singleProviderMaxSpreadPct,
         minMovePct,
         requireRecentMomentum,
         minRecentMovePct,
@@ -706,6 +758,7 @@ function createStockScanner(options = {}) {
         antiChurnRecentWinnerProtectionEnabled,
         antiChurnTinyExitDollars,
         antiChurnRapidRoundTripSeconds,
+        recentBrokerSellTimes,
         setupFatigueState,
         setupFatigueSummary,
         setupFatigueEnabled,
@@ -816,6 +869,9 @@ function createStockScanner(options = {}) {
           requireMultiSourceConfirmation,
           singleSourceMomentumEnabled,
           singleSourceMomentumMinRankScore,
+          singleProviderQualifiedEnabled,
+          singleProviderMinOpportunityScore,
+          singleProviderMaxSpreadPct,
           minMovePct,
           requireRecentMomentum,
           minRecentMovePct,
@@ -846,6 +902,7 @@ function createStockScanner(options = {}) {
           antiChurnRecentWinnerProtectionEnabled,
           antiChurnTinyExitDollars,
           antiChurnRapidRoundTripSeconds,
+          recentBrokerSellTimes,
           setupFatigueState,
           setupFatigueSummary,
           setupFatigueEnabled,
@@ -957,20 +1014,33 @@ function createStockScanner(options = {}) {
         });
         let responseBody = null;
         try {
-          responseBody = await response.json();
-        } catch {
-          responseBody = { accepted: response.ok };
+          if (typeof response.json === 'function') {
+            responseBody = await response.json();
+          } else if (typeof response.text === 'function') {
+            responseBody = JSON.parse(await response.text());
+          } else {
+            throw new Error('Local trading service response had no readable body.');
+          }
+        } catch (error) {
+          responseBody = {
+            accepted: false,
+            stage: 'transport',
+            reason_codes: ['INVALID_LOCAL_RESPONSE'],
+            error: error?.message || 'Local trading service returned a non-JSON response.',
+          };
         }
+        const approved = isApprovedPostResult({ accepted: response.ok, response: responseBody });
         const result = {
           symbol: candidate.symbol,
           move_pct: candidate.movePct,
           spread_pct: candidate.spreadPct,
-          accepted: response.ok,
+          accepted: approved,
+          transport_ok: response.ok,
           status: responseBody?.final_decision || responseBody?.status || null,
           response: responseBody,
         };
         results.push(result);
-        if (!isApprovedPostResult({ accepted: response.ok, response: responseBody })) {
+        if (!approved) {
           const reasons = responseBody?.reason_codes || responseBody?.riskDecision?.reason_codes || responseBody?.risk_decision?.reason_codes || [];
           for (const reason of Array.isArray(reasons) ? reasons : [reasons].filter(Boolean)) {
             skipTracker.record(reason || 'RISK_REJECTED', { symbol: candidate.symbol, stage: 'risk' });
@@ -1363,6 +1433,21 @@ function createStockScanner(options = {}) {
 
   function start() {
     if (!enabled || state.timer) return controller;
+    // Publish liveness before the first large-universe scan. The supervisor must
+    // not mistake a healthy scanner doing startup I/O for a failed process.
+    writeScannerRuntimeState({
+      scanner: 'stock-scanner',
+      mode: 'live-market',
+      loaded_mode: 'live-market',
+      status: 'initializing',
+      last_scan_time: nowIso(),
+      active_symbols: latestActiveSymbols.slice(),
+      active_source_count: latestActiveSymbols.length,
+      candidate_count: 0,
+      posted_count: 0,
+      approved_count: 0,
+      rejected_count: 0,
+    }, { env, repoRoot });
     const tick = () => {
       runOnce({ runId: `stock_${Date.now()}` }).catch((error) => {
         options.logger({ level: 'error', event: 'stock_scanner_error', message: error.message });
@@ -1409,6 +1494,12 @@ function createStockScanner(options = {}) {
       requireMultiSourceConfirmation,
       singleSourceMomentumEnabled,
       singleSourceMomentumMinRankScore,
+      singleProviderQualifiedEnabled,
+      singleProviderMinOpportunityScore,
+      singleProviderMaxSpreadPct,
+      marketLeadersEnabled,
+      marketMoversTop,
+      marketMostActivesTop,
       minMovePct,
       requireRecentMomentum,
       minRecentMovePct,
@@ -1499,7 +1590,7 @@ function createStockScanner(options = {}) {
       runId,
       mode: 'live-market',
       marketRegime: intradayRegime,
-      symbolUniverse: latestSourceUniverse?.regularWatch?.universe || null,
+      symbolUniverse: buildScannerUniverseAudit(latestSourceUniverse),
       approvedSymbols: latestApprovedReferenceSymbols,
       candidates: allBuyCandidates.length ? allBuyCandidates : candidates,
       selectedCandidates: candidates,
@@ -1851,16 +1942,31 @@ async function fetchStockBundle({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, sy
   };
   const snapshots = {};
   const latestQuotes = {};
-  for (const chunk of chunkSymbols(symbols, 25)) {
+  for (const chunk of chunkSymbols(symbols, 100)) {
     const encodedSymbols = encodeURIComponent(chunk.join(','));
     const snapshotsUrl = `${baseUrl}/v2/stocks/snapshots?symbols=${encodedSymbols}&feed=iex`;
-    const response = await fetchImpl(snapshotsUrl, { method: 'GET', headers });
-    const body = await readJsonResponse(response);
-    if (!response.ok) continue;
+    let response = await fetchImpl(snapshotsUrl, { method: 'GET', headers });
+    let body = await readJsonResponse(response);
+    if (response.status === 429) {
+      await sleep(500);
+      response = await fetchImpl(snapshotsUrl, { method: 'GET', headers });
+      body = await readJsonResponse(response);
+    }
+    if (!response.ok) {
+      const cutoff = Date.now() - 90_000;
+      for (const symbol of chunk) {
+        const cached = stockSnapshotFallbackCache.get(symbol);
+        if (!cached || cached.cached_at_ms < cutoff) continue;
+        snapshots[symbol] = cached.snapshot;
+        latestQuotes[symbol] = cached.snapshot?.latestQuote || cached.snapshot?.latest_quote || {};
+      }
+      continue;
+    }
     const chunkSnapshots = body?.snapshots || body || {};
     Object.assign(snapshots, chunkSnapshots);
     for (const symbol of chunk) {
       latestQuotes[symbol] = chunkSnapshots[symbol]?.latestQuote || chunkSnapshots[symbol]?.latest_quote || latestQuotes[symbol] || {};
+      if (chunkSnapshots[symbol]) stockSnapshotFallbackCache.set(symbol, { snapshot: chunkSnapshots[symbol], cached_at_ms: Date.now() });
     }
   }
   return { snapshots, latestQuotes };
@@ -2160,6 +2266,7 @@ function buildCandidates(bundle, options = {}) {
       antiChurnRecentWinnerProtectionEnabled: options.antiChurnRecentWinnerProtectionEnabled,
       antiChurnTinyExitDollars: options.antiChurnTinyExitDollars,
       antiChurnRapidRoundTripSeconds: options.antiChurnRapidRoundTripSeconds,
+      recentBrokerSellAt: options.recentBrokerSellTimes?.[symbol] || null,
       setupFatigueState: options.setupFatigueState,
       setupFatigueSummary: options.setupFatigueSummary,
       setupFatigueEnabled: options.setupFatigueEnabled,
@@ -2202,7 +2309,7 @@ function buildCandidates(bundle, options = {}) {
       const isPriorityOverrideSymbol = priorityOverrideSymbols.has(symbol);
       const isPriorityOverrideApplied = isPriorityOverrideSymbol && candidate.payload.side === 'buy';
       const secondaryConfirmationAvailable = Boolean(candidate.payload?.twelve_data_quote);
-      const secondaryConfirmationSource = secondaryConfirmationAvailable ? 'twelvedata' : 'alpaca-secondary';
+      const secondaryConfirmationSource = secondaryConfirmationAvailable ? 'twelvedata' : null;
       candidate.positionAwarenessTags = buildPositionAwarenessTags({
         symbol,
         candidate,
@@ -2236,6 +2343,34 @@ function buildCandidates(bundle, options = {}) {
           options: options.scannerSelectionV2Config || {},
         })
         : null;
+      const singleProviderQualifiedEnabled = options.singleProviderQualifiedEnabled !== false;
+      const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore, 70));
+      const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct, 0.75));
+      const singleProviderEligible = Boolean(
+        candidate.payload.side === 'buy'
+        && singleProviderQualifiedEnabled
+        && !secondaryConfirmationAvailable
+        && selectionV2?.qualified === true
+        && safeNumber(selectionV2.final_opportunity_score, 0) >= singleProviderMinOpportunityScore
+        && safeNumber(scannerContext.spread_pct, Number.POSITIVE_INFINITY) <= singleProviderMaxSpreadPct
+        && safeNumber(selectionV2.features?.one_minute_return_pct, 0) > 0
+        && safeNumber(selectionV2.features?.relative_volume, 0) >= 1,
+      );
+      if (singleProviderEligible) {
+        const eligibility = {
+          enabled: true,
+          eligible: true,
+          reason_code: 'SINGLE_PROVIDER_QUALIFIED_SETUP',
+          opportunity_score: selectionV2.final_opportunity_score,
+          min_opportunity_score: singleProviderMinOpportunityScore,
+          spread_pct: scannerContext.spread_pct,
+          max_spread_pct: singleProviderMaxSpreadPct,
+        };
+        candidate.payload.single_source_momentum_override = true;
+        candidate.payload.single_provider_eligible = true;
+        candidate.payload.market_context.single_source_momentum_override = eligibility;
+        candidate.payload.market_context.single_provider_eligibility = eligibility;
+      }
       scannerContext.dynamic_watchlist_member = isDynamicWatchSymbol;
       scannerContext.priority_override_eligible = isPriorityOverrideSymbol;
       scannerContext.priority_override_applied = isPriorityOverrideApplied;
@@ -2243,6 +2378,7 @@ function buildCandidates(bundle, options = {}) {
       scannerContext.priority_override_block_reason = null;
       scannerContext.secondary_confirmation_available = secondaryConfirmationAvailable;
       scannerContext.secondary_confirmation_source = secondaryConfirmationSource;
+      scannerContext.single_provider_eligible = singleProviderEligible;
       scannerContext.regular_watch_comparison = regularWatchComparison;
       scannerContext.selection_v2 = selectionV2;
       scannerContext.selection_v2_shadow_only = Boolean(selectionV2 && !options.scannerSelectionV2AuthorityEnabled);
@@ -2567,6 +2703,20 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
     });
   }
   const nowMs = new Date(options.receivedAt || nowIso()).getTime();
+  const recentBrokerSellAt = normalizeIso(options.recentBrokerSellAt);
+  const recentBrokerSellMs = recentBrokerSellAt ? new Date(recentBrokerSellAt).getTime() : NaN;
+  const brokerReentryCooldownSeconds = Math.max(1, safeNumber(options.antiChurnRapidRoundTripSeconds, 600));
+  if (Number.isFinite(recentBrokerSellMs) && Number.isFinite(nowMs)) {
+    const elapsedSeconds = Math.max(0, (nowMs - recentBrokerSellMs) / 1000);
+    if (elapsedSeconds < brokerReentryCooldownSeconds) {
+      return skip('BROKER_REENTRY_COOLDOWN_ACTIVE', {
+        symbol,
+        recent_sell_at: recentBrokerSellAt,
+        cooldown_seconds: brokerReentryCooldownSeconds,
+        remaining_seconds: Math.ceil(brokerReentryCooldownSeconds - elapsedSeconds),
+      });
+    }
+  }
   const antiChurnState = options.antiChurnState || null;
   const setupFatigue = evaluateSetupFatigueCandidate({
     setupFatigueState: options.setupFatigueState,
@@ -2681,8 +2831,39 @@ function isApprovedPostResult(result = {}) {
     || response?.riskDecision?.decision
     || response?.risk_decision?.decision
     || result.status;
+  const normalizedDecision = String(decision || '').trim().toUpperCase();
   return Boolean(result.accepted !== false)
-    && (decision === 'APPROVED_FOR_PAPER' || response?.accepted === true);
+    && (['APPROVED_FOR_PAPER', 'APPROVED_FOR_EXECUTION'].includes(normalizedDecision) || response?.accepted === true);
+}
+
+async function fetchRecentFilledSellOrderTimes({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, now = nowIso(), windowSeconds = 600 }) {
+  const headers = {
+    'APCA-API-KEY-ID': apiKeyId,
+    'APCA-API-SECRET-KEY': apiSecretKey,
+    'content-type': 'application/json',
+  };
+  const result = {};
+  try {
+    const response = await fetchImpl(`${baseUrl}/v2/orders?status=all&limit=500&direction=desc`, { method: 'GET', headers });
+    const body = await readJsonResponse(response);
+    if (!response.ok) return result;
+    const orders = Array.isArray(body) ? body : body?.orders || body?.data || [];
+    const nowMs = new Date(now).getTime();
+    const windowMs = Math.max(1, safeNumber(windowSeconds, 600)) * 1000;
+    for (const order of orders) {
+      if (String(order?.side || '').trim().toLowerCase() !== 'sell') continue;
+      if (String(order?.status || '').trim().toLowerCase() !== 'filled') continue;
+      const symbol = String(order?.symbol || '').trim().toUpperCase();
+      const filledAt = normalizeIso(order?.filled_at || order?.submitted_at);
+      const filledMs = filledAt ? new Date(filledAt).getTime() : NaN;
+      if (!symbol || !Number.isFinite(filledMs) || !Number.isFinite(nowMs)) continue;
+      if (nowMs - filledMs < 0 || nowMs - filledMs > windowMs) continue;
+      if (!result[symbol] || filledMs > new Date(result[symbol]).getTime()) result[symbol] = filledAt;
+    }
+  } catch {
+    // The persisted anti-churn state remains the fallback when order history is unavailable.
+  }
+  return result;
 }
 
 function summarizePostResult(result = {}) {
@@ -3947,8 +4128,8 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
   const candidateLifecycleEntry = side === 'buy'
     ? resolveCandidateLifecycleEntry(options.candidateLifecycleState, symbol, setupKey)
     : null;
-  const secondaryQuote = normalizeMarketData({
-    provider: options.twelveDataQuote ? 'twelvedata' : 'alpaca-secondary',
+  const secondaryQuote = options.twelveDataQuote ? normalizeMarketData({
+    provider: 'twelvedata',
     asset_type: 'stock',
     kind: 'quote',
     symbol,
@@ -3960,8 +4141,8 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     confidence: 80,
     reliability: 78,
     exchange: options.twelveDataQuote ? 'twelvedata' : 'alpaca',
-    raw_payload: options.twelveDataQuote || latestQuote,
-  }, { receivedAt, maxStalenessSeconds: 300 });
+    raw_payload: options.twelveDataQuote,
+  }, { receivedAt, maxStalenessSeconds: 300 }) : null;
   const marketContext = {
     source: 'stock-scanner',
     scanner: {
@@ -4092,6 +4273,7 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     timeframe: 'intraday',
     direction: side === 'sell' ? 'bearish' : 'bullish',
     action_candidate: side === 'sell' ? 'paper_sell' : 'paper_buy',
+    execution_action: side,
     side,
     order_type: 'market',
     time_in_force: 'day',
@@ -4112,6 +4294,8 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     risk_budget: side === 'buy' ? riskBudgetSizing : null,
     allow_bracket: false,
     confidence_score: normalizedPrimary.confidence_score,
+    opportunity_score: normalizedPrimary.confidence_score,
+    execution_eligible: side === 'buy' ? !options.previewMode : true,
     freshness_score: 100,
     source_quality_score: clamp(80 + (providerConfirmation?.confirmed ? 10 : -10), 0, 100),
     contradiction_score: providerConfirmation?.confirmed ? 4 : clamp(providerConfirmation?.discrepancy_score || 25, 0, 100),
@@ -4213,6 +4397,74 @@ function chunkSymbols(symbols, size) {
   return chunks;
 }
 
+function buildScannerUniverseAudit(sourceUniverse) {
+  if (!sourceUniverse) return null;
+  const leaders = sourceUniverse.marketLeaders || null;
+  return {
+    ...(sourceUniverse.regularWatch?.universe || {}),
+    source_counts: sourceUniverse.sourceCounts || null,
+    market_leaders: leaders ? {
+      status: leaders.status,
+      count: leaders.symbols?.length || 0,
+      gainers_count: leaders.gainers?.length || 0,
+      losers_count: leaders.losers?.length || 0,
+      most_actives_count: leaders.mostActives?.length || 0,
+      endpoint_status: leaders.endpoint_status || null,
+      fetched_at: leaders.fetched_at || null,
+      symbols: (leaders.symbols || []).slice(0, 200),
+    } : null,
+  };
+}
+
+async function fetchAlpacaMarketLeaders({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, moversTop = 50, mostActivesTop = 100, timeoutMs = 5000 } = {}) {
+  if (!fetchImpl || !apiKeyId || !apiSecretKey) {
+    return { symbols: [], gainers: [], losers: [], mostActives: [], status: 'missing_credentials' };
+  }
+  const headers = {
+    'APCA-API-KEY-ID': apiKeyId,
+    'APCA-API-SECRET-KEY': apiSecretKey,
+  };
+  const read = async (url) => {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), Math.max(250, Number(timeoutMs) || 5000)) : null;
+    try {
+      const response = await fetchImpl(url, { headers, ...(controller ? { signal: controller.signal } : {}) });
+      if (!response?.ok) return { body: null, status: `http_${response?.status || 'error'}` };
+      return { body: await response.json(), status: 'active' };
+    } catch (error) {
+      return {
+        body: null,
+        status: error?.name === 'AbortError' ? 'timeout' : 'request_error',
+        error: String(error?.cause?.code || error?.code || error?.message || error?.name || 'unknown_error').slice(0, 160),
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const [moversResult, activesResult] = await Promise.all([
+    read(`${trimTrailingSlash(baseUrl)}/v1beta1/screener/stocks/movers?top=${Math.max(1, Math.min(50, moversTop))}`),
+    read(`${trimTrailingSlash(baseUrl)}/v1beta1/screener/stocks/most-actives?by=volume&top=${Math.max(1, Math.min(100, mostActivesTop))}`),
+  ]);
+  const movers = moversResult.body;
+  const actives = activesResult.body;
+  const gainers = uniqueNormalizedSymbols((movers?.gainers || []).map((entry) => entry?.symbol || entry));
+  const losers = uniqueNormalizedSymbols((movers?.losers || []).map((entry) => entry?.symbol || entry));
+  const mostActives = uniqueNormalizedSymbols((actives?.most_actives || actives?.mostActives || []).map((entry) => entry?.symbol || entry));
+  const symbols = uniqueNormalizedSymbols([...gainers, ...mostActives, ...losers]);
+  return {
+    symbols,
+    gainers,
+    losers,
+    mostActives,
+    status: movers || actives ? (movers && actives ? 'active' : 'partial') : 'unavailable',
+    endpoint_status: {
+      movers: { status: moversResult.status, error: moversResult.error || null },
+      most_actives: { status: activesResult.status, error: activesResult.error || null },
+    },
+    fetched_at: nowIso(),
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
@@ -4242,6 +4494,7 @@ function normalizeIso(value) {
 module.exports = {
   APPROVED_LIVE_MARKET_SYMBOLS,
   buildStockCandidateForSymbol,
+  fetchAlpacaMarketLeaders,
   calculateSpreadRankPenalty,
   calculateEffectiveStopLossDollars,
   createStockScanner,

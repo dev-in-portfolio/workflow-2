@@ -5,6 +5,8 @@ const os = require('os');
 const path = require('path');
 const { migrateLivePolicyFile } = require('../src/live-policy-file');
 const { computePaperOutcome } = require('../src/paper-outcomes');
+const { buildPaperResultFromOrder } = require('../src/trading/execution-orchestrator');
+const { recordPaperOutcome } = require('../src/trading-loop');
 const { calculateEffectiveStopLossDollars } = require('../src/stock-scanner');
 const {
   buildLiveEntryOverrides,
@@ -109,6 +111,45 @@ test('completed trade outcomes retain duration and exit telemetry', () => {
   assert.equal(outcome.calibration_bucket, '80-89');
   assert.equal(outcome.win_loss, 'win');
   assert.equal(outcome.net_pnl > 0, true);
+});
+
+test('live broker fill price overrides the scanner midpoint for realized pnl', () => {
+  const signal = {
+    signal_id: 'stock_qttb_sell', symbol: 'QTTB', side: 'sell', entry_price: 22.605,
+    position_avg_entry_price: 20.96, quantity: 4,
+    market_context: { exit_state: { entry_price: 20.96, sell_price: 22.605, quantity: 4 } },
+  };
+  const paperResult = buildPaperResultFromOrder({
+    signal,
+    paperOrderRequest: { request_id: signal.signal_id, entry_price: 22.605, quantity: 4, execution_mode: 'live' },
+    paperOrder: { order_id: 'qttb-order', execution_mode: 'live' },
+    confirmation: { order: { id: 'qttb-order', status: 'filled', filled_avg_price: '21.20', filled_qty: '4', qty: '4', filled_at: '2026-07-13T19:48:09.359Z' } },
+  });
+  let recorded = null;
+  const outcome = recordPaperOutcome({ recordPaperOutcome(value) { recorded = value; return value; } }, signal, paperResult);
+  assert.equal(paperResult.average_fill_price, 21.2);
+  assert.equal(paperResult.fill_price_source, 'broker_order');
+  assert.equal(outcome.accounting_valid, true);
+  assert.equal(outcome.entry_price_source, 'broker_position_avg_entry_price');
+  assert.equal(Number(outcome.gross_pnl.toFixed(2)), 0.96);
+  assert.equal(recorded.gross_pnl, outcome.gross_pnl);
+});
+
+test('live filled order without a broker fill price is excluded from pnl', () => {
+  const signal = { signal_id: 'missing-fill', symbol: 'TEST', side: 'sell', entry_price: 25, position_avg_entry_price: 20, quantity: 2 };
+  const paperResult = buildPaperResultFromOrder({
+    signal,
+    paperOrderRequest: { request_id: signal.signal_id, entry_price: 25, quantity: 2, execution_mode: 'live' },
+    paperOrder: { order_id: 'missing-fill-order', execution_mode: 'live' },
+    confirmation: { order: { id: 'missing-fill-order', status: 'filled', filled_qty: '2', qty: '2' } },
+  });
+  const outcome = recordPaperOutcome({ recordPaperOutcome(value) { return value; } }, signal, paperResult);
+  assert.equal(paperResult.average_fill_price, null);
+  assert.equal(outcome.accounting_valid, false);
+  assert.deepEqual(outcome.accounting_reason_codes, ['BROKER_FILL_PRICE_UNCONFIRMED']);
+  assert.equal(outcome.gross_pnl, null);
+  assert.equal(outcome.net_pnl, null);
+  assert.equal(outcome.win_loss, 'unknown');
 });
 
 test('missing local policy reads as canonical safe defaults', () => withTempDirectory((directory) => {

@@ -82,10 +82,12 @@ class AlpacaTradeAdapter {
 
   async submitOrder(request) {
     const idempotencyKey = deriveClientOrderId(request);
+    const executionMode = this.paperTrading ? 'paper' : 'live';
     if (this.dryRun) {
       return {
         order_id: request.request_id || request.signal_id || `alpaca_dry_${Date.now()}`,
         status: 'dry_run',
+        execution_mode: executionMode,
         request,
         submitted_to: this.baseUrl,
         idempotency_key: idempotencyKey,
@@ -117,6 +119,7 @@ class AlpacaTradeAdapter {
           return {
             order_id: existingOrder.id || existingOrder.order_id || idempotencyKey,
             status: existingOrder.status || 'accepted',
+            execution_mode: executionMode,
             submitted_to: this.baseUrl,
             external_order: existingOrder,
             request,
@@ -147,6 +150,7 @@ class AlpacaTradeAdapter {
         return {
           order_id: existingOrder.id || existingOrder.order_id || idempotencyKey,
           status: existingOrder.status || 'accepted',
+          execution_mode: executionMode,
           submitted_to: this.baseUrl,
           external_order: existingOrder,
           request,
@@ -166,6 +170,7 @@ class AlpacaTradeAdapter {
     return {
       order_id: body.id || body.order_id || request.request_id || request.signal_id || null,
       status: body.status || 'accepted',
+      execution_mode: executionMode,
       submitted_to: this.baseUrl,
       external_order: body,
       request,
