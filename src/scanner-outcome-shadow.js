@@ -94,7 +94,7 @@ function recordScannerDecisionCycle({
     market_regime: marketRegime,
     approved_symbol_count: Array.isArray(approvedSymbols) ? approvedSymbols.length : 0,
     approved_symbols: Array.isArray(approvedSymbols) ? approvedSymbols.slice(0, 100) : [],
-    symbol_universe: symbolUniverse,
+    symbol_universe: compactSymbolUniverse(symbolUniverse),
     candidate_count: fullCandidates.length,
     selected_key: candidateLifecycle?.state?.selected_key || candidateLifecycle?.selection?.selected_key || null,
     selected_symbols: [...selectedSymbols],
@@ -117,7 +117,7 @@ function recordScannerDecisionCycle({
     recent_skips: Array.isArray(recentSkips) ? recentSkips.slice(0, 50) : [],
     decision_trace_count: normalizedTraces.length,
     decision_traces: normalizedTraces.slice(0, 250),
-    candidate_lifecycle_summary: candidateLifecycle?.summary || null,
+    candidate_lifecycle_summary: compactCandidateLifecycleSummary(candidateLifecycle?.summary),
     post_results: (Array.isArray(results) ? results : []).map(summarizePostResult),
     broker_state: brokerState ? {
       available: brokerState.available,
@@ -133,6 +133,32 @@ function recordScannerDecisionCycle({
   rotateJsonlIfNeeded(targetPath, { maxBytes: Number(env.SCANNER_DECISION_LOG_MAX_BYTES || 50 * 1024 * 1024), keepArchives: 3 });
   fs.appendFileSync(targetPath, `${JSON.stringify(record)}\n`, 'utf8');
   return { recorded: 1, path: targetPath, candidate_count: fullCandidates.length };
+}
+
+function compactSymbolUniverse(value) {
+  if (!value || typeof value !== 'object') return value || null;
+  const { scanned_today_symbols: _scannedTodaySymbols, ...summary } = value;
+  return summary;
+}
+
+function compactCandidateLifecycleSummary(value) {
+  if (!value || typeof value !== 'object') return value || null;
+  const {
+    watched_candidates: watchedCandidates = [],
+    eligible_candidates: eligibleCandidates = [],
+    selected_candidates: selectedCandidates = [],
+    entered_candidates: enteredCandidates = [],
+    expired_candidates: _expiredCandidates = [],
+    blocked_candidates: _blockedCandidates = [],
+    ...summary
+  } = value;
+  return {
+    ...summary,
+    watched_candidates: watchedCandidates.slice(0, 20),
+    eligible_candidates: eligibleCandidates.slice(0, 20),
+    selected_candidates: selectedCandidates.slice(0, 20),
+    entered_candidates: enteredCandidates.slice(0, 20),
+  };
 }
 
 function summarizeCandidates(candidates = [], { decisionId = null } = {}) {
@@ -296,4 +322,6 @@ module.exports = {
   buildDecisionId,
   buildCandidateId,
   normalizeCandidateKey,
+  compactSymbolUniverse,
+  compactCandidateLifecycleSummary,
 };

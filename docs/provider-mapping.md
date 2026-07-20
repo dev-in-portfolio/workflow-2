@@ -13,9 +13,11 @@ The system uses a canonical asset normalization layer so downstream logic does n
 The default provider chain is defined in `config/provider-map.json`.
 
 - Stocks:
-  - Quote: `alpaca`, `finnhub`, `fmp`
-  - Candles: `alpaca`, `twelvedata`, `fmp`
-  - News: `finnhub`, `fmp`
+  - Quote: `alpaca`, `twelvedata`, `massive`, `finnhub`
+  - Candles: `alpaca`, `twelvedata`, `massive`
+  - News: `finnhub`
+  - Fundamentals/reference: `fmp`
+  - Filings/risk context: `sec_edgar`
 - Crypto:
   - Quote: `alpaca`, `binance`, `coinbase`
   - Candles: `alpaca`, `binance`, `coinbase`

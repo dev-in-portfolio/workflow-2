@@ -38,6 +38,7 @@ function updateTrailingSnapshot({ positions = [], startDollars = 5, givebackDoll
     if (!symbol) continue;
     const unrealized = safeNumber(position.unrealized_pl ?? position.unrealizedPnl ?? position.unrealized_intraday_pl, null);
     const previousPeak = safeNumber(previousPositions[symbol]?.peak_unrealized_pl, null);
+    const previousMinimum = safeNumber(previousPositions[symbol]?.minimum_unrealized_pl, null);
     const active = Number.isFinite(unrealized) && unrealized >= startDollars;
     const previousPeakUpdatedAt = previousPositions[symbol]?.peak_updated_at
       || previousPositions[symbol]?.trailing_started_at
@@ -50,6 +51,9 @@ function updateTrailingSnapshot({ positions = [], startDollars = 5, givebackDoll
     const peak = Number.isFinite(unrealized)
       ? Math.max(unrealized, Number.isFinite(previousPeak) ? previousPeak : -Infinity)
       : (Number.isFinite(previousPeak) ? previousPeak : null);
+    const minimum = Number.isFinite(unrealized)
+      ? Math.min(unrealized, Number.isFinite(previousMinimum) ? previousMinimum : Infinity)
+      : (Number.isFinite(previousMinimum) ? previousMinimum : null);
     const trailingActive = Number.isFinite(peak) && peak >= startDollars;
     const sellAt = trailingActive ? peak - givebackDollars : null;
     const brokerOpenedAt = position.opened_at || position.filled_at || null;
@@ -61,6 +65,7 @@ function updateTrailingSnapshot({ positions = [], startDollars = 5, givebackDoll
       opened_at: openedAt,
       first_seen_at: firstSeenAt,
       peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
+      minimum_unrealized_pl: Number.isFinite(minimum) ? roundCurrency(minimum) : null,
       peak_updated_at: peakImproved ? nowIso() : (previousPeakUpdatedAt || trailingStartedAt || openedAt),
       current_unrealized_pl: Number.isFinite(unrealized) ? roundCurrency(unrealized) : null,
       trailing_active: trailingActive,

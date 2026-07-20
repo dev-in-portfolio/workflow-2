@@ -83,6 +83,7 @@ function createMinimalTradingServer(options = {}) {
     performance: state.performance,
     buyNotionalTarget: options.buyNotionalTarget,
     minBuyNotional: options.minBuyNotional,
+    executionMode: options.executionMode,
     source: 'minimal-v1',
     confirmationAttempts: options.confirmationAttempts || 6,
     confirmationDelayMs: options.confirmationDelayMs || 500,

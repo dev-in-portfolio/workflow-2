@@ -10,7 +10,27 @@ const {
   buildBoundedPriorityOverrideBonus,
   buildBoundedRegularWatchBonus,
 } = require('../src/scanner-selection-v2');
-const { recordScannerDecisionCycle, recordScannerSelectionShadow } = require('../src/scanner-outcome-shadow');
+const {
+  recordScannerDecisionCycle,
+  recordScannerSelectionShadow,
+  compactSymbolUniverse,
+  compactCandidateLifecycleSummary,
+} = require('../src/scanner-outcome-shadow');
+
+test('decision record compaction omits repeated universe and expired lifecycle payloads', () => {
+  const universe = compactSymbolUniverse({ scanned_today_count: 2, scanned_today_symbols: ['A', 'B'] });
+  const lifecycle = compactCandidateLifecycleSummary({
+    expired_count: 100,
+    expired_candidates: Array.from({ length: 100 }, (_, index) => ({ symbol: `X${index}`, history: ['large'] })),
+    blocked_candidates: [{ symbol: 'BLOCKED' }],
+    selected_candidates: [{ symbol: 'A' }],
+  });
+  assert.equal('scanned_today_symbols' in universe, false);
+  assert.equal('expired_candidates' in lifecycle, false);
+  assert.equal('blocked_candidates' in lifecycle, false);
+  assert.deepEqual(lifecycle.selected_candidates, [{ symbol: 'A' }]);
+  assert.equal(lifecycle.expired_count, 100);
+});
 const { summarizeScannerSelectionValidation } = require('../src/scanner-selection-validation');
 const { updateScannerCandidateOutcomes } = require('../src/scanner-selection-outcomes');
 

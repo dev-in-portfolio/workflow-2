@@ -54,7 +54,8 @@ function normalizeCandidateLifecycleState(state = {}) {
       ? state.candidate_queue
       : {};
   return {
-    version: state.version || '2026-06-25.candidate-lifecycle-state.1',
+    version: state.version || '2026-07-16.candidate-lifecycle-state.2',
+    trading_date: normalizeText(state.trading_date || null) || null,
     updated_at: state.updated_at || null,
     last_reconciled_at: state.last_reconciled_at || null,
     mode: normalizeMode(state.mode || state.scanner_mode || 'hunt'),
@@ -200,6 +201,23 @@ function normalizeText(value) {
   return String(value || '').trim();
 }
 
+function marketDate(value) {
+  const date = new Date(value || nowIso());
+  if (!Number.isFinite(date.getTime())) return null;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(date);
+}
+
+function inferStateTradingDate(state = {}) {
+  const timestamps = Object.values(state.candidates || {})
+    .flatMap((entry) => [entry?.last_seen_at, entry?.first_seen_at])
+    .filter(Boolean)
+    .sort()
+    .reverse();
+  return marketDate(timestamps[0] || state.last_reconciled_at || state.updated_at);
+}
+
 function normalizeCandidateKey(symbol, setupKey = null) {
   const normalizedSymbol = normalizeSymbol(symbol);
   if (!normalizedSymbol) return null;
@@ -295,6 +313,15 @@ function reconcileCandidateLifecycleState({
   adaptiveConfirmationEnabled = false,
 } = {}) {
   const state = normalizeCandidateLifecycleState(previousState);
+  const currentTradingDate = marketDate(now);
+  const priorTradingDate = state.trading_date || inferStateTradingDate(state);
+  if (priorTradingDate && currentTradingDate && priorTradingDate !== currentTradingDate) {
+    state.candidates = {};
+    state.selected_key = null;
+    state.selection_state = normalizeSelectionState({});
+    state.queue_state = normalizeQueueState({});
+  }
+  state.trading_date = currentTradingDate;
   const currentMode = resolveScannerMode({
     scannerMode,
     sessionGuards,
@@ -319,11 +346,15 @@ function reconcileCandidateLifecycleState({
 
   for (const candidate of queueLimitedCandidates) {
     const symbol = normalizeSymbol(candidate.symbol);
-    const setupKey = normalizeText(candidate.setupKey || candidate.setup_key || candidate.payload?.market_context?.setup_key || null) || null;
+    const setupKey = normalizeText(candidate.lifecycleSetupKey || candidate.lifecycle_setup_key || candidate.setupKey || candidate.setup_key || candidate.payload?.market_context?.setup_key || null) || null;
     const candidateKey = normalizeCandidateKey(symbol, setupKey);
     if (!candidateKey) continue;
     seenKeys.add(candidateKey);
-    const previous = prevMap.get(candidateKey) || {};
+    const storedPrevious = prevMap.get(candidateKey) || {};
+    // An expired record describes an old setup window. If the symbol appears
+    // again, start a new confirmation window instead of inheriting stale age,
+    // scan count, eligibility, or selection state from the prior setup.
+    const previous = normalizeStatus(storedPrevious.status) === 'expired' ? {} : storedPrevious;
     const latestRank = roundScore(safeNumber(
       candidate.rankScore
         ?? candidate.adjustedRankScore
@@ -503,6 +534,7 @@ function reconcileCandidateLifecycleState({
 
   const nextState = normalizeCandidateLifecycleState({
     version: state.version,
+    trading_date: currentTradingDate,
     updated_at: now,
     last_reconciled_at: now,
     mode: currentMode,

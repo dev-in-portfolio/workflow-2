@@ -5,6 +5,7 @@ const { extractMentionsFromRecord } = require('./symbol-extractor');
 const { scoreMarketConfirmation } = require('./market-confirmation-score');
 const { nowIso, safeNumber } = require('../util');
 const { buildSourceStatus, classifyHttpSourceStatus, fetchJsonWithTimeout, fetchTextWithTimeout, redactSourceMessage } = require('../source-fetch');
+const { createSecEdgarClient } = require('../sec-edgar-client');
 
 function resolvePhaseASourceRuntime(env = process.env, runtimeState = null) {
   const featureState = runtimeState || loadMemeMonitorState({ env, filePath: resolveMemeMonitorStatePath({ env }) });
@@ -431,7 +432,7 @@ async function fetchNasdaqHaltsSignals({ env, fetchImpl, symbols = [], timeoutMs
 }
 
 async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 5000, repoRoot = process.cwd() } = {}) {
-  const lookbackDays = Math.max(1, Number(env?.MEME_SEC_EDGAR_LOOKBACK_DAYS || 5) || 5);
+  const client = createSecEdgarClient({ env: { ...env, SEC_EDGAR_TIMEOUT_MS: env.SEC_EDGAR_TIMEOUT_MS || timeoutMs }, fetchImpl, dataDir: path.resolve(repoRoot, 'data', 'runtime') });
   if (!symbols.length) {
     return {
       sourceStatus: buildSourceStatus({ source: 'secEdgar', enabled: true, available: true, status: 'active', catalystsDetected: 0, riskWarnings: 0, lastRunAt: nowIso(), lastError: null }),
@@ -439,66 +440,50 @@ async function fetchSecEdgarSignals({ env, fetchImpl, symbols = [], timeoutMs = 
     };
   }
   try {
-    const tickerMap = await fetchSecTickerMap(fetchImpl, timeoutMs, repoRoot);
     const out = [];
-    for (const symbol of symbols) {
-      const entry = tickerMap.get(symbol.toUpperCase());
-      if (!entry) {
+    const limitedSymbols = symbols.slice(0, Math.max(1, Number(env.SEC_EDGAR_MAX_SYMBOLS_PER_CYCLE || 20)));
+    for (const symbol of limitedSymbols) {
+      const result = await client.detectNew(symbol);
+      if (!result.ok) {
         out.push({
           symbol,
           catalystScore: 0,
           riskBlockScore: 0,
-          reasonCodes: ['sec_cik_missing', 'sec_no_recent_catalyst'],
-          riskWarnings: ['sec_cik_missing'],
+          reasonCodes: [result.reasonCode || 'SEC_EDGAR_DATA_UNAVAILABLE'],
+          riskWarnings: result.reasonCode === 'SEC_EDGAR_CIK_UNRESOLVED' ? ['SEC_EDGAR_CIK_UNRESOLVED'] : [],
           details: { cik: null, recentFilings: [] },
           marketContext: { stale: false },
         });
         continue;
       }
-      const cik = String(entry.cik).padStart(10, '0');
-      const filings = await fetchSecFilings(fetchImpl, cik, timeoutMs, repoRoot);
-      const recent = filterRecentFilings(filings, lookbackDays);
+      const recent = result.filings || [];
       const riskWarnings = [];
-      const reasonCodes = ['sec_edgar_source_active'];
+      const reasonCodes = ['SEC_EDGAR_SOURCE_ACTIVE'];
       let catalystScore = 0;
       let riskBlockScore = 0;
       for (const filing of recent) {
-        const form = String(filing.form || '').toUpperCase();
-        if (form === '8-K') {
-          reasonCodes.push('sec_recent_8k_detected');
-          catalystScore = Math.max(catalystScore, 25);
-        } else {
-          reasonCodes.push('sec_recent_filing_detected');
-        }
-        if (['S-1', 'S-3', '424B', '424B5'].some((prefix) => form.startsWith(prefix))) {
-          reasonCodes.push('sec_offering_risk_detected');
-          riskWarnings.push('sec_offering_risk_detected');
+        const codes = filing.classification?.reasonCodes || [];
+        reasonCodes.push(...codes);
+        if (codes.includes('SEC_EDGAR_FILING_FOUND')) catalystScore = Math.max(catalystScore, 25);
+        if (codes.includes('SEC_EDGAR_FILING_RISK')) {
+          riskWarnings.push('SEC_EDGAR_FILING_RISK');
+          if (codes.includes('SEC_EDGAR_DILUTION_RISK')) riskWarnings.push('sec_offering_risk_detected');
           riskBlockScore = Math.max(riskBlockScore, 30);
         }
-        if (form.includes('RW') || form.includes('RS')) {
-          reasonCodes.push('sec_reverse_split_risk_detected');
-          riskWarnings.push('sec_reverse_split_risk_detected');
-          riskBlockScore = Math.max(riskBlockScore, 50);
-        }
-        if (form === 'S-1' || form === 'S-3' || form.startsWith('424')) {
-          reasonCodes.push('sec_registration_risk_detected');
-        }
       }
-      if (!recent.length) {
-        reasonCodes.push('sec_no_recent_catalyst');
-      }
+      if (!recent.length) reasonCodes.push('SEC_EDGAR_NO_RECENT_FILING');
       out.push({
         symbol,
         catalystScore,
         riskBlockScore,
         reasonCodes,
         riskWarnings,
-        details: { cik, recentFilings: recent.slice(0, 5) },
+        details: { cik: recent[0]?.cik || null, recentFilings: recent.slice(0, 5), newFilings: (result.newFilings || []).slice(0, 5) },
         marketContext: { stale: false },
       });
     }
     return {
-      sourceStatus: buildSourceStatus({ source: 'secEdgar', enabled: true, available: true, status: 'active', catalystsDetected: out.filter((entry) => entry.catalystScore > 0).length, riskWarnings: out.reduce((sum, entry) => sum + entry.riskWarnings.length, 0), lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ ...client.health(), source: 'secEdgar', enabled: true, available: true, status: 'active', catalystsDetected: out.filter((entry) => entry.catalystScore > 0).length, riskWarnings: out.reduce((sum, entry) => sum + entry.riskWarnings.length, 0), lastRunAt: nowIso(), lastError: null }),
       symbols: out,
     };
   } catch (error) {

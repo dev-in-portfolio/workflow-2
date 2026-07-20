@@ -2,6 +2,7 @@ const path = require('path');
 const { nowIso, resolveRepoRoot } = require('./util');
 const { JsonFileStore } = require('./storage');
 const { appendOperatorTimelineEvent } = require('./operator-timeline');
+const { refreshWorkflowPulseIfDue } = require('./workflow-pulse');
 
 function resolveScannerRuntimePath(env = process.env, repoRoot = resolveRepoRoot()) {
   return path.resolve(env.SCANNER_RUNTIME_STATE_PATH || path.join(repoRoot, 'data', 'state', 'scanner-runtime.json'));
@@ -35,6 +36,11 @@ function writeScannerRuntimeState(snapshot = {}, options = {}) {
         portfolio: payload.portfolio || null,
       },
     }, options);
+    refreshWorkflowPulseIfDue({
+      repoRoot: options.repoRoot || resolveRepoRoot(),
+      env: options.env || process.env,
+      scannerRuntime: payload,
+    });
   } catch {
     // Telemetry is read-only for operators; scanner execution should not fail if it cannot be written.
   }

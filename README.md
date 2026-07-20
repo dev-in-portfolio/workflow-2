@@ -316,6 +316,60 @@ It uses or coordinates:
 
 The scanner can post built candidates into the local trader endpoint, usually through the legacy compatibility route currently named `/paper-order`. That route name is a compatibility artifact and must not be interpreted as permission to downgrade the selected execution mode.
 
+### Twelve Data secondary confirmation
+
+Twelve Data is an optional, rate-limited confirmation source for the strongest final stock candidates. Alpaca remains the broad scanner, broker, account/position/open-order source of truth, and execution authority. Twelve Data never scans the full universe, never replaces broker data, and never makes stale Alpaca data acceptable.
+
+Put the real credential only in the ignored `.env.local` file:
+
+```dotenv
+TWELVE_DATA_API_KEY=PASTE_YOUR_KEY_HERE
+TWELVE_DATA_ENABLED=true
+```
+
+The provider remains off unless both values are present. Adding a key alone does not enable it. The conservative defaults confirm at most two shortlisted symbols per cycle, cache quotes for 60 seconds, coalesce simultaneous requests for the same symbol, limit usage to 8 credits per minute, and stop normal usage at 760 of the configured 800 daily credits so 40 credits remain reserved. The local daily estimate resets at 00:00 UTC and is persisted under `data/runtime/`; provider metadata remains authoritative when available.
+
+Source health appears in the existing dashboard source-health views and includes request/cache counters, estimated daily usage, latency, freshness, and sanitized authentication state. It never contains the credential.
+
+### Supporting external intelligence providers
+
+Alpaca remains the broad scanner, broker, account, positions, open-orders, and execution source of truth. The providers below only confirm final candidates or enrich them; they never bypass reconciliation, lifecycle controls, risk decisions, partial-fill/open-order checks, execution mode, or human approval.
+
+- **SEC EDGAR** supplies official filing metadata and conservative filing-risk/catalyst classifications. It has no API key, but SEC requests require an identifying `SEC_EDGAR_USER_AGENT`. Requests are cached, coalesced, rate limited, and newly observed accession numbers are persisted under `data/runtime/` so restarts do not repeatedly announce the same filing.
+- **Massive (formerly Polygon.io)** supplies entitled, timestamped finalist quote/snapshot confirmation. `MASSIVE_API_KEY` is canonical; `POLYGON_API_KEY` remains a deprecated compatibility alias and is used only when the canonical value is absent. Delayed, stale, end-of-day, timestamp-unknown, unauthorized, or price-mismatched data cannot pass live confirmation.
+- **Finnhub** supplies timestamped finalist quote confirmation plus cached company news and profiles. Only fresh quotes within the configured Alpaca price tolerance can count as confirmation; news and profiles are context only.
+- **Financial Modeling Prep (FMP)** supplies long-lived profile/fundamental enrichment and evidence-backed flags such as micro-cap or low-float. FMP fundamentals explicitly have `liveConfirmationEligible: false`. The old `DATA_PROVIDER_FALLBACK=fmp` setting is deprecated; use `DATA_PROVIDER_FUNDAMENTALS=fmp`.
+
+The adapters expose additional cached, on-demand intelligence without polling it every scanner cycle: Massive reference data, aggregates, dividends, and news; Finnhub market status, company metrics, and earnings calendars; FMP statements, cash flows, ratios, key metrics, and earnings; and SEC company facts or explicitly selected, size-bounded filing documents. These responses are marked `liveConfirmationEligible: false` unless a fresh entitled Massive/Finnhub quote independently passes the configured live-confirmation checks.
+
+Provider health tracks request windows, estimated daily usage, cache activity, authentication/entitlement state, cooldowns, freshness, and circuit state. Repeated failures open a bounded circuit, and rate/quota responses enter cooldown rather than retrying in a tight loop. Capability values reported as `untested` are not treated as entitled or live.
+
+All providers are disabled unless both their enabled flag and required credential/identity are present. A key alone never enables a source. Put real values only in `.env.local`:
+
+```dotenv
+# SEC EDGAR — no key
+SEC_EDGAR_ENABLED=true
+SEC_EDGAR_USER_AGENT=workflow-2/1.0 contact-email@example.com
+
+# Massive, formerly Polygon.io
+MASSIVE_ENABLED=true
+MASSIVE_API_KEY=PASTE_YOUR_MASSIVE_KEY_HERE
+
+# Finnhub
+FINNHUB_ENABLED=true
+FINNHUB_API_KEY=PASTE_YOUR_FINNHUB_KEY_HERE
+
+# Financial Modeling Prep
+FMP_ENABLED=true
+FMP_API_KEY=PASTE_YOUR_FMP_KEY_HERE
+```
+
+Massive and Finnhub are limited to final candidates (two per cycle by default). SEC and FMP use bounded symbol limits and longer caches. FMP also preserves a daily request reserve. Source-health views expose enabled/configured state, capability status, freshness, request/cache counters, cooldowns, and quota estimates without returning credentials or the SEC contact identity. During optional enrichment outages the source degrades visibly; when independent live confirmation is required, unavailable/stale/mismatched Massive or Finnhub data does not satisfy that requirement.
+
+When Twelve Data is enabled, independent confirmation is required for shortlisted buy candidates. An unavailable, stale, malformed, rate-limited, unauthenticated, quota-blocked, or price-mismatched result cannot count as confirmation and blocks that candidate with a structured reason. When the feature is disabled, existing Alpaca-only behavior remains unchanged. In either case, execution mode, Alpaca reconciliation, open-order checks, partial-fill handling, and the deterministic risk gate remain authoritative.
+
+To disable the integration, set `TWELVE_DATA_ENABLED=false` and restart the workflow. Free-tier limits can change; adjust the documented environment limits conservatively for the actual account rather than relying on provider errors.
+
 ---
 
 ## Hot Slot Rotation
@@ -665,3 +719,17 @@ Future audits and implementation work must be source-code-first.
 Do not infer a generic project structure. Do not invent files, middleware, databases, auth systems, or missing protections. Verify against the actual code, tests, package scripts, and runtime paths.
 
 Do not treat paper mode as the safe replacement for another selected mode. Preserve operator intent and fail closed on invalid configuration rather than changing runtime mode.
+# Workflow pulse
+
+Workflow 2 continuously writes a sanitized diagnostic snapshot to `data/runtime/workflow-pulse.json` (default every 20 seconds). Run `npm run pulse` to refresh it immediately. The pulse is intended to answer operator questions without reconstructing state from separate dashboard tiles.
+
+It includes broker reconciliation and safe account totals, positions and open orders, full-session trade performance, exact exit triggers, stop overruns, peak-profit capture, entry-quality cohorts, decision timing, the candidate funnel and closest rejects, idle-capital and shadow-outcome coverage, position exposure, provider evidence, source health, safe configuration changes, and a deterministic primary/secondary diagnosis. It explicitly labels unavailable measurements instead of filling them with zeroes; older records do not contain adverse excursion or 1/3/5-minute post-exit prices.
+
+Configure only the path and refresh interval if needed:
+
+```dotenv
+WORKFLOW_PULSE_PATH=data/runtime/workflow-pulse.json
+WORKFLOW_PULSE_INTERVAL_SECONDS=20
+```
+
+The runtime file is local and ignored by Git. It excludes credentials, authorization headers, and raw provider payloads.

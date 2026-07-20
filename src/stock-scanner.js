@@ -3,6 +3,10 @@ const path = require('path');
 const { buildProviderConfirmationFromContext, normalizeMarketData } = require('./market-data');
 const { parseBool } = require('./config');
 const { nowIso, safeNumber, hashObject, clamp, resolveRepoRoot } = require('./util');
+const { createMassiveClient } = require('./massive-client');
+const { createFinnhubClient } = require('./finnhub-client');
+const { createFmpClient } = require('./fmp-client');
+const { createSecEdgarClient } = require('./sec-edgar-client');
 const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
 const { loadRegularWatchState, resolveRegularWatchStatePath } = require('./regular-watch/regular-watch-feature-state');
 const { loadRegularWatchStatus, resolveRegularWatchStatusPath } = require('./regular-watch/regular-watch-status');
@@ -59,8 +63,10 @@ const {
 } = require('./anti-churn-engine');
 const { createLogger } = require('./logger');
 const { calculateRiskBudgetSize } = require('./risk-budget-sizing');
-const { calculateBuyingPowerSize } = require('./buying-power-sizing');
+const { calculateBuyingPowerSize, calculateSlotAwareDeploymentPct } = require('./buying-power-sizing');
 const { calculateStructureAwareStop } = require('./structure-stops');
+const { createTwelveDataClient, compareTwelveDataConfirmation } = require('./twelve-data-client');
+const { buildIntradayMomentumFeatures, updateMomentumEpisode } = require('./intraday-momentum');
 
 const SCANNER_SYMBOL_SOURCE_ALIASES = {
   approved: 'approved',
@@ -131,6 +137,29 @@ function createStockScanner(options = {}) {
   const baseUrl = trimTrailingSlash(options.baseUrl || env.ALPACA_DATA_BASE_URL || 'https://data.alpaca.markets');
   const twelveDataApiKey = options.twelveDataApiKey || env.TWELVE_DATA_API_KEY || env.TWELVEDATA_API_KEY || '';
   const twelveDataBaseUrl = trimTrailingSlash(options.twelveDataBaseUrl || env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com');
+  const twelveDataEnabled = options.twelveDataEnabled ?? parseBool(env.TWELVE_DATA_ENABLED, false);
+  const twelveDataClient = options.twelveDataClient || createTwelveDataClient({
+    env,
+    fetchImpl: marketFetch,
+    logger: options.logger,
+    repoRoot,
+    enabled: twelveDataEnabled,
+    apiKey: twelveDataApiKey,
+    baseUrl: twelveDataBaseUrl,
+    timeoutMs: options.twelveDataTimeoutMs,
+    cacheSeconds: options.twelveDataCacheSeconds,
+    maxRequestsPerMinute: options.twelveDataMaxRequestsPerMinute,
+    maxDailyCredits: options.twelveDataMaxDailyCredits,
+    dailyReserveCredits: options.twelveDataDailyReserveCredits,
+    maxSymbolsPerCycle: options.twelveDataMaxSymbolsPerCycle,
+    maxPriceDifferencePct: options.twelveDataMaxPriceDifferencePct,
+    maxStalenessSeconds: options.twelveDataMaxStalenessSeconds,
+    statePath: options.twelveDataUsageStatePath,
+  });
+  const massiveClient = options.massiveClient || createMassiveClient({ env, fetchImpl: marketFetch, dataDir: path.resolve(dataDir, 'runtime') });
+  const finnhubClient = options.finnhubClient || createFinnhubClient({ env, fetchImpl: marketFetch, dataDir: path.resolve(dataDir, 'runtime') });
+  const fmpClient = options.fmpClient || createFmpClient({ env, fetchImpl: marketFetch, dataDir: path.resolve(dataDir, 'runtime') });
+  const secEdgarClient = options.secEdgarClient || createSecEdgarClient({ env, fetchImpl: marketFetch, dataDir: path.resolve(dataDir, 'runtime') });
   const localBaseUrl = trimTrailingSlash(options.localBaseUrl || options.local_url || '');
   const enabled = options.enabled !== false;
   const approvedSymbols = options.symbols
@@ -163,17 +192,23 @@ function createStockScanner(options = {}) {
   const stalledWinnerMaxMinutesSincePeak = Math.max(1, safeNumber(options.stalledWinnerMaxMinutesSincePeak ?? env.STOCK_SCANNER_STALLED_WINNER_MAX_MINUTES_SINCE_PEAK, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMaxMinutesSincePeak));
   const stalledWinnerMinProfitDollars = Math.max(0, safeNumber(options.stalledWinnerMinProfitDollars ?? env.STOCK_SCANNER_STALLED_WINNER_MIN_PROFIT_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalledWinnerMinProfitDollars));
   const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars ?? env.SELL_NET_PROFIT_FLOOR_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.sellNetProfitFloorDollars));
-  const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? Boolean(twelveDataApiKey);
+  const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? twelveDataEnabled;
   const singleSourceMomentumEnabled = options.singleSourceMomentumEnabled ?? parseBool(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_ENABLED, false);
   const singleSourceMomentumMinRankScore = Math.max(0, safeNumber(options.singleSourceMomentumMinRankScore ?? env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_MIN_RANK_SCORE, 500));
   const singleProviderQualifiedEnabled = options.singleProviderQualifiedEnabled ?? parseBool(env.STOCK_SCANNER_SINGLE_PROVIDER_QUALIFIED_ENABLED, true);
   const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MIN_OPPORTUNITY_SCORE, 70));
   const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MAX_SPREAD_PCT, 0.75));
+  const minPrice = Math.max(0.01, safeNumber(options.minPrice ?? scannerConfig.minPrice ?? env.STOCK_SCANNER_MIN_PRICE, 0.01));
   const minMovePct = Math.max(0, safeNumber(options.minMovePct ?? scannerConfig.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minMovePct : 0));
   const requireRecentMomentum = options.requireRecentMomentum ?? scannerConfig.requireRecentMomentum ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, stricterLiveEntryDefaults);
   const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? scannerConfig.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03));
   const minRecentRangePct = Math.max(0, safeNumber(options.minRecentRangePct ?? scannerConfig.minRecentRangePct ?? env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct : 0.05));
   const minRecentCloseLocationPct = Math.max(0, Math.min(100, safeNumber(options.minRecentCloseLocationPct ?? scannerConfig.minRecentCloseLocationPct ?? env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct : 60)));
+  const requireRecentMove = options.requireRecentMove ?? scannerConfig.requireRecentMove ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOVE, false);
+  const prolongedMomentumEnabled = options.prolongedMomentumEnabled ?? parseBool(env.STOCK_SCANNER_PROLONGED_MOMENTUM_ENABLED, stricterLiveEntryDefaults);
+  const prolongedMomentumMinScans = Math.max(2, Math.floor(safeNumber(options.prolongedMomentumMinScans ?? env.STOCK_SCANNER_PROLONGED_MOMENTUM_MIN_SCANS, 3)));
+  const prolongedMomentumCooldownSeconds = Math.max(0, Math.floor(safeNumber(options.prolongedMomentumCooldownSeconds ?? env.STOCK_SCANNER_WEAK_MOMENTUM_COOLDOWN_SECONDS, 0)));
+  const prolongedMomentumMaxPriceFadePct = Math.max(0, safeNumber(options.prolongedMomentumMaxPriceFadePct ?? env.STOCK_SCANNER_PROLONGED_MOMENTUM_MAX_PRICE_FADE_PCT, 0.05));
   const allowContrarianEntries = options.allowContrarianEntries
     ?? parseBool(env.STOCK_SCANNER_ALLOW_CONTRARIAN_ENTRIES, !stricterLiveEntryDefaults);
   const blockBuys = options.blockBuys ?? parseBool(env.BLOCK_BUYS, false);
@@ -217,10 +252,12 @@ function createStockScanner(options = {}) {
   const setupFatigueCleanWinRecoveryPoints = Math.max(0, safeNumber(options.setupFatigueCleanWinRecoveryPoints ?? env.SETUP_FATIGUE_CLEAN_WIN_RECOVERY_POINTS, 10));
   const setupFatiguePauseSeconds = Math.max(0, safeNumber(options.setupFatiguePauseSeconds ?? env.SETUP_FATIGUE_PAUSE_SECONDS, 15 * 60));
   const setupFatigueMaxPauseSeconds = Math.max(0, safeNumber(options.setupFatigueMaxPauseSeconds ?? env.SETUP_FATIGUE_MAX_PAUSE_SECONDS, 90 * 60));
-  const sessionGuardsEnabled = options.sessionGuardsEnabled ?? parseBool(env.SESSION_GUARDS_ENABLED, false);
+  const sessionGuardsEnabled = options.sessionGuardsEnabled ?? parseBool(env.SESSION_GUARDS_ENABLED, stricterLiveEntryDefaults);
   const stopoutClusterBlockMinutes = Math.max(0, safeNumber(options.stopoutClusterBlockMinutes ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_MINUTES, 30));
   const stopoutClusterBlockCount = Math.max(0, Math.floor(safeNumber(options.stopoutClusterBlockCount ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_COUNT, 2)));
   const maxBuyRiskScore = Math.max(0, safeNumber(options.maxBuyRiskScore ?? env.STOCK_SCANNER_MAX_BUY_RISK_SCORE, 70));
+  const leveragedProductBuysEnabled = options.leveragedProductBuysEnabled
+    ?? parseBool(env.STOCK_SCANNER_LEVERAGED_PRODUCT_BUYS_ENABLED, false);
   const spreadRankPenaltyThresholdPct = Math.max(0, safeNumber(options.spreadRankPenaltyThresholdPct ?? env.STOCK_SCANNER_SPREAD_RANK_PENALTY_THRESHOLD_PCT, 0.75));
   const spreadRankPenaltyPerPct = Math.max(0, safeNumber(options.spreadRankPenaltyPerPct ?? env.STOCK_SCANNER_SPREAD_RANK_PENALTY_PER_PCT, 25));
   const spreadRankPenaltyCap = Math.max(0, safeNumber(options.spreadRankPenaltyCap ?? env.STOCK_SCANNER_SPREAD_RANK_PENALTY_CAP, 80));
@@ -275,6 +312,29 @@ function createStockScanner(options = {}) {
   const candidateMinSecondsBeforeEntry = Math.max(0, Math.floor(safeNumber(options.candidateMinSecondsBeforeEntry ?? env.CANDIDATE_MIN_SECONDS_BEFORE_ENTRY, 30)));
   const finalQuoteCheckEnabled = options.finalQuoteCheckEnabled ?? parseBool(env.FINAL_QUOTE_CHECK_ENABLED, stricterLiveEntryDefaults);
   const finalQuoteMaxAgeSeconds = Math.max(1, safeNumber(options.finalQuoteMaxAgeSeconds ?? env.FINAL_QUOTE_MAX_AGE_SECONDS, 5));
+  const finalQuoteMaxSpreadPct = Math.max(0, safeNumber(options.finalQuoteMaxSpreadPct ?? env.MAX_SPREAD_SLIPPAGE_PCT, 0.15));
+  const postOpenSetupGateEnabled = options.postOpenSetupGateEnabled ?? parseBool(env.STOCK_SCANNER_POST_OPEN_SETUP_GATE_ENABLED, false);
+  const postOpenSetupGateAfterMinutes = Math.max(0, safeNumber(options.postOpenSetupGateAfterMinutes ?? env.STOCK_SCANNER_POST_OPEN_SETUP_GATE_AFTER_MINUTES, 30));
+  const postOpenAllowedSetups = parseSymbolList(options.postOpenAllowedSetups ?? env.STOCK_SCANNER_POST_OPEN_ALLOWED_SETUPS, ['MOMENTUM_CONTINUATION', 'PULLBACK_CONTINUATION']);
+  const postOpenMinOpportunityScore = Math.max(0, safeNumber(options.postOpenMinOpportunityScore ?? env.STOCK_SCANNER_POST_OPEN_MIN_OPPORTUNITY_SCORE, 70));
+  const blockUnclassifiedSetups = options.blockUnclassifiedSetups ?? parseBool(env.STOCK_SCANNER_BLOCK_UNCLASSIFIED_SETUPS, false);
+  const intradayMomentumEnabled = options.intradayMomentumEnabled ?? parseBool(env.STOCK_SCANNER_INTRADAY_MOMENTUM_ENABLED, false);
+  const intradayMomentumShortlistSize = Math.max(2, Math.min(50, Math.floor(safeNumber(options.intradayMomentumShortlistSize ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_SHORTLIST_SIZE, 24))));
+  const intradayMomentumLookbackBars = Math.max(16, Math.min(60, Math.floor(safeNumber(options.intradayMomentumLookbackBars ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_LOOKBACK_BARS, 20))));
+  const intradayMomentumCacheSeconds = Math.max(5, safeNumber(options.intradayMomentumCacheSeconds ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_CACHE_SECONDS, 15));
+  const intradayMomentumMaxEpisodeAgeSeconds = Math.max(60, safeNumber(options.intradayMomentumMaxEpisodeAgeSeconds ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MAX_EPISODE_AGE_SECONDS, 420));
+  const intradayMomentumConfig = {
+    minBars: Math.max(6, safeNumber(options.intradayMomentumMinBars ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MIN_BARS, 8)),
+    minOneMinuteReturnPct: safeNumber(options.intradayMomentumMinOneMinuteReturnPct ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MIN_1M_RETURN_PCT, 0.03),
+    minThreeMinuteReturnPct: safeNumber(options.intradayMomentumMinThreeMinuteReturnPct ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MIN_3M_RETURN_PCT, 0.12),
+    maxThreeMinuteReturnPct: safeNumber(options.intradayMomentumMaxThreeMinuteReturnPct ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MAX_3M_RETURN_PCT, 1.0),
+    minFiveMinuteReturnPct: safeNumber(options.intradayMomentumMinFiveMinuteReturnPct ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MIN_5M_RETURN_PCT, 0.20),
+    minFifteenMinuteReturnPct: safeNumber(options.intradayMomentumMinFifteenMinuteReturnPct ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MIN_15M_RETURN_PCT, 0.25),
+    minTrendConsistency: safeNumber(options.intradayMomentumMinTrendConsistency ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MIN_TREND_CONSISTENCY, 0.55),
+    minVolumeAcceleration: safeNumber(options.intradayMomentumMinVolumeAcceleration ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MIN_VOLUME_ACCELERATION, 0.9),
+    maxFadeFromHighPct: safeNumber(options.intradayMomentumMaxFadeFromHighPct ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MAX_FADE_FROM_HIGH_PCT, 0.45),
+    maxBarAgeSeconds: safeNumber(options.intradayMomentumMaxBarAgeSeconds ?? env.STOCK_SCANNER_INTRADAY_MOMENTUM_MAX_BAR_AGE_SECONDS, 120),
+  };
   const adaptiveConfirmationEnabled = options.adaptiveConfirmationEnabled ?? parseBool(env.ADAPTIVE_CONFIRMATION_ENABLED, true);
   const fastMomentumMinOpportunityScore = Math.max(0, safeNumber(options.fastMomentumMinOpportunityScore ?? env.FAST_MOMENTUM_MIN_OPPORTUNITY_SCORE, 90));
   const fastMomentumMinOneMinuteReturnPct = Math.max(0, safeNumber(options.fastMomentumMinOneMinuteReturnPct ?? env.FAST_MOMENTUM_MIN_ONE_MINUTE_RETURN_PCT, 0.3));
@@ -303,6 +363,10 @@ function createStockScanner(options = {}) {
     timer: null,
     lastRunAt: null,
     hotSlotRotation: null,
+    momentumPersistence: new Map(),
+    intradayMomentumEpisodes: new Map(),
+    intradayMomentumBarCache: new Map(),
+    latestIntradayMomentum: null,
   };
   let latestSourceUniverse = null;
   let latestActiveSymbols = approvedSymbols.slice();
@@ -405,15 +469,79 @@ function createStockScanner(options = {}) {
         baseUrl,
         symbols: activeSymbols,
       });
-      const twelveDataSymbols = activeSymbols;
-      const twelveDataQuotes = twelveDataApiKey
-        ? await fetchTwelveDataBundle({
+      const intradayMomentumSymbols = intradayMomentumEnabled
+        ? selectIntradayMomentumShortlist(bundle, activeSymbols, intradayMomentumShortlistSize, {
+          minPrice,
+          maxSpreadPct: Math.max(finalQuoteMaxSpreadPct * 2, finalQuoteMaxSpreadPct),
+          maxAgeSeconds: Math.max(120, maxStalenessSeconds),
+          receivedAt,
+        })
+        : [];
+      const intradayBars = intradayMomentumEnabled
+        ? await fetchIntradayMomentumBars({
           fetchImpl: marketFetch,
-          apiKey: twelveDataApiKey,
-          baseUrl: twelveDataBaseUrl,
-          symbols: twelveDataSymbols,
+          apiKeyId,
+          apiSecretKey,
+          baseUrl,
+          symbols: intradayMomentumSymbols,
+          lookbackBars: intradayMomentumLookbackBars,
+          cacheSeconds: intradayMomentumCacheSeconds,
+          cache: state.intradayMomentumBarCache,
         })
         : {};
+      for (const symbol of intradayMomentumSymbols) {
+        const snapshot = bundle.snapshots?.[symbol];
+        if (!snapshot) continue;
+        snapshot.intradayBars = intradayBars[symbol] || [];
+        const features = buildIntradayMomentumFeatures(snapshot.intradayBars, { receivedAt, ...intradayMomentumConfig });
+        const episode = updateMomentumEpisode(state.intradayMomentumEpisodes.get(symbol), features, {
+          symbol,
+          receivedAt,
+          maxEpisodeAgeSeconds: intradayMomentumMaxEpisodeAgeSeconds,
+        });
+        state.intradayMomentumEpisodes.set(symbol, episode);
+        snapshot.intradayMomentum = features;
+        snapshot.momentumEpisode = episode;
+      }
+      state.latestIntradayMomentum = {
+        updated_at: receivedAt,
+        shortlisted_symbols: intradayMomentumSymbols,
+        symbols_with_bars: intradayMomentumSymbols.filter((symbol) => (intradayBars[symbol] || []).length > 0).length,
+        episodes: intradayMomentumSymbols.map((symbol) => {
+          const snapshot = bundle.snapshots?.[symbol] || {};
+          const features = snapshot.intradayMomentum || null;
+          const episode = snapshot.momentumEpisode || null;
+          return {
+            symbol,
+            active: Boolean(episode?.active),
+            episode_id: episode?.active ? episode.episode_id : null,
+            bar_count: features?.bar_count ?? 0,
+            three_minute_return_pct: features?.three_minute_return_pct ?? null,
+            five_minute_return_pct: features?.five_minute_return_pct ?? null,
+            trend_consistency: features?.trend_consistency ?? null,
+            volume_acceleration: features?.volume_acceleration ?? null,
+            reason_codes: features?.reason_codes || [],
+          };
+        }),
+      };
+      const twelveDataSymbols = selectTwelveDataShortlist(bundle, activeSymbols, twelveDataClient.config.maxSymbolsPerCycle);
+      const twelveDataResults = twelveDataEnabled
+        ? await twelveDataClient.getQuotes(twelveDataSymbols)
+        : {};
+      const twelveDataQuotes = Object.fromEntries(Object.entries(twelveDataResults)
+        .map(([symbol, result]) => [symbol, result?.ok ? result.quote : null]));
+      for (const [symbol, result] of Object.entries(twelveDataResults)) {
+        options.logger({
+          level: result?.ok ? 'info' : 'warn',
+          event: 'twelve_data_confirmation_result',
+          message: 'Twelve Data shortlist confirmation completed',
+          provider: 'twelve_data',
+          symbol,
+          confirmed: Boolean(result?.ok),
+          reason_code: result?.reason_code || 'TWELVE_DATA_UNAVAILABLE',
+          cached: Boolean(result?.cache?.hit),
+        });
+      }
       const accountBaseUrl = options.accountBaseUrl || options.tradingBaseUrl || options.accountUrl || trimTrailingSlash(env.ALPACA_API_BASE_URL || 'https://paper-api.alpaca.markets');
       const positionsState = await fetchPositions({
         fetchImpl: marketFetch,
@@ -736,15 +864,35 @@ function createStockScanner(options = {}) {
         singleProviderQualifiedEnabled,
         singleProviderMinOpportunityScore,
         singleProviderMaxSpreadPct,
+        minPrice,
+        postOpenSetupGateEnabled,
+        postOpenSetupGateAfterMinutes,
+        postOpenAllowedSetups,
+        postOpenMinOpportunityScore,
+        blockUnclassifiedSetups,
+        intradayMomentumEnabled,
+        intradayMomentumConfig,
+        intradayMomentumShortlistSize,
+        intradayMomentumLookbackBars,
+        intradayMomentumCacheSeconds,
+        intradayMomentumMaxEpisodeAgeSeconds,
         minMovePct,
         requireRecentMomentum,
         minRecentMovePct,
         minRecentRangePct,
         minRecentCloseLocationPct,
+        requireRecentMove,
+        prolongedMomentumEnabled,
+        prolongedMomentumMinScans,
+        prolongedMomentumCooldownSeconds,
+        prolongedMomentumMaxPriceFadePct,
+        momentumPersistence: state.momentumPersistence,
         allowContrarianEntries,
         blockBuys,
         sellMaxPriceDiffPct,
         twelveDataQuotes,
+        twelveDataResults,
+        maxPriceDiffPct: twelveDataClient.config.maxPriceDifferencePct,
         openOrders,
         portfolio,
         skipTracker,
@@ -866,6 +1014,16 @@ function createStockScanner(options = {}) {
         },
       });
       candidateLifecycleResult = computedCandidateLifecycleResult;
+      if (twelveDataEnabled && twelveDataSymbols.length && !allBuyCandidates.length) {
+        options.logger({
+          level: 'warn',
+          event: 'twelve_data_confirmation_no_eligible_candidate',
+          message: 'Twelve Data-confirmed shortlist produced no eligible buy candidate',
+          provider: 'twelve_data',
+          symbols: twelveDataSymbols,
+          skip_summary: skipTracker.summary(),
+        });
+      }
       if (!options.candidateLifecycleState && candidateLifecycleResult?.state) {
         saveCandidateLifecycleState(candidateLifecycleResult.state, { env, repoRoot: resolveRepoRoot() });
       }
@@ -906,15 +1064,24 @@ function createStockScanner(options = {}) {
           singleProviderQualifiedEnabled,
           singleProviderMinOpportunityScore,
           singleProviderMaxSpreadPct,
+          minPrice,
+          postOpenSetupGateEnabled,
+          postOpenSetupGateAfterMinutes,
+          postOpenAllowedSetups,
+          postOpenMinOpportunityScore,
+          blockUnclassifiedSetups,
           minMovePct,
           requireRecentMomentum,
           minRecentMovePct,
           minRecentRangePct,
           minRecentCloseLocationPct,
+          requireRecentMove,
           allowContrarianEntries,
           blockBuys,
           sellMaxPriceDiffPct,
           twelveDataQuotes,
+          twelveDataResults,
+          maxPriceDiffPct: twelveDataClient.config.maxPriceDifferencePct,
           openOrders,
           portfolio,
           skipTracker: createSkipTracker(),
@@ -960,6 +1127,7 @@ function createStockScanner(options = {}) {
           stopoutClusterBlockMinutes,
           stopoutClusterBlockCount,
           maxBuyRiskScore,
+          leveragedProductBuysEnabled,
           spreadRankPenaltyThresholdPct,
           spreadRankPenaltyPerPct,
           spreadRankPenaltyCap,
@@ -1058,8 +1226,39 @@ function createStockScanner(options = {}) {
       state.hotSlotRotation = summarizeHotSlotRotationRuntime(rotationPlan, hotSlotRotationFeatureState);
 
       const results = [];
+      const enrichmentCounts = { massive: 0, finnhub: 0, sec_edgar: 0, fmp: 0 };
       const postCandidate = async (candidate) => {
         if (!candidate) return null;
+        if (candidate.payload?.side === 'buy') {
+          const primaryPrice = candidate.payload?.price ?? candidate.payload?.entry_price ?? null;
+          const confirmations = [];
+          if (parseBool(env.MASSIVE_ENABLED, false) && enrichmentCounts.massive < Math.max(0, Number(env.MASSIVE_MAX_SYMBOLS_PER_CYCLE || 2))) {
+            enrichmentCounts.massive += 1;
+            confirmations.push(await massiveClient.quote(candidate.symbol, primaryPrice));
+          }
+          if (parseBool(env.FINNHUB_ENABLED, false) && enrichmentCounts.finnhub < Math.max(0, Number(env.FINNHUB_MAX_SYMBOLS_PER_CYCLE || 2))) {
+            enrichmentCounts.finnhub += 1;
+            confirmations.push(await finnhubClient.quote(candidate.symbol, primaryPrice));
+          }
+          const passed = confirmations.find((result) => result?.ok && result?.freshness === 'real_time');
+          candidate.payload.market_context = candidate.payload.market_context || {};
+          candidate.payload.market_context.external_provider_confirmations = confirmations.map((result) => ({ provider: result.provider, confirmed: Boolean(result.ok), reason_code: result.reasonCode || (result.ok ? `${String(result.provider).toUpperCase()}_REALTIME_CONFIRMED` : null), freshness: result.freshness || 'unknown', age_seconds: result.ageSeconds ?? null, difference_pct: result.differencePct ?? null, cached: Boolean(result.cached) }));
+          if (passed) {
+            candidate.payload.provider_confirmation_score = Math.max(Number(candidate.payload.provider_confirmation_score || 0), 80);
+            candidate.secondaryConfirmationAvailable = true;
+            candidate.secondaryConfirmationSource = passed.provider;
+          }
+          if (parseBool(env.SEC_EDGAR_ENABLED, false) && enrichmentCounts.sec_edgar < Math.max(0, Number(env.SEC_EDGAR_MAX_SYMBOLS_PER_CYCLE || 20))) {
+            enrichmentCounts.sec_edgar += 1;
+            const filings = await secEdgarClient.detectNew(candidate.symbol);
+            candidate.payload.market_context.sec_edgar = filings.ok ? { provider: 'sec_edgar', filings: filings.filings?.slice(0, 5) || [], new_filings: filings.newFilings?.slice(0, 5) || [], live_confirmation_eligible: false } : { provider: 'sec_edgar', reason_code: filings.reasonCode, live_confirmation_eligible: false };
+          }
+          if (parseBool(env.FMP_ENABLED, false) && enrichmentCounts.fmp < Math.max(0, Number(env.FMP_MAX_SYMBOLS_PER_CYCLE || 20))) {
+            enrichmentCounts.fmp += 1;
+            const fundamentals = await fmpClient.fundamentals(candidate.symbol);
+            candidate.payload.market_context.fmp_fundamentals = fundamentals.ok ? { profile: fundamentals.profile, derived_flags: fundamentals.derivedFlags, freshness: fundamentals.freshness, live_confirmation_eligible: false } : { reason_code: fundamentals.reasonCode, live_confirmation_eligible: false };
+          }
+        }
         if (candidate.payload?.side === 'buy' && finalQuoteCheckEnabled) {
           const finalQuote = await refreshFinalQuote({
             fetchImpl: marketFetch,
@@ -1068,6 +1267,8 @@ function createStockScanner(options = {}) {
             baseUrl,
             symbol: candidate.symbol,
             maxAgeSeconds: finalQuoteMaxAgeSeconds,
+            minPrice,
+            maxSpreadPct: finalQuoteMaxSpreadPct,
           });
           candidate.payload.market_context = candidate.payload.market_context || {};
           candidate.payload.market_context.scanner = candidate.payload.market_context.scanner || {};
@@ -1583,10 +1784,15 @@ function createStockScanner(options = {}) {
       marketMoversTop,
       marketMostActivesTop,
       minMovePct,
+      minPrice,
+      postOpenSetupGateEnabled,
+      postOpenSetupGateAfterMinutes,
+      postOpenAllowedSetups,
       requireRecentMomentum,
       minRecentMovePct,
       minRecentRangePct,
       minRecentCloseLocationPct,
+      requireRecentMove,
       requireMarketOpen,
       keepAlive,
       sellMaxPriceDiffPct,
@@ -1600,7 +1806,8 @@ function createStockScanner(options = {}) {
       recentStopExitRankPenalty,
       stopoutClusterBlockMinutes,
       stopoutClusterBlockCount,
-      maxBuyRiskScore,
+          maxBuyRiskScore,
+          leveragedProductBuysEnabled,
       spreadRankPenaltyThresholdPct,
       spreadRankPenaltyPerPct,
       spreadRankPenaltyCap,
@@ -1710,6 +1917,13 @@ function createStockScanner(options = {}) {
       approved_symbols: Array.isArray(latestApprovedReferenceSymbols) ? latestApprovedReferenceSymbols.slice() : [],
       approved_source_count: Array.isArray(latestApprovedReferenceSymbols) ? latestApprovedReferenceSymbols.length : 0,
       source_counts: latestSourceCounts || null,
+      sources: [
+        twelveDataClient.getHealth(),
+        massiveClient.health(),
+        finnhubClient.health(),
+        fmpClient.health(),
+        secEdgarClient.health(),
+      ],
       symbol_universe: latestSourceUniverse?.regularWatch?.universe || null,
       source_lists_by_symbol: latestSourceListsBySymbol ? Object.fromEntries([...latestSourceListsBySymbol.entries()].map(([symbol, value]) => [symbol, value])) : {},
       dynamic_source_empty: Boolean(latestSourceUniverse?.dynamicSourceEmpty),
@@ -1825,6 +2039,16 @@ function createStockScanner(options = {}) {
         cash: portfolio.cash,
         buying_power: portfolio.buying_power,
       } : null,
+      account_truth: portfolio?.account ? {
+        equity: safeNumber(portfolio.account.equity, null),
+        previous_equity: safeNumber(portfolio.account.last_equity, null),
+        portfolio_value: safeNumber(portfolio.account.portfolio_value, null),
+        long_market_value: safeNumber(portfolio.account.long_market_value, null),
+        cash: safeNumber(portfolio.account.cash, null),
+        buying_power: safeNumber(portfolio.account.buying_power, null),
+        checked_at: receivedAt,
+        source: 'alpaca',
+      } : null,
       allocation,
       partial_fill_state: partialFillSummary,
       execution_quality_state: executionQualityState || null,
@@ -1920,6 +2144,35 @@ function createStockScanner(options = {}) {
       rank_floor: {
         min_adjusted_rank_score: roundScore(minAdjustedRankScore),
         skip_reason: 'ADJUSTED_RANK_BELOW_FLOOR',
+      },
+      momentum_entry: {
+        min_price: roundScore(minPrice),
+        require_recent_momentum: Boolean(requireRecentMomentum),
+        require_recent_move: Boolean(requireRecentMove),
+        min_session_move_pct: roundScore(minMovePct),
+        min_recent_move_pct: roundScore(minRecentMovePct),
+        min_recent_range_pct: roundScore(minRecentRangePct),
+        min_recent_close_location_pct: roundScore(minRecentCloseLocationPct),
+        prolonged_momentum_enabled: Boolean(prolongedMomentumEnabled),
+        prolonged_momentum_min_scans: prolongedMomentumMinScans,
+        weak_momentum_cooldown_seconds: prolongedMomentumCooldownSeconds,
+        max_price_fade_pct: roundScore(prolongedMomentumMaxPriceFadePct),
+        min_relative_volume: scannerSelectionV2Config.selectionV2MinRelativeVolume,
+        post_open_setup_gate_enabled: Boolean(postOpenSetupGateEnabled),
+        post_open_setup_gate_after_minutes: postOpenSetupGateAfterMinutes,
+        post_open_allowed_setups: postOpenAllowedSetups.slice(),
+        post_open_min_opportunity_score: postOpenMinOpportunityScore,
+        block_unclassified_setups: Boolean(blockUnclassifiedSetups),
+        intraday_engine: {
+          enabled: Boolean(intradayMomentumEnabled),
+          shortlist_size: intradayMomentumShortlistSize,
+          lookback_bars: intradayMomentumLookbackBars,
+          cache_seconds: intradayMomentumCacheSeconds,
+          max_episode_age_seconds: intradayMomentumMaxEpisodeAgeSeconds,
+          active_episode_count: state.latestIntradayMomentum?.episodes?.filter((episode) => episode.active).length || 0,
+          config: intradayMomentumConfig,
+          latest: state.latestIntradayMomentum,
+        },
       },
       excluded_buy_symbols: excludedBuySymbols,
       exit_rules: {
@@ -2054,7 +2307,85 @@ async function fetchStockBundle({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, sy
   return { snapshots, latestQuotes };
 }
 
-async function refreshFinalQuote({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, symbol, maxAgeSeconds }) {
+function selectIntradayMomentumShortlist(bundle = {}, symbols = [], limit = 24, options = {}) {
+  const allowed = new Set(uniqueNormalizedSymbols(symbols));
+  const receivedMs = Date.parse(options.receivedAt || nowIso());
+  const enforceAge = Boolean(options.receivedAt);
+  const minPrice = Math.max(0.01, safeNumber(options.minPrice, 0.01));
+  const maxSpreadPct = Math.max(0, safeNumber(options.maxSpreadPct, Number.POSITIVE_INFINITY));
+  const maxAgeSeconds = Math.max(1, safeNumber(options.maxAgeSeconds, 120));
+  return Object.entries(bundle.snapshots || {})
+    .filter(([symbol]) => allowed.has(String(symbol).toUpperCase()))
+    .map(([symbol, snapshot]) => {
+      const price = safeNumber(snapshot?.latestTrade?.p ?? snapshot?.minuteBar?.c ?? snapshot?.dailyBar?.c, null);
+      const previousClose = safeNumber(snapshot?.prevDailyBar?.c, null);
+      const minuteOpen = safeNumber(snapshot?.minuteBar?.o, price);
+      const minuteClose = safeNumber(snapshot?.minuteBar?.c, price);
+      const quote = snapshot?.latestQuote || snapshot?.latest_quote || {};
+      const bid = safeNumber(quote?.bp ?? quote?.bid_price, null);
+      const ask = safeNumber(quote?.ap ?? quote?.ask_price, null);
+      const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : null;
+      const spreadPct = Number.isFinite(mid) && mid > 0 ? ((ask - bid) / mid) * 100 : null;
+      const timestampMs = Date.parse(quote?.t || snapshot?.latestTrade?.t || snapshot?.minuteBar?.t || '');
+      const ageSeconds = Number.isFinite(receivedMs) && Number.isFinite(timestampMs) ? Math.max(0, (receivedMs - timestampMs) / 1000) : Number.POSITIVE_INFINITY;
+      const dailyMove = Number.isFinite(price) && Number.isFinite(previousClose) && previousClose > 0 ? ((price - previousClose) / previousClose) * 100 : -999;
+      const recentMove = Number.isFinite(minuteOpen) && minuteOpen > 0 ? ((minuteClose - minuteOpen) / minuteOpen) * 100 : -999;
+      const volume = safeNumber(snapshot?.dailyBar?.v ?? snapshot?.minuteBar?.v, 0);
+      const score = Math.max(0, dailyMove) * 10 + Math.max(0, recentMove) * 35 + Math.log10(Math.max(1, volume));
+      return { symbol: String(symbol).toUpperCase(), score, price, spreadPct, ageSeconds, dailyMove };
+    })
+    .filter((entry) => Number.isFinite(entry.score)
+      && Number.isFinite(entry.price) && entry.price >= minPrice
+      && entry.dailyMove > 0
+      && (!enforceAge || entry.ageSeconds <= maxAgeSeconds)
+      && (!Number.isFinite(entry.spreadPct) || entry.spreadPct <= maxSpreadPct))
+    .sort((a, b) => b.score - a.score || a.symbol.localeCompare(b.symbol))
+    .slice(0, Math.max(1, Math.floor(safeNumber(limit, 24))))
+    .map((entry) => entry.symbol);
+}
+
+async function fetchIntradayMomentumBars({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, symbols = [], lookbackBars = 20, cacheSeconds = 15, cache = new Map() } = {}) {
+  const normalizedSymbols = uniqueNormalizedSymbols(symbols);
+  if (!normalizedSymbols.length) return {};
+  const nowMs = Date.now();
+  const result = {};
+  const missing = [];
+  for (const symbol of normalizedSymbols) {
+    const cached = cache.get(symbol);
+    if (cached && nowMs - cached.cached_at_ms <= Math.max(1, safeNumber(cacheSeconds, 15)) * 1000) {
+      result[symbol] = cached.bars;
+    } else {
+      missing.push(symbol);
+    }
+  }
+  if (!missing.length) return result;
+  const end = new Date(nowMs).toISOString();
+  const start = new Date(nowMs - Math.max(30, safeNumber(lookbackBars, 20) + 10) * 60_000).toISOString();
+  const url = `${baseUrl}/v2/stocks/bars?symbols=${encodeURIComponent(missing.join(','))}&timeframe=1Min&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&limit=${Math.max(1000, missing.length * Math.max(20, lookbackBars + 5))}&adjustment=raw&feed=iex&sort=asc`;
+  try {
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      headers: {
+        'APCA-API-KEY-ID': apiKeyId,
+        'APCA-API-SECRET-KEY': apiSecretKey,
+        'content-type': 'application/json',
+      },
+    });
+    const body = await readJsonResponse(response);
+    if (!response.ok) return result;
+    const barsBySymbol = body?.bars || body || {};
+    for (const symbol of missing) {
+      const bars = Array.isArray(barsBySymbol?.[symbol]) ? barsBySymbol[symbol].slice(-lookbackBars) : [];
+      result[symbol] = bars;
+      cache.set(symbol, { bars, cached_at_ms: nowMs });
+    }
+  } catch {
+    // Missing enrichment is handled as an explicit candidate qualification failure.
+  }
+  return result;
+}
+
+async function refreshFinalQuote({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, symbol, maxAgeSeconds, minPrice = 0.01, maxSpreadPct = Number.POSITIVE_INFINITY }) {
   try {
     const bundle = await fetchStockBundle({
       fetchImpl,
@@ -2077,6 +2408,13 @@ async function refreshFinalQuote({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, s
     const bid = safeNumber(quote.bp ?? quote.bid_price, null);
     const ask = safeNumber(quote.ap ?? quote.ask_price, null);
     const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : null;
+    const spreadPct = Number.isFinite(mid) && mid > 0 ? ((ask - bid) / mid) * 100 : null;
+    if (!Number.isFinite(mid) || mid < Math.max(0.01, safeNumber(minPrice, 0.01))) {
+      return { pass: false, checked_at: nowIso(), reason_code: 'FINAL_QUOTE_PRICE_BELOW_MINIMUM', quote_timestamp: timestamp, quote_age_seconds: Number(ageSeconds.toFixed(3)), bid, ask, mid, min_price: Math.max(0.01, safeNumber(minPrice, 0.01)) };
+    }
+    if (!Number.isFinite(spreadPct) || spreadPct > Math.max(0, safeNumber(maxSpreadPct, Number.POSITIVE_INFINITY))) {
+      return { pass: false, checked_at: nowIso(), reason_code: 'FINAL_QUOTE_SPREAD_TOO_WIDE', quote_timestamp: timestamp, quote_age_seconds: Number(ageSeconds.toFixed(3)), bid, ask, mid, spread_pct: Number.isFinite(spreadPct) ? roundScore(spreadPct) : null, max_spread_pct: maxSpreadPct };
+    }
     return {
       pass: true,
       checked_at: nowIso(),
@@ -2087,6 +2425,7 @@ async function refreshFinalQuote({ fetchImpl, apiKeyId, apiSecretKey, baseUrl, s
       bid,
       ask,
       mid,
+      spread_pct: roundScore(spreadPct),
     };
   } catch (error) {
     return { pass: false, checked_at: nowIso(), reason_code: 'FINAL_QUOTE_CHECK_FAILED', error: error?.message || 'Unable to refresh final quote.' };
@@ -2219,8 +2558,8 @@ async function fetchTwelveDataBundle({ fetchImpl, apiKey, baseUrl, symbols }) {
   const quotes = {};
   for (const chunk of chunkSymbols(symbols, 20)) {
     const encodedSymbols = encodeURIComponent(chunk.join(','));
-    const url = `${baseUrl}/quote?symbol=${encodedSymbols}&apikey=${encodeURIComponent(apiKey)}`;
-    const response = await fetchImpl(url, { method: 'GET' });
+    const url = `${baseUrl}/quote?symbol=${encodedSymbols}`;
+    const response = await fetchImpl(url, { method: 'GET', headers: { Authorization: `apikey ${apiKey}`, Accept: 'application/json' } });
     const body = await readJsonResponse(response);
     if (!response.ok) continue;
     Object.assign(quotes, normalizeTwelveDataQuotes(body, chunk));
@@ -2320,6 +2659,24 @@ function buildCandidates(bundle, options = {}) {
     }
     const snapshot = bundle.snapshots[symbol] || {};
     const latestQuote = bundle.latestQuotes[symbol] || snapshot.latestQuote || snapshot.latest_quote || {};
+    if (shouldBlockLeveragedProductBuy(symbol, positionsBySymbol.keys(), options.leveragedProductBuysEnabled)) {
+      options.skipTracker?.record?.('LEVERAGED_PRODUCT_BUY_DISABLED', {
+        symbol,
+        correlation_group: resolveCorrelationGroup(symbol),
+      });
+      continue;
+    }
+    const correlationConflict = !positionsBySymbol.has(symbol)
+      ? findCorrelatedPositionConflict(symbol, positionsBySymbol.keys())
+      : null;
+    if (correlationConflict) {
+      options.skipTracker?.record?.('CORRELATED_POSITION_EXPOSURE_CONFLICT', {
+        symbol,
+        correlation_group: correlationConflict.group,
+        held_symbol: correlationConflict.heldSymbol,
+      });
+      continue;
+    }
     const setupKey = resolveCandidateSetupKey({ symbol, snapshot, options });
     const candidate = buildStockCandidateForSymbol(symbol, snapshot, latestQuote, {
       receivedAt: now,
@@ -2350,14 +2707,19 @@ function buildCandidates(bundle, options = {}) {
       partialFillSummary: options.partialFillSummary,
       skipTracker: options.skipTracker,
       twelveDataQuote: options.twelveDataQuotes?.[symbol] || null,
+      twelveDataResult: options.twelveDataResults?.[symbol] || null,
+      maxPriceDiffPct: options.maxPriceDiffPct,
       requireMultiSourceConfirmation: options.requireMultiSourceConfirmation,
       singleSourceMomentumEnabled: options.singleSourceMomentumEnabled,
       singleSourceMomentumMinRankScore: options.singleSourceMomentumMinRankScore,
+      minPrice: options.minPrice,
       minMovePct: options.minMovePct,
       requireRecentMomentum: options.requireRecentMomentum,
       minRecentMovePct: options.minRecentMovePct,
       minRecentRangePct: options.minRecentRangePct,
       minRecentCloseLocationPct: options.minRecentCloseLocationPct,
+      requireRecentMove: options.requireRecentMove,
+      intradayMomentumEnabled: options.intradayMomentumEnabled,
       allowContrarianEntries: options.allowContrarianEntries,
       blockBuys: options.blockBuys,
       maxBuyRiskScore: options.maxBuyRiskScore,
@@ -2416,6 +2778,11 @@ function buildCandidates(bundle, options = {}) {
       candidateMaxAgeSeconds: options.candidateMaxAgeSeconds,
       candidateConfirmationRequired: options.candidateConfirmationRequired,
       candidateQueueMaxSize: options.candidateQueueMaxSize,
+      prolongedMomentumEnabled: options.prolongedMomentumEnabled,
+      prolongedMomentumMinScans: options.prolongedMomentumMinScans,
+      prolongedMomentumCooldownSeconds: options.prolongedMomentumCooldownSeconds,
+      prolongedMomentumMaxPriceFadePct: options.prolongedMomentumMaxPriceFadePct,
+      momentumPersistence: options.momentumPersistence,
       rankConfidenceDecayEnabled: options.rankConfidenceDecayEnabled,
       rankConfidenceHalfLifeSeconds: options.rankConfidenceHalfLifeSeconds,
       rankConfidenceMaxStaleSeconds: options.rankConfidenceMaxStaleSeconds,
@@ -2467,7 +2834,10 @@ function buildCandidates(bundle, options = {}) {
             eligible: isPriorityOverrideSymbol,
             legacy_applied: isPriorityOverrideApplied,
           },
-          options: options.scannerSelectionV2Config || {},
+          options: {
+            ...(options.scannerSelectionV2Config || {}),
+            intradayMomentumRequired: options.intradayMomentumEnabled === true,
+          },
         })
         : null;
       const singleProviderQualifiedEnabled = options.singleProviderQualifiedEnabled !== false;
@@ -2539,6 +2909,11 @@ function buildCandidates(bundle, options = {}) {
       candidate.priorityOverrideSortScore = candidate.rankScore;
       candidate.regularWatchComparison = regularWatchComparison;
       candidate.selectionV2 = selectionV2;
+      if (selectionV2?.features?.momentum_episode_id) {
+        candidate.lifecycleSetupKey = `intraday_momentum:${selectionV2.features.momentum_episode_id}`;
+        scannerContext.momentum_episode_id = selectionV2.features.momentum_episode_id;
+        scannerContext.momentum_episode_started_at = selectionV2.features.momentum_episode_started_at;
+      }
       candidate.selectionV2SortScore = selectionV2?.qualified ? selectionV2.final_opportunity_score : Number.NEGATIVE_INFINITY;
       candidate.regularWatchSortScore = Number.isFinite(Number(regularWatchComparison?.sortScore))
         ? Number(regularWatchComparison.sortScore)
@@ -2553,6 +2928,22 @@ function buildCandidates(bundle, options = {}) {
         options.skipTracker?.record?.(selectionV2?.reason_codes?.[0] || 'SELECTION_V2_NOT_QUALIFIED', {
           symbol,
           selection_v2: selectionV2 || null,
+        });
+        continue;
+      }
+      if (candidate.payload.side === 'buy' && options.blockUnclassifiedSetups === true && selectionV2?.setup_classification === 'UNCLASSIFIED') {
+        options.skipTracker?.record?.('SETUP_UNCLASSIFIED', { symbol, stage: 'selection_v2' });
+        continue;
+      }
+      const postOpenGate = evaluatePostOpenSetupGate(selectionV2?.setup_classification, options, selectionV2?.final_opportunity_score);
+      if (candidate.payload.side === 'buy' && !postOpenGate.allowed) {
+        options.skipTracker?.record?.(postOpenGate.reason_code, {
+          symbol,
+          setup_classification: selectionV2?.setup_classification || null,
+          opportunity_score: selectionV2?.final_opportunity_score ?? null,
+          min_opportunity_score: postOpenGate.min_opportunity_score,
+          minutes_since_open: postOpenGate.minutes_since_open,
+          allowed_setups: postOpenGate.allowed_setups,
         });
         continue;
       }
@@ -2695,7 +3086,7 @@ function summarizeWaitingForBuy({ candidates = [], previewCandidates = [], resul
   if (Number(skipSummary?.MAX_POSITION_SLOTS_FILLED || 0) > 0) {
     return {
       reason_code: 'MAX_POSITION_SLOTS_FILLED',
-      message: 'A candidate is ranked, but the one-position slot is occupied until Alpaca shows the current position closed.',
+      message: 'All configured position slots are occupied until Alpaca shows a position closed.',
       candidate_symbol: liveBuyCandidate?.symbol || null,
       candidate_rank_score: liveBuyCandidate?.rankScore ?? null,
       source: 'broker-position-slot',
@@ -3357,7 +3748,7 @@ function getExecutionQualityCooldown(entry, now = nowIso()) {
 
 function resolveCandidateLifecycleKey(candidate = {}) {
   const symbol = String(candidate.symbol || '').trim().toUpperCase();
-  const setupKey = String(candidate.setupKey || candidate.setup_key || candidate.payload?.market_context?.setup_key || '').trim().toLowerCase();
+  const setupKey = String(candidate.lifecycleSetupKey || candidate.lifecycle_setup_key || candidate.setupKey || candidate.setup_key || candidate.payload?.market_context?.setup_key || '').trim().toLowerCase();
   return normalizeCandidateKey(symbol, setupKey || null);
 }
 
@@ -3744,6 +4135,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     profit_protection_active: trailingActive,
     trailing_active: trailingActive,
     trailing_peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
+    minimum_unrealized_pl: Number.isFinite(safeNumber(trailingRecord.minimum_unrealized_pl, null)) ? roundCurrency(trailingRecord.minimum_unrealized_pl) : null,
     trailing_activation_profit_dollars: roundCurrency(effectiveTrailingStart),
     trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? roundCurrency(trailingSellAt) : null,
     sell_net_profit_floor_dollars: roundCurrency(sellNetProfitFloorDollars),
@@ -3811,6 +4203,7 @@ function assessRecentUpwardMomentum({
   minRecentMovePct = 0.03,
   minRecentRangePct = 0.05,
   minRecentCloseLocationPct = 60,
+  requireRecentMove = false,
 } = {}) {
   const price = safeNumber(currentPrice, null);
   const open = safeNumber(minuteBar?.o ?? minuteBar?.open, null);
@@ -3835,15 +4228,17 @@ function assessRecentUpwardMomentum({
     && recentRangePct >= minRange
     && Number.isFinite(closeLocationPct)
     && closeLocationPct >= minCloseLocation;
+  const accepted = requireRecentMove ? moveAccepted : moveAccepted || pressureAccepted;
   return {
-    accepted: moveAccepted || pressureAccepted,
-    reason_code: moveAccepted || pressureAccepted ? null : 'RECENT_UPWARD_MOMENTUM_WEAK',
+    accepted,
+    reason_code: accepted ? null : 'RECENT_UPWARD_MOMENTUM_WEAK',
     recent_move_pct: Number.isFinite(recentMovePct) ? roundScore(recentMovePct) : null,
     min_recent_move_pct: roundScore(minMove),
     recent_range_pct: Number.isFinite(recentRangePct) ? roundScore(recentRangePct) : null,
     min_recent_range_pct: roundScore(minRange),
     close_location_pct: Number.isFinite(closeLocationPct) ? roundScore(closeLocationPct) : null,
     min_recent_close_location_pct: roundScore(minCloseLocation),
+    require_recent_move: Boolean(requireRecentMove),
   };
 }
 
@@ -3851,6 +4246,12 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   const movePct = ((currentPrice - previousClose) / previousClose) * 100;
   const notional = safeNumber(options.notional, 150);
   const minBuyNotional = Math.max(1, safeNumber(options.minBuyNotional ?? options.allocation?.floor ?? 25, 25));
+  const measuredIntradayMomentum = Boolean(
+    options.intradayMomentumEnabled === true
+    && snapshot?.intradayMomentum?.measured
+    && snapshot?.intradayMomentum?.qualified
+    && snapshot?.momentumEpisode?.active,
+  );
   if (!Number.isFinite(notional) || notional <= 0) {
     options.skipTracker?.record?.('BELOW_MINIMUM_BUY_NOTIONAL', { symbol, notional });
     return null;
@@ -3870,13 +4271,76 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     minRecentMovePct: options.minRecentMovePct,
     minRecentRangePct: options.minRecentRangePct,
     minRecentCloseLocationPct: options.minRecentCloseLocationPct,
+    requireRecentMove: options.requireRecentMove,
   });
-  if (options.requireRecentMomentum === true && !recentMomentum.accepted) {
+  const persistence = options.momentumPersistence instanceof Map ? options.momentumPersistence : null;
+  const persistenceNow = new Date(options.receivedAt || nowIso()).getTime();
+  const previousPersistence = persistence?.get(symbol) || null;
+  if (!measuredIntradayMomentum && options.prolongedMomentumEnabled === true && previousPersistence?.cooldown_until_ms > persistenceNow) {
+    options.skipTracker?.record?.('WEAK_MOMENTUM_COOLDOWN_ACTIVE', {
+      symbol,
+      remaining_seconds: Math.ceil((previousPersistence.cooldown_until_ms - persistenceNow) / 1000),
+      weak_reason: previousPersistence.weak_reason || 'RECENT_UPWARD_MOMENTUM_WEAK',
+    });
+    return null;
+  }
+  const minPrice = Math.max(0.01, safeNumber(options.minPrice, 0.01));
+  if (currentPrice < minPrice) {
+    options.skipTracker?.record?.('PRICE_BELOW_ENTRY_MINIMUM', {
+      symbol,
+      current_price: roundScore(currentPrice),
+      min_price: roundScore(minPrice),
+    });
+    return null;
+  }
+  if (!measuredIntradayMomentum && options.requireRecentMomentum === true && !recentMomentum.accepted) {
+    if (persistence) {
+      persistence.set(symbol, {
+        streak: 0,
+        last_price: currentPrice,
+        last_seen_ms: persistenceNow,
+        cooldown_until_ms: persistenceNow + Math.max(0, safeNumber(options.prolongedMomentumCooldownSeconds, 120)) * 1000,
+        weak_reason: recentMomentum.reason_code,
+      });
+    }
     options.skipTracker?.record?.(recentMomentum.reason_code || 'RECENT_MOMENTUM_WEAK', {
       symbol,
       ...recentMomentum,
     });
     return null;
+  }
+  if (!measuredIntradayMomentum && options.prolongedMomentumEnabled === true && persistence) {
+    const priorPrice = safeNumber(previousPersistence?.last_price, null);
+    const maxFadePct = Math.max(0, safeNumber(options.prolongedMomentumMaxPriceFadePct, 0.05));
+    const priceFadePct = Number.isFinite(priorPrice) && priorPrice > 0
+      ? ((priorPrice - currentPrice) / priorPrice) * 100
+      : null;
+    if (Number.isFinite(priceFadePct) && priceFadePct > maxFadePct) {
+      persistence.set(symbol, {
+        streak: 0,
+        last_price: currentPrice,
+        last_seen_ms: persistenceNow,
+        cooldown_until_ms: persistenceNow + Math.max(0, safeNumber(options.prolongedMomentumCooldownSeconds, 120)) * 1000,
+        weak_reason: 'MOMENTUM_DECELERATING',
+      });
+      options.skipTracker?.record?.('MOMENTUM_DECELERATING', {
+        symbol,
+        price_fade_pct: roundScore(priceFadePct),
+        max_price_fade_pct: roundScore(maxFadePct),
+      });
+      return null;
+    }
+    const streak = Math.max(0, Math.floor(safeNumber(previousPersistence?.streak, 0))) + 1;
+    persistence.set(symbol, { streak, last_price: currentPrice, last_seen_ms: persistenceNow, cooldown_until_ms: 0, weak_reason: null });
+    const requiredScans = Math.max(2, Math.floor(safeNumber(options.prolongedMomentumMinScans, 2)));
+    if (streak < requiredScans) {
+      options.skipTracker?.record?.('PROLONGED_MOMENTUM_CONFIRMATION_REQUIRED', {
+        symbol,
+        momentum_scans: streak,
+        required_scans: requiredScans,
+      });
+      return null;
+    }
   }
   const volumeScore = Math.log10(Math.max(10, safeNumber(snapshot.prevDailyBar?.v ?? snapshot.dailyBar?.v ?? 0, 0)));
   const directionalMovePct = options.allowContrarianEntries === true ? Math.abs(movePct) : Math.max(0, movePct);
@@ -4001,13 +4465,18 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     const buyingPower = safeNumber(options.portfolio?.buying_power ?? options.portfolio?.buyingPower ?? options.portfolio?.account?.buying_power ?? null, null);
     const cash = safeNumber(options.portfolio?.cash ?? options.portfolio?.account?.cash ?? null, null);
     const maxNotional = safeNumber(options.maxTradeNotional, 0) > 0 ? options.maxTradeNotional : null;
+    const effectiveDeploymentPct = calculateSlotAwareDeploymentPct({
+      baseDeploymentPct: options.maxBuyingPowerDeploymentPct,
+      maxSlots: options.portfolio?.max_open_positions ?? options.maxOpenPositions,
+      remainingSlots: options.portfolio?.remaining_position_slots,
+    });
     buyingPowerSizing = calculateBuyingPowerSize({
       symbol,
       side: 'buy',
       price: currentPrice,
       buyingPower,
       cash,
-      deploymentPct: options.maxBuyingPowerDeploymentPct,
+      deploymentPct: effectiveDeploymentPct,
       marketOrderBufferPct: options.buyingPowerMarketOrderBufferPct,
       cashReserve: options.buyingPowerCashReserve,
       maxNotional,
@@ -4037,7 +4506,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     sizingExplanation.supports_fractional_shares = Boolean(candidateSupportsFractionalShares);
     sizingExplanation.limiter = buyingPowerSizing.capped_by?.length ? buyingPowerSizing.capped_by.join('+').toUpperCase() : 'BUYING_POWER';
     sizingExplanation.buying_power_sizing = buyingPowerSizing;
-    sizingExplanation.notes.push('Buying-power deployment sizing is active.');
+    sizingExplanation.notes.push('Buying-power deployment sizing is active and adjusted for remaining position slots.');
   } else if (positionSizingMode === 'risk_budget' || options.riskBudgetSizingEnabled) {
     structureStop = calculateStructureAwareStop({
       symbol,
@@ -4361,6 +4830,11 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
       alpaca_quote: normalizedPrimary,
     secondary_quote: secondaryQuote,
     twelve_data_quote: options.twelveDataQuote || null,
+    twelve_data_confirmation: options.twelveDataResult ? {
+      ok: Boolean(options.twelveDataResult.ok),
+      reason_code: options.twelveDataResult.reason_code || null,
+      cache: options.twelveDataResult.cache || null,
+    } : null,
     alpaca_snapshot: snapshot,
     alpaca_latest_quote: latestQuote,
     spread_slippage_pct: spreadPct,
@@ -4378,6 +4852,14 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     trade_side: side,
     sellMaxPriceDiffPct: options.sellMaxPriceDiffPct ?? 0.75,
   });
+  if (options.twelveDataResult) {
+    marketContext.twelve_data_confirmation = {
+      ...marketContext.twelve_data_confirmation,
+      ...compareTwelveDataConfirmation(normalizedPrimary, options.twelveDataResult, {
+        maxPriceDifferencePct: options.maxPriceDiffPct ?? 0.5,
+      }),
+    };
+  }
   const singleSourceMomentumOverride = shouldAllowSingleSourceMomentum({
     side,
     assetType: options.assetType,
@@ -4396,6 +4878,8 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     };
   }
   if (options.requireMultiSourceConfirmation && !providerConfirmation?.confirmed && !singleSourceMomentumOverride) {
+    const twelveReason = options.twelveDataResult?.reason_code || 'TWELVE_DATA_UNAVAILABLE';
+    options.skipTracker?.record?.(twelveReason, { symbol, provider: 'twelve_data' });
     options.skipTracker?.record?.('MULTI_SOURCE_CONFIRMATION_FAILED', { symbol });
     return null;
   }
@@ -4445,12 +4929,26 @@ function buildSignalCandidate({ symbol, side, currentPrice, previousClose, sprea
     opportunity_score: normalizedPrimary.confidence_score,
     execution_eligible: side === 'buy' ? !options.previewMode : true,
     freshness_score: 100,
-    source_quality_score: clamp(80 + (providerConfirmation?.confirmed ? 10 : -10), 0, 100),
-    contradiction_score: providerConfirmation?.confirmed ? 4 : clamp(providerConfirmation?.discrepancy_score || 25, 0, 100),
-    risk_score: clamp(18 + Math.min(25, Math.abs(movePct) * 6) + (spreadPct * 10) + (providerConfirmation?.confirmed ? 0 : 25), 0, 100),
-    provider_confirmation_score: providerConfirmation?.confirmed
-      ? clamp(100 - safeNumber(providerConfirmation.discrepancy_score, 0), 0, 100)
-      : clamp(35 - safeNumber(providerConfirmation?.discrepancy_score, 0), 0, 100),
+    source_quality_score: clamp(80 + (providerConfirmation ? (providerConfirmation.confirmed ? 10 : -10) : 0), 0, 100),
+    contradiction_score: providerConfirmation
+      ? (providerConfirmation.confirmed ? 4 : clamp(providerConfirmation.discrepancy_score || 25, 0, 100))
+      : 0,
+    risk_score: clamp(
+      18
+        + Math.min(25, Math.abs(movePct) * 6)
+        + (spreadPct * 10)
+        + (providerConfirmation && !providerConfirmation.confirmed ? 25 : 0),
+      0,
+      100,
+    ),
+    // Optional confirmation being unavailable is not disagreement. Leaving the
+    // score undefined preserves the established optional-provider policy in the
+    // risk gate; an actual provider response still receives a scored verdict.
+    provider_confirmation_score: providerConfirmation
+      ? (providerConfirmation.confirmed
+        ? clamp(100 - safeNumber(providerConfirmation.discrepancy_score, 0), 0, 100)
+        : clamp(35 - safeNumber(providerConfirmation.discrepancy_score, 0), 0, 100))
+      : undefined,
     edge_score: clamp(78 + Math.min(12, Math.abs(movePct) * 2), 0, 100),
     volume,
     market_context: marketContext,
@@ -4543,6 +5041,28 @@ function chunkSymbols(symbols, size) {
     chunks.push(symbols.slice(index, index + size));
   }
   return chunks;
+}
+
+function selectTwelveDataShortlist(bundle = {}, symbols = [], limit = 2) {
+  const allowed = new Set((symbols || []).map((symbol) => String(symbol || '').trim().toUpperCase()).filter(Boolean));
+  return Object.entries(bundle.snapshots || {})
+    .filter(([symbol]) => !allowed.size || allowed.has(symbol))
+    .map(([symbol, snapshot = {}]) => {
+      const latestQuote = bundle.latestQuotes?.[symbol] || snapshot.latestQuote || snapshot.latest_quote || {};
+      const daily = snapshot.dailyBar || snapshot.daily_bar || {};
+      const previous = snapshot.prevDailyBar || snapshot.prev_daily_bar || {};
+      const price = safeNumber(latestQuote.ap ?? latestQuote.bp ?? daily.c ?? snapshot.latestTrade?.p, null);
+      const previousClose = safeNumber(previous.c, null);
+      const movePct = Number.isFinite(price) && Number.isFinite(previousClose) && previousClose > 0
+        ? Math.abs((price - previousClose) / previousClose) * 100
+        : -1;
+      const volume = Math.max(0, safeNumber(daily.v, 0));
+      return { symbol, score: movePct * 100 + Math.log10(volume + 1) };
+    })
+    .filter((entry) => Number.isFinite(entry.score) && entry.score >= 0)
+    .sort((a, b) => b.score - a.score || a.symbol.localeCompare(b.symbol))
+    .slice(0, Math.max(0, Math.floor(safeNumber(limit, 2))))
+    .map((entry) => entry.symbol);
 }
 
 function buildScannerUniverseAudit(sourceUniverse) {
@@ -4639,15 +5159,77 @@ function normalizeIso(value) {
   return date.toISOString();
 }
 
+const CORRELATED_EXPOSURE_GROUPS = new Map([
+  ['inverse_equity_risk', new Set(['SQQQ', 'SOXS', 'SPXU', 'SDOW', 'TZA', 'TECS', 'FAZ', 'LABD', 'ERY'])],
+  ['leveraged_equity_risk', new Set(['TQQQ', 'SOXL', 'UPRO', 'SSO', 'TNA', 'TECL', 'FAS', 'LABU', 'ERX'])],
+  ['long_volatility', new Set(['UVIX', 'UVXY', 'VIXY', 'VXX', 'SVIX'])],
+]);
+
+function resolveCorrelationGroup(symbol) {
+  const normalized = String(symbol || '').trim().toUpperCase();
+  for (const [group, symbols] of CORRELATED_EXPOSURE_GROUPS.entries()) {
+    if (symbols.has(normalized)) return group;
+  }
+  return null;
+}
+
+function findCorrelatedPositionConflict(symbol, heldSymbols = []) {
+  const group = resolveCorrelationGroup(symbol);
+  if (!group) return null;
+  for (const heldSymbol of heldSymbols) {
+    const normalizedHeld = String(heldSymbol || '').trim().toUpperCase();
+    if (normalizedHeld !== String(symbol || '').trim().toUpperCase() && resolveCorrelationGroup(normalizedHeld) === group) {
+      return { group, heldSymbol: normalizedHeld };
+    }
+  }
+  return null;
+}
+
+function shouldBlockLeveragedProductBuy(symbol, heldSymbols = [], enabled = false) {
+  if (enabled || !resolveCorrelationGroup(symbol)) return false;
+  const held = new Set([...heldSymbols].map((value) => String(value || '').trim().toUpperCase()));
+  return !held.has(String(symbol || '').trim().toUpperCase());
+}
+
+function evaluatePostOpenSetupGate(setupClassification, options = {}, opportunityScore = null) {
+  const minutesSinceOpen = safeNumber(options.intradayRegime?.minutes_since_open, null);
+  const allowedSetups = (Array.isArray(options.postOpenAllowedSetups) ? options.postOpenAllowedSetups : ['MOMENTUM_CONTINUATION', 'PULLBACK_CONTINUATION'])
+    .map((value) => String(value || '').trim().toUpperCase()).filter(Boolean);
+  const active = options.postOpenSetupGateEnabled === true
+    && Number.isFinite(minutesSinceOpen)
+    && minutesSinceOpen >= Math.max(0, safeNumber(options.postOpenSetupGateAfterMinutes, 30));
+  const setupAllowed = new Set(allowedSetups).has(String(setupClassification || '').trim().toUpperCase());
+  const minOpportunityScore = Math.max(0, safeNumber(options.postOpenMinOpportunityScore, 70));
+  const normalizedScore = safeNumber(opportunityScore, null);
+  const scoreAllowed = Number.isFinite(normalizedScore) && normalizedScore >= minOpportunityScore;
+  return {
+    allowed: !active || (setupAllowed && scoreAllowed),
+    active,
+    reason_code: active && !setupAllowed ? 'POST_OPEN_SETUP_NOT_ALLOWED' : active && !scoreAllowed ? 'POST_OPEN_OPPORTUNITY_SCORE_BELOW_MINIMUM' : null,
+    minutes_since_open: Number.isFinite(minutesSinceOpen) ? minutesSinceOpen : null,
+    allowed_setups: allowedSetups,
+    min_opportunity_score: minOpportunityScore,
+  };
+}
+
 module.exports = {
   APPROVED_LIVE_MARKET_SYMBOLS,
   buildStockCandidateForSymbol,
   fetchAlpacaMarketLeaders,
+  fetchIntradayMomentumBars,
   calculateSpreadRankPenalty,
   calculateEffectiveStopLossDollars,
   createStockScanner,
   normalizeRecentTradePenaltyMap,
   rankScannerBuyCandidates,
+  selectTwelveDataShortlist,
+  selectIntradayMomentumShortlist,
   resolveMemeWatchlistAttention: resolveScannerWatchConfig,
   resolveScannerWatchConfig,
+  resolveCorrelationGroup,
+  findCorrelatedPositionConflict,
+  shouldBlockLeveragedProductBuy,
+  buildCandidates,
+  refreshFinalQuote,
+  evaluatePostOpenSetupGate,
 };

@@ -139,6 +139,7 @@ function startMinimalTradingServer(env = process.env, options = {}) {
     statusHeartbeatIntervalMs: options.statusHeartbeatIntervalMs ?? resolveStatusHeartbeatIntervalMs(runtimeEnv),
     buyNotionalTarget: config.BUY_NOTIONAL_TARGET,
     minBuyNotional: config.MIN_BUY_NOTIONAL,
+    executionMode: config.TRADING_MODE === 'live' && config.LIVE_TRADING_ENABLED ? 'live' : 'paper',
     startedAt,
     startupPolicyPatch,
     confirmationAttempts: options.confirmationAttempts || 6,

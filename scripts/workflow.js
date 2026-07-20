@@ -10,8 +10,9 @@ async function main(argv = process.argv.slice(2)) {
   const statePath = path.join(repoRoot, 'data', 'runtime', 'workflow-supervisor.json');
   if (action === 'status') {
     let state = {}; try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch { /* no supervisor state yet */ }
-    process.stdout.write(`${JSON.stringify(state, null, 2)}\n`);
-    return state.status === 'healthy' ? 0 : 1;
+    const assessed = assessWorkflowState(state);
+    process.stdout.write(`${JSON.stringify(assessed, null, 2)}\n`);
+    return assessed.status === 'healthy' ? 0 : 1;
   }
   if (action === 'start' && !argv.includes('--foreground')) {
     const state = readState(statePath);
@@ -60,6 +61,24 @@ async function main(argv = process.argv.slice(2)) {
 }
 function readState(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; } }
 function isPidAlive(pid) { try { process.kill(Number(pid), 0); return true; } catch { return false; } }
+function assessWorkflowState(state = {}, pidAlive = isPidAlive) {
+  const services = state.services || {};
+  const issues = [];
+  if (!state.supervisor_pid || !pidAlive(state.supervisor_pid)) issues.push('SUPERVISOR_PROCESS_NOT_RUNNING');
+  for (const name of ['trader', 'scanner', 'dashboard']) {
+    const service = services[name] || {};
+    if (service.status !== 'running' || !service.pid || !pidAlive(service.pid)) {
+      issues.push(`${name.toUpperCase()}_PROCESS_NOT_RUNNING`);
+    }
+  }
+  if (!issues.length && state.status === 'healthy') return { ...state, health_verified: true, health_issues: [] };
+  return {
+    ...state,
+    status: state.status === 'stopped' ? 'stopped' : 'degraded',
+    health_verified: false,
+    health_issues: issues,
+  };
+}
 function waitForSpawn(child) { return new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); }); }
 async function killTree(pid) {
   if (!isPidAlive(pid)) return;
@@ -70,4 +89,4 @@ async function killTree(pid) {
   });
 }
 if (require.main === module) main().then((code) => { process.exitCode = code; }).catch((error) => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
-module.exports = { main };
+module.exports = { main, assessWorkflowState };

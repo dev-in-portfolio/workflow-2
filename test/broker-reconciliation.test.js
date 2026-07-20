@@ -61,6 +61,25 @@ function strictAdapter(overrides = {}) {
   };
 }
 
+test('live execution refuses a paper-only risk decision', async () => {
+  let submitted = false;
+  const result = await processTradingSignal({ signal: buySignal() }, {
+    executionMode: 'live',
+    executionAdapter: strictAdapter({
+      submitOrder: async () => {
+        submitted = true;
+        return { status: 'filled' };
+      },
+    }),
+    policySnapshot: { policy: permissivePolicy({ tradingMode: 'paper', liveTradingEnabled: false }) },
+  });
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.stage, 'decision');
+  assert.deepEqual(result.reason_codes, ['EXECUTION_MODE_DECISION_MISMATCH']);
+  assert.equal(submitted, false);
+});
+
 test('broker-held symbol blocks stale direct portfolio buys', async () => {
   const result = await processTradingSignal({
     signal: buySignal(),

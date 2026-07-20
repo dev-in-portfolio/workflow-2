@@ -110,7 +110,10 @@ test('completed trade outcomes retain duration and exit telemetry', () => {
   assert.equal(outcome.exit_state.peak_profit_dollars, 1.6);
   assert.equal(outcome.calibration_bucket, '80-89');
   assert.equal(outcome.win_loss, 'win');
-  assert.equal(outcome.net_pnl > 0, true);
+  assert.equal(Number(outcome.gross_pnl.toFixed(2)), 1);
+  assert.equal(Number(outcome.execution_drag.toFixed(2)), 0.08);
+  assert.equal(Number(outcome.net_pnl.toFixed(2)), 0.98);
+  assert.equal(outcome.accounting_version, '2026-07-16.broker-fill.2');
 });
 
 test('live broker fill price overrides the scanner midpoint for realized pnl', () => {

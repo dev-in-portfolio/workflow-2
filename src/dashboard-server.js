@@ -697,6 +697,7 @@ function buildLocalSummarySnapshot(options = {}, context = {}, state = {}) {
     scannerRuntime,
     memeMonitorStatus,
     regularWatchStatus,
+    env: options.runtimeEnv || options.env || process.env,
   });
   const now = nowIso();
   return {
@@ -768,7 +769,7 @@ function buildLocalSummarySnapshot(options = {}, context = {}, state = {}) {
   };
 }
 
-function buildLocalSourceHealthSummary({ scannerRuntime = {}, memeMonitorStatus = {}, regularWatchStatus = {} } = {}) {
+function buildLocalSourceHealthSummary({ scannerRuntime = {}, memeMonitorStatus = {}, regularWatchStatus = {}, env = process.env } = {}) {
   const sources = [];
   const addSource = (entry) => {
     if (!entry || !entry.source) return;
@@ -792,6 +793,23 @@ function buildLocalSourceHealthSummary({ scannerRuntime = {}, memeMonitorStatus 
       ok: ['active', 'ok', 'read'].includes(String(source.status || '').toLowerCase()),
     });
   }
+  for (const source of scannerRuntime?.sources || []) {
+    addSource({
+      ...source,
+      group: 'scanner',
+      scope: 'secondary_confirmation',
+      source: source.source,
+      ok: source.status === 'disabled' || Boolean(source.healthy),
+    });
+  }
+  const addConfiguredProvider = ({ source, label, enabled, configured, scope }) => {
+    if (sources.some((entry) => entry.source === source)) return;
+    addSource({ source, providerLabel: label, group: 'external_provider', scope, enabled, configured, credentialPresent: configured, status: !enabled ? 'disabled' : configured ? 'configured_unverified' : 'missing_credentials', ok: !enabled, lastError: null, blockedReason: !enabled ? 'source_disabled' : configured ? 'capability_check_pending' : 'missing_credentials' });
+  };
+  addConfiguredProvider({ source: 'sec_edgar', label: 'SEC EDGAR', enabled: String(env.SEC_EDGAR_ENABLED || 'false').toLowerCase() === 'true', configured: Boolean(String(env.SEC_EDGAR_USER_AGENT || '').trim()), scope: 'filings_intelligence' });
+  addConfiguredProvider({ source: 'massive', label: 'Massive (formerly Polygon.io)', enabled: String(env.MASSIVE_ENABLED || 'false').toLowerCase() === 'true', configured: Boolean(String(env.MASSIVE_API_KEY || env.POLYGON_API_KEY || '').trim()), scope: 'secondary_confirmation' });
+  addConfiguredProvider({ source: 'finnhub', label: 'Finnhub', enabled: String(env.FINNHUB_ENABLED || 'false').toLowerCase() === 'true', configured: Boolean(String(env.FINNHUB_API_KEY || '').trim()), scope: 'secondary_confirmation_and_intelligence' });
+  addConfiguredProvider({ source: 'fmp', label: 'Financial Modeling Prep', enabled: String(env.FMP_ENABLED || 'false').toLowerCase() === 'true', configured: Boolean(String(env.FMP_API_KEY || '').trim()), scope: 'fundamentals_reference' });
   addSource({
     source: 'scanner-runtime',
     group: 'scanner',
@@ -911,6 +929,8 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const status = unwrapStatus(liveStatus.data) || unwrapStatus(overnightStatus.data) || unwrapStatus(overnightStatusFile) || null;
 
   const recentEntries = summarizeRecentEntries(performanceHistory.entries);
+  recentEntries.orders = mergeRecentTradeOrders(recentEntries.orders, report?.live_outcomes || report?.paper_outcomes || []);
+  if (recentEntries.orders[0]?.recorded_at) recentEntries.lastTradeAt = recentEntries.orders[0].recorded_at;
   const timeline = buildOperatorTimeline(operatorTimeline, recentEntries, scannerRuntimeFile);
   const recentPolicyChanges = summarizePolicyHistory(policyHistory.entries);
   const livePositionSummary = normalizeLivePositions(livePositions);
@@ -945,6 +965,7 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
     }, {
       memeMonitorStatus,
       regularWatchStatus,
+      scannerRuntime: scannerRuntimeFile,
     });
 
   const alerts = buildAlerts({
@@ -1781,6 +1802,7 @@ function summarizeRecentEntries(entries = []) {
   let lastTradeAt = null;
   let lastBuyAt = null;
   let lastSellAt = null;
+  const buyTimes = [];
   for (const entry of entries) {
     if (['paper_outcome', 'execution_outcome'].includes(entry.entry_type)) {
       const recordedAt = entry.record?.recorded_at || null;
@@ -1795,7 +1817,11 @@ function summarizeRecentEntries(entries = []) {
       );
       const symbol = entry.record?.symbol || entry.record?.paper_result?.symbol || null;
       if (recordedAt) {
-        if (side === 'buy') lastBuyAt = lastBuyAt && new Date(lastBuyAt) > new Date(recordedAt) ? lastBuyAt : recordedAt;
+        if (side === 'buy') {
+          lastBuyAt = lastBuyAt && new Date(lastBuyAt) > new Date(recordedAt) ? lastBuyAt : recordedAt;
+          const buyTime = new Date(orderAt || recordedAt).getTime();
+          if (Number.isFinite(buyTime)) buyTimes.push(buyTime);
+        }
         if (side === 'sell') lastSellAt = lastSellAt && new Date(lastSellAt) > new Date(recordedAt) ? lastSellAt : recordedAt;
       }
       if (orderAt && (!lastTradeAt || new Date(orderAt) > new Date(lastTradeAt))) {
@@ -1862,6 +1888,12 @@ function summarizeRecentEntries(entries = []) {
     }
   }
 
+  const orderedBuyTimes = [...new Set(buyTimes)].sort((a, b) => a - b);
+  const buyIntervals = orderedBuyTimes.slice(1).map((time, index) => (time - orderedBuyTimes[index]) / 1000);
+  const averageSecondsBetweenBuys = buyIntervals.length
+    ? buyIntervals.reduce((sum, seconds) => sum + seconds, 0) / buyIntervals.length
+    : null;
+
   return {
     paperOutcomes: paperOutcomes.slice(-6).reverse(),
     orders: orders.slice(-5).reverse(),
@@ -1882,6 +1914,8 @@ function summarizeRecentEntries(entries = []) {
     lastTradeAt,
     lastBuyAt,
     lastSellAt,
+    recentBuyCount: orderedBuyTimes.length,
+    averageSecondsBetweenBuys,
   };
 }
 
@@ -2020,6 +2054,7 @@ function buildSourceHealth(endpointResults, fileResults, runtimeResults = {}) {
   sources.push(...normalizeRuntimeSourceHealth(runtimeResults.memeMonitorStatus?.phaseA?.sources, 'meme_monitor', 'phase_a'));
   sources.push(...normalizeRuntimeSourceHealth(runtimeResults.memeMonitorStatus?.phaseB?.sources, 'meme_monitor', 'phase_b'));
   sources.push(...normalizeRuntimeSourceHealth(runtimeResults.regularWatchStatus?.sources, 'regular_watch', 'regular_watch'));
+  sources.push(...normalizeRuntimeSourceHealth(runtimeResults.scannerRuntime?.sources, 'scanner', 'secondary_confirmation'));
   sources.push({
     source: 'data/logs/overnight-status.json',
     ok: Boolean(fileResults.overnightStatusFile?.exists),
@@ -2063,7 +2098,7 @@ function normalizeRuntimeSourceHealth(value, group, scope) {
       const status = String(entry.status || 'inactive').toLowerCase();
       const blockedReason = String(entry.blockedReason || entry.blocked_reason || '').toLowerCase();
       const disabled = status === 'off' || status === 'disabled' || status === 'source_disabled' || blockedReason === 'source_disabled';
-      const ok = disabled || status === 'active' || status === 'shadow' || status === 'reused_records';
+      const ok = disabled || Boolean(entry.healthy) || status === 'active' || status === 'healthy' || status === 'shadow' || status === 'reused_records';
       return {
         source: entry.source || null,
         ok,
@@ -2079,6 +2114,21 @@ function normalizeRuntimeSourceHealth(value, group, scope) {
         lastError: entry.lastError ? redactSourceMessage(entry.lastError) : null,
         cache: entry.cache || null,
         symbolsDetected: Number.isFinite(Number(entry.symbolsDetected ?? entry.symbols_detected)) ? Number(entry.symbolsDetected ?? entry.symbols_detected) : 0,
+        enabled: entry.enabled ?? null,
+        configured: entry.configured ?? null,
+        healthy: entry.healthy ?? null,
+        last_successful_request: entry.last_successful_request || null,
+        last_attempted_request: entry.last_attempted_request || null,
+        last_error_reason: entry.last_error_reason || null,
+        last_response_age_seconds: entry.last_response_age_seconds ?? null,
+        requests_used_this_minute: entry.requests_used_this_minute ?? null,
+        estimated_daily_credits_used: entry.estimated_daily_credits_used ?? null,
+        estimated_daily_credits_remaining: entry.estimated_daily_credits_remaining ?? null,
+        daily_reserve_credits: entry.daily_reserve_credits ?? null,
+        cache_hits: entry.cache_hits ?? null,
+        cache_misses: entry.cache_misses ?? null,
+        provider_latency_ms: entry.provider_latency_ms ?? null,
+        authentication_state: entry.authentication_state || null,
       };
     });
 }
@@ -2331,6 +2381,12 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
   const totalTradesToday = safeNumber(report?.paper_fills ?? report?.paper_orders ?? recentEntries.paperOutcomes.length, null);
   const uptimeHours = Number.isFinite(Number(status?.uptime_minutes)) ? Number(status.uptime_minutes) / 60 : null;
   const derivedOpenPositions = recentEntries.openPositions.length;
+  const skipSummary = scannerRuntime?.skip_summary && typeof scannerRuntime.skip_summary === 'object'
+    ? scannerRuntime.skip_summary
+    : {};
+  const dominantEntryBlock = Object.entries(skipSummary)
+    .filter(([, count]) => Number.isFinite(Number(count)) && Number(count) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))[0] || [null, 0];
   const liveOpenPositionsCount = livePositions?.available && Number.isFinite(Number(livePositions?.count))
     ? Number(livePositions.count)
     : null;
@@ -2443,7 +2499,45 @@ function buildSummary({ status, report, activePolicySnapshot, regime, liveMarket
     last_trade_at: recentEntries.lastTradeAt || recentEntries.lastSellAt || recentEntries.lastBuyAt || null,
     last_buy_at: recentEntries.lastBuyAt || null,
     last_sell_at: recentEntries.lastSellAt || null,
+    recent_buy_count: safeNumber(recentEntries.recentBuyCount, 0),
+    average_seconds_between_buys: safeNumber(recentEntries.averageSecondsBetweenBuys, null),
+    remaining_position_slots: safeNumber(scannerRuntime?.portfolio?.remaining_position_slots, null),
+    dominant_entry_block_reason: dominantEntryBlock[0],
+    dominant_entry_block_count: safeNumber(dominantEntryBlock[1], 0),
   };
+}
+
+function mergeRecentTradeOrders(historyOrders = [], reportOutcomes = []) {
+  const normalizedReportOrders = (Array.isArray(reportOutcomes) ? reportOutcomes : [])
+    .map((outcome) => {
+      const signal = outcome?.original_signal || outcome?.record?.original_signal || {};
+      const result = outcome?.paper_result || outcome?.record?.paper_result || {};
+      const recordedAt = outcome?.recorded_at || outcome?.record?.recorded_at || result?.filled_at || null;
+      return {
+        order_id: result?.order_id || signal?.request_id || signal?.signal_id || outcome?.signal_id || null,
+        recorded_at: recordedAt,
+        symbol: outcome?.symbol || signal?.symbol || result?.symbol || null,
+        side: String(signal?.side || result?.side || outcome?.side || '').toLowerCase(),
+        status: outcome?.status || result?.status || null,
+        quantity: safeNumber(result?.filled_quantity ?? signal?.quantity ?? outcome?.quantity ?? 0, 0),
+        pnl: safeNumber(outcome?.adjusted_pnl ?? outcome?.pnl ?? outcome?.net_pnl, 0),
+        adjusted_pnl: safeNumber(outcome?.adjusted_pnl ?? outcome?.pnl ?? outcome?.net_pnl, 0),
+        execution_drag: safeNumber(outcome?.execution_drag, 0),
+        win_loss: outcome?.win_loss || 'unknown',
+        confidence_bucket: outcome?.calibration_bucket || 'unknown',
+      };
+    })
+    .filter((order) => order.symbol && order.recorded_at);
+  const merged = [...(Array.isArray(historyOrders) ? historyOrders : []), ...normalizedReportOrders];
+  const unique = new Map();
+  for (const order of merged) {
+    const key = order.order_id || `${order.symbol}:${order.side}:${order.recorded_at}`;
+    const current = unique.get(key);
+    if (!current || safeNumber(order.pnl, 0) !== 0 || safeNumber(current.pnl, 0) === 0) unique.set(key, order);
+  }
+  return [...unique.values()]
+    .sort((a, b) => new Date(b.recorded_at || 0).getTime() - new Date(a.recorded_at || 0).getTime())
+    .slice(0, 5);
 }
 
 function buildWatchSnapshot({
@@ -2623,6 +2717,10 @@ function buildHomeSummary(snapshot = {}) {
     hotListStatus: buildHomeHotListStatus(snapshot),
     dynamicTopSymbols,
     dynamicTopFreshness: buildDynamicTopFreshness(snapshot, dynamicTopSymbols),
+    recent_activity: {
+      orders: Array.isArray(snapshot.recent_activity?.orders) ? snapshot.recent_activity.orders.slice(0, 5) : [],
+      last_trade_at: snapshot.recent_activity?.last_trade_at || snapshot.summary?.last_trade_at || null,
+    },
     source_health_summary: buildSourceHealthSummary(snapshot),
   };
 }
@@ -2660,7 +2758,7 @@ function buildWatchSnapshotResponse(snapshot = {}) {
 function buildCompactLiveSummary(live = {}) {
   return {
     status: live.status || null,
-    report: live.report || null,
+    report: buildCompactReport(live.report),
     scanner_runtime: buildCompactScannerRuntime(live.scanner_runtime || {}),
     exit_management: {
       ...(live.exit_management || {}),
@@ -2674,6 +2772,31 @@ function buildCompactLiveSummary(live = {}) {
     meme_monitor_runtime: buildCompactMemeMonitorSummary(live.meme_monitor_runtime || {}),
     regular_watch_intelligence: buildCompactRegularWatchSummary(live.regular_watch_intelligence || {}),
     regular_watch_runtime: buildCompactRegularWatchStatus(live.regular_watch_runtime || {}),
+  };
+}
+
+function buildCompactReport(report) {
+  if (!report || typeof report !== 'object') return null;
+  return {
+    date: report.date || report.report_date || null,
+    generated_at: report.generated_at || report.timestamp || null,
+    signal_count: safeNumber(report.signal_count, null),
+    paper_pnl: safeNumber(report.paper_pnl, null),
+    paper_fills: safeNumber(report.paper_fills, null),
+    paper_orders: safeNumber(report.paper_orders, null),
+    blocked_count: safeNumber(report.blocked_count, null),
+    approved_count: safeNumber(report.approved_count, null),
+    false_positives: safeNumber(report.false_positives, null),
+    pnl_by_symbol: report.pnl_by_symbol || null,
+    pnl_by_exit_reason: report.pnl_by_exit_reason || null,
+    signal_quality_summary: report.signal_quality_summary || null,
+    fill_quality_summary: report.fill_quality_summary || null,
+    execution_quality_summary: report.execution_quality_summary || null,
+    stopout_clustering: report.stopout_clustering || null,
+    churn: report.churn || null,
+    recommended_tuning_notes: Array.isArray(report.recommended_tuning_notes)
+      ? report.recommended_tuning_notes.slice(0, 20)
+      : [],
   };
 }
 
@@ -2759,14 +2882,39 @@ function buildCompactControlSummary(control = {}) {
 
 function applySupervisorState(control, supervisor) {
   if (!control || !supervisor) return control;
-  const merged = { ...control, supervisor };
-  if (supervisor.status !== 'healthy') return merged;
+  const supervisorAlive = Boolean(supervisor.supervisor_pid && isLocalPidAlive(supervisor.supervisor_pid));
+  const verifiedSupervisor = supervisor.status === 'healthy' && !supervisorAlive
+    ? {
+      ...supervisor,
+      status: 'degraded',
+      health_verified: false,
+      health_issues: ['SUPERVISOR_PROCESS_NOT_RUNNING'],
+    }
+    : { ...supervisor, health_verified: supervisorAlive };
+  const merged = { ...control, supervisor: verifiedSupervisor };
+  if (verifiedSupervisor.status !== 'healthy') {
+    merged.workflow = {
+      ...(control.workflow || {}),
+      status: control.workflow?.status === 'stopped' ? 'stopped' : 'degraded',
+      issues: [...new Set([...(control.workflow?.issues || []), ...(verifiedSupervisor.health_issues || [])])],
+    };
+    return merged;
+  }
   merged.workflow = { ...(control.workflow || {}), status: 'healthy', issues: [] };
   for (const name of ['trader', 'scanner']) {
-    const service = supervisor.services?.[name];
+    const service = verifiedSupervisor.services?.[name];
     if (service?.status === 'running') merged[name] = { ...(control[name] || {}), ...service, status: 'running' };
   }
   return merged;
+}
+
+function isLocalPidAlive(pid) {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function buildCompactMemeFeatureState(state = {}) {

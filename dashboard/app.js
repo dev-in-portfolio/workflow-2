@@ -131,6 +131,16 @@ function render(snapshot) {
   $('lastTradeHint').textContent = summary.last_trade_at
     ? `At ${formatClock(summary.last_trade_at)}`
     : `No live fill today. Snapshot ${snapshotAgeLabel}.`;
+  $('lastBuyAge').textContent = summary.last_buy_at ? formatRelativeTime(summary.last_buy_at) : missingText;
+  const averageBuyInterval = Number(summary.average_seconds_between_buys);
+  $('buyPaceHint').textContent = summary.average_seconds_between_buys !== null && summary.average_seconds_between_buys !== undefined && Number.isFinite(averageBuyInterval)
+    ? `Average ${formatAge(averageBuyInterval)} between ${formatCount(summary.recent_buy_count)} recent buys`
+    : `${formatCount(summary.recent_buy_count || 0)} recent buy; average needs at least 2`;
+  const dominantEntryBlockCount = Number(summary.dominant_entry_block_count || 0);
+  $('entryGateCount').textContent = formatCount(dominantEntryBlockCount);
+  $('entryGateHint').textContent = summary.dominant_entry_block_reason
+    ? `${String(summary.dominant_entry_block_reason).replaceAll('_', ' ').toLowerCase()}; ${formatCount(summary.remaining_position_slots ?? 0)} slot available`
+    : `${formatCount(summary.remaining_position_slots ?? 0)} position slot available`;
   $('workflowState').textContent = String(workflowState).toUpperCase();
   $('workflowHint').textContent = buildWorkflowHint(snapshot, snapshotAgeLabel, scannerAgeLabel);
   renderHotListStatus(snapshot);

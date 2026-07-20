@@ -50,6 +50,18 @@ test('live risk decisions use execution terminology', () => {
   assert.equal(decision.decision, 'APPROVED_FOR_EXECUTION');
 });
 
+test('live risk decisions do not depend on a paper adapter', () => {
+  const decision = evaluateRiskGate(baseSignal(), { available: true, open_positions_count: 0 }, basePolicy({
+    tradingMode: 'live',
+    executionMode: 'live',
+    liveTradingEnabled: true,
+    paperAdapterEnabled: false,
+  }));
+  assert.equal(decision.decision, 'APPROVED_FOR_EXECUTION');
+  assert.equal(decision.reason_codes.includes('PAPER_BROKER_UNAVAILABLE'), false);
+  assert.equal(decision.warnings.includes('LIVE_TRADING_MODE_ENABLED_BUT_NOT_IMPLEMENTED'), false);
+});
+
 test('risk gate max-open-position cap blocks buys only', () => {
   const fullPortfolio = {
     available: true,

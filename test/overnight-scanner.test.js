@@ -67,6 +67,7 @@ test('overnight scanner posts candidates to the local paper order endpoint', asy
     enabled: true,
     baseUrl: 'https://data.alpaca.markets',
     twelveDataApiKey: 'twelve-key',
+    twelveDataEnabled: true,
     twelveDataBaseUrl: 'https://api.twelvedata.com',
     localBaseUrl: `http://127.0.0.1:${localPort}`,
     apiKeyId: 'key',

@@ -42,20 +42,26 @@ function buildPolicyExitOverrides(policy = {}) {
   return Object.fromEntries(Object.entries(map).filter(([, value]) => Number.isFinite(Number(value))));
 }
 
+function optionalNumber(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return Number.NaN;
+  return Number(value);
+}
+
 function buildLiveEntryOverrides(policy = {}, env = {}) {
   const normalized = normalizeLiveStockPolicy(policy);
-  const envMinMovePct = Number(env.STOCK_SCANNER_MIN_MOVE_PCT);
-  const envMinRecentMovePct = Number(env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT);
-  const envMinRecentRangePct = Number(env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT);
-  const envMinRecentCloseLocationPct = Number(env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT);
+  const envMinMovePct = optionalNumber(env.STOCK_SCANNER_MIN_MOVE_PCT);
+  const envMinRecentMovePct = optionalNumber(env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT);
+  const envMinRecentRangePct = optionalNumber(env.STOCK_SCANNER_MIN_RECENT_RANGE_PCT);
+  const envMinRecentCloseLocationPct = optionalNumber(env.STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT);
+  const envMinAdjustedRankScore = optionalNumber(env.SCANNER_MIN_ADJUSTED_RANK_SCORE);
   return {
-    minMovePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minMovePct, normalized.minMovePct, Number.isFinite(envMinMovePct) ? envMinMovePct : 0),
+    minMovePct: Number.isFinite(envMinMovePct) ? envMinMovePct : Math.max(LIVE_STOCK_POLICY_DEFAULTS.minMovePct, normalized.minMovePct),
     requireRecentMomentum: normalized.requireRecentMomentum,
-    minRecentMovePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct, normalized.minRecentMovePct, Number.isFinite(envMinRecentMovePct) ? envMinRecentMovePct : 0),
-    minRecentRangePct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct, normalized.minRecentRangePct, Number.isFinite(envMinRecentRangePct) ? envMinRecentRangePct : 0),
-    minRecentCloseLocationPct: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct, normalized.minRecentCloseLocationPct, Number.isFinite(envMinRecentCloseLocationPct) ? envMinRecentCloseLocationPct : 0),
+    minRecentMovePct: Number.isFinite(envMinRecentMovePct) ? envMinRecentMovePct : Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct, normalized.minRecentMovePct),
+    minRecentRangePct: Number.isFinite(envMinRecentRangePct) ? envMinRecentRangePct : Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentRangePct, normalized.minRecentRangePct),
+    minRecentCloseLocationPct: Number.isFinite(envMinRecentCloseLocationPct) ? envMinRecentCloseLocationPct : Math.max(LIVE_STOCK_POLICY_DEFAULTS.minRecentCloseLocationPct, normalized.minRecentCloseLocationPct),
     allowContrarianEntries: false,
-    minAdjustedRankScore: Math.max(LIVE_STOCK_POLICY_DEFAULTS.minAdjustedRankScore, normalized.minAdjustedRankScore),
+    minAdjustedRankScore: Number.isFinite(envMinAdjustedRankScore) ? envMinAdjustedRankScore : Math.max(LIVE_STOCK_POLICY_DEFAULTS.minAdjustedRankScore, normalized.minAdjustedRankScore),
     scannerSelectionV2ShadowEnabled: true,
     scannerSelectionV2AuthorityEnabled: true,
   };
@@ -111,7 +117,7 @@ function main(env = process.env) {
     keepAlive: true,
     runtimeStateEnabled: true,
     symbols: stockSymbols,
-    intervalMs: 10_000,
+    intervalMs: Math.max(5_000, Number(scannerEnv.STOCK_SCANNER_INTERVAL_SECONDS || 10) * 1000),
     maxCandidatesPerRun: 8,
     notional: Number(livePolicy.buyNotionalTarget || runtimeEnv.BUY_NOTIONAL_TARGET || 150),
     ...liveEntryOverrides,

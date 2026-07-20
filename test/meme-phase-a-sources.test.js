@@ -112,7 +112,16 @@ test('phase A adapters surface market, tradability, halt, and SEC signals', asyn
   assert.equal(halts.sourceStatus.status, 'active');
   assert.equal(halts.symbols[0].haltStatus, 'halted');
 
-  const sec = await fetchSecEdgarSignals({ env: { MEME_SEC_EDGAR_LOOKBACK_DAYS: '5' }, fetchImpl, repoRoot, symbols: ['GME'] });
+  const sec = await fetchSecEdgarSignals({
+    env: {
+      SEC_EDGAR_ENABLED: 'true',
+      SEC_EDGAR_USER_AGENT: 'workflow-2/1.0 test@example.com',
+      MEME_SEC_EDGAR_LOOKBACK_DAYS: '5',
+    },
+    fetchImpl,
+    repoRoot,
+    symbols: ['GME'],
+  });
   assert.equal(sec.sourceStatus.status, 'active');
   assert.equal(sec.symbols[0].catalystScore > 0, true);
   assert(sec.symbols[0].riskWarnings.includes('sec_offering_risk_detected'));

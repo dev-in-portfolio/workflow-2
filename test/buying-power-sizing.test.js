@@ -1,7 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { calculateBuyingPowerSize } = require('../src/buying-power-sizing');
+const { calculateBuyingPowerSize, calculateSlotAwareDeploymentPct } = require('../src/buying-power-sizing');
+
+test('slot-aware deployment uses half for the first of two slots and all remaining cash for the final slot', () => {
+  assert.equal(calculateSlotAwareDeploymentPct({ baseDeploymentPct: 50, maxSlots: 2, remainingSlots: 2 }), 50);
+  assert.equal(calculateSlotAwareDeploymentPct({ baseDeploymentPct: 50, maxSlots: 2, remainingSlots: 1 }), 100);
+});
 const { calculateRiskBudgetSize } = require('../src/risk-budget-sizing');
 
 test('buying-power sizing uses nearly all available buying power', () => {

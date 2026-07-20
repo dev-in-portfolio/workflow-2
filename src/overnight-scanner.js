@@ -43,6 +43,7 @@ function createOvernightScanner(options = {}) {
   const apiSecretKey = options.apiSecretKey || env.ALPACA_API_SECRET_KEY || '';
   const baseUrl = trimTrailingSlash(options.baseUrl || env.ALPACA_DATA_BASE_URL || 'https://data.alpaca.markets');
   const twelveDataApiKey = options.twelveDataApiKey || env.TWELVE_DATA_API_KEY || env.TWELVEDATA_API_KEY || '';
+  const twelveDataEnabled = options.twelveDataEnabled ?? parseBool(env.TWELVE_DATA_ENABLED, false);
   const twelveDataBaseUrl = trimTrailingSlash(options.twelveDataBaseUrl || env.TWELVE_DATA_BASE_URL || 'https://api.twelvedata.com');
   const localBaseUrl = trimTrailingSlash(options.localBaseUrl || options.local_url || '');
   const enabled = options.enabled !== false;
@@ -66,7 +67,7 @@ function createOvernightScanner(options = {}) {
     ) || DEFAULT_SELL_NET_PROFIT_FLOOR_DOLLARS,
   );
   const sellLossThresholdPct = Math.max(0.01, Number(options.sellLossThresholdPct ?? env.OVERNIGHT_SCANNER_SELL_LOSS_EXIT_THRESHOLD_PCT ?? 0.75) || 0.75);
-  const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? Boolean(twelveDataApiKey);
+  const requireMultiSourceConfirmation = options.requireMultiSourceConfirmation ?? twelveDataEnabled;
   const allowContrarianEntries = options.allowContrarianEntries ?? false;
   const blockBuys = options.blockBuys ?? parseBool(env.BLOCK_BUYS, false);
   const sellMaxPriceDiffPct = safeNumber(options.sellMaxPriceDiffPct ?? env.SELL_MAX_PROVIDER_PRICE_DIFF_PCT, 0.75);
@@ -103,12 +104,12 @@ function createOvernightScanner(options = {}) {
         baseUrl,
         symbols,
       });
-      const twelveDataQuotes = twelveDataApiKey
+      const twelveDataQuotes = twelveDataEnabled && twelveDataApiKey
         ? await fetchTwelveDataBundle({
           fetchImpl: marketFetch,
           apiKey: twelveDataApiKey,
           baseUrl: twelveDataBaseUrl,
-          symbols,
+          symbols: [...new Set(symbols)].slice(0, Math.max(0, Number(env.TWELVE_DATA_MAX_SYMBOLS_PER_CYCLE || 2))),
         })
         : {};
       const positions = await fetchPositions({
@@ -411,8 +412,8 @@ async function fetchAccount({ fetchImpl, apiKeyId, apiSecretKey, baseUrl }) {
 
 async function fetchTwelveDataBundle({ fetchImpl, apiKey, baseUrl, symbols }) {
   const encodedSymbols = encodeURIComponent(symbols.join(','));
-  const url = `${baseUrl}/quote?symbol=${encodedSymbols}&apikey=${encodeURIComponent(apiKey)}`;
-  const response = await fetchImpl(url, { method: 'GET' });
+  const url = `${baseUrl}/quote?symbol=${encodedSymbols}`;
+  const response = await fetchImpl(url, { method: 'GET', headers: { Authorization: `apikey ${apiKey}`, Accept: 'application/json' } });
   const body = await readJsonResponse(response);
   if (!response.ok) {
     return {};

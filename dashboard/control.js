@@ -471,7 +471,7 @@ function render() {
     renderMemeStateRow('Nasdaq Halts', memeFeatures.MEME_SOURCE_NASDAQ_HALTS_ENABLED),
     renderMemeStateRow('SEC EDGAR', memeFeatures.MEME_SOURCE_SEC_EDGAR_ENABLED),
     renderMemeStateRow('Stocktwits Source', memeFeatures.MEME_SOURCE_STOCKTWITS_ENABLED),
-    renderMemeStateRow('Polygon Source', memeFeatures.MEME_SOURCE_POLYGON_ENABLED),
+    renderMemeStateRow('Massive (formerly Polygon.io)', memeFeatures.MEME_SOURCE_POLYGON_ENABLED),
     renderMemeStateRow('Alpha Vantage Source', memeFeatures.MEME_SOURCE_ALPHA_VANTAGE_ENABLED),
   ]);
   $('memeRuntimeState').innerHTML = renderStateRows([

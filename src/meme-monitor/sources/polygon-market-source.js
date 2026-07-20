@@ -2,18 +2,41 @@ const path = require('path');
 const { scoreMarketConfirmation } = require('../market-confirmation-score');
 const { nowIso } = require('../../util');
 const { buildSourceStatus, fetchJsonWithTimeout, redactSourceMessage } = require('../../source-fetch');
+const { createMassiveClient } = require('../../massive-client');
 
 async function fetchPolygonMarketSignals({ env = process.env, fetchImpl = globalThis.fetch, symbols = [], timeoutMs = 5000 } = {}) {
-  const apiKey = String(env?.POLYGON_API_KEY || '').trim();
+  if (String(env.MASSIVE_ENABLED || 'false').toLowerCase() === 'true') {
+    const client = createMassiveClient({ env: { ...env, MASSIVE_TIMEOUT_MS: env.MASSIVE_TIMEOUT_MS || timeoutMs }, fetchImpl });
+    const out = [];
+    const limit = Math.max(0, Number(env.MASSIVE_MAX_SYMBOLS_PER_CYCLE || 2));
+    for (const symbol of [...new Set(symbols.map((value) => String(value).toUpperCase()))].slice(0, limit)) {
+      const quote = await client.quote(symbol);
+      out.push({
+        symbol,
+        sourceSignalType: 'market_confirmation',
+        score: quote.ok ? 80 : null,
+        confidence: quote.ok ? 0.8 : 0,
+        reasonCodes: [quote.reasonCode || 'MASSIVE_REALTIME_CONFIRMED'],
+        riskWarnings: quote.ok ? [] : [quote.reasonCode || 'MASSIVE_DATA_UNAVAILABLE'],
+        rawSummary: { snapshotStatus: quote.freshness || 'unavailable', spreadStatus: quote.bid && quote.ask ? 'available' : 'unknown', volumeMultiple: null },
+        available: quote.ok,
+        status: quote.ok ? 'active' : 'unavailable',
+        marketContext: quote.ok ? { currentPrice: quote.price, previousClose: quote.previousClose, openPrice: quote.open, volume: quote.volume, bid: quote.bid, ask: quote.ask, stale: false } : null,
+      });
+    }
+    const health = client.health();
+    return { sourceStatus: buildSourceStatus({ source: 'massive', providerLabel: 'Massive (formerly Polygon.io)', enabled: true, available: out.some((entry) => entry.available), status: out.some((entry) => entry.available) ? 'active' : 'unavailable', symbolsConfirmed: out.filter((entry) => entry.available).length, lastRunAt: nowIso(), lastError: health.lastReasonCode, ...health }), symbols: out };
+  }
+  const apiKey = String(env?.MASSIVE_API_KEY || env?.POLYGON_API_KEY || '').trim();
   if (!apiKey) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'POLYGON_API_KEY missing', blockedReason: 'missing_credentials' }),
+      sourceStatus: buildSourceStatus({ source: 'massive', providerLabel: 'Massive (formerly Polygon.io)', enabled: true, available: false, status: 'missing_credentials', lastRunAt: null, lastError: 'MASSIVE_API_KEY missing', blockedReason: 'missing_credentials' }),
       symbols: [],
     };
   }
   if (!symbols.length) {
     return {
-      sourceStatus: buildSourceStatus({ source: 'polygon', enabled: true, available: true, status: 'active', symbolsConfirmed: 0, lastRunAt: nowIso(), lastError: null }),
+      sourceStatus: buildSourceStatus({ source: 'massive', providerLabel: 'Massive (formerly Polygon.io)', enabled: true, available: true, status: 'active', symbolsConfirmed: 0, lastRunAt: nowIso(), lastError: null }),
       symbols: [],
     };
   }

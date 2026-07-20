@@ -171,7 +171,10 @@ async function runRegularWatchSources(options = {}) {
     : 55;
   const regularWatchMovers = regularWatchList.filter((entry) => Number(entry.score || 0) >= moverThreshold || Math.abs(Number(entry.movePct || 0)) >= 2).slice(0, 20);
   const blockedSymbols = regularWatchList.filter((entry) => entry.status === 'blocked').length;
-  const stale = regularWatchList.some((entry) => entry.stale) || sourceResults.anyStale;
+  const staleSymbolCount = regularWatchList.filter((entry) => entry.stale).length;
+  const staleSymbolFraction = regularWatchList.length ? staleSymbolCount / regularWatchList.length : 0;
+  const staleWarnFraction = clampRatio(env.REGULAR_WATCH_STALE_WARN_FRACTION, 0.10);
+  const stale = sourceResults.anyStale || staleSymbolFraction >= staleWarnFraction;
   const activeSources = Object.values(sourceStatusMap).filter((entry) => ['active', 'warn'].includes(String(entry.status || '').toLowerCase()) && entry.source !== 'approvedUniverse');
   const runtimeStatus = sourceResults.anyErrors || sourceResults.lastError || stale || blockedSymbols > 0
     ? 'warn'
@@ -223,6 +226,9 @@ async function runRegularWatchSources(options = {}) {
     }),
     generatedAt: now,
     stale,
+    staleSymbolCount,
+    staleSymbolFraction,
+    staleWarnFraction,
     status: runtimeStatus,
     lastRunAt: now,
     lastError: sourceResults.lastError || null,
@@ -515,10 +521,11 @@ function buildFastLaneSymbols({
     candidates.push({ symbol: normalized, source, score: Number(score) || 0 });
   };
   for (const entry of Array.isArray(previousStatus?.regularWatchMovers) ? previousStatus.regularWatchMovers : []) {
+    if (entry?.stale === true) continue;
     add(entry?.symbol, 'previous_regular_watch_movers', entry?.score ?? entry?.regularWatchScore, entry?.fastLaneStreak);
   }
   for (const entry of Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList.slice(0, max) : []) {
-    if (String(entry?.status || '').toLowerCase() === 'blocked') continue;
+    if (entry?.stale === true || String(entry?.status || '').toLowerCase() === 'blocked') continue;
     add(entry?.symbol, 'previous_regular_watch_top', entry?.score ?? entry?.regularWatchScore, entry?.fastLaneStreak);
   }
   for (const entry of Array.isArray(dynamicHotList?.dynamicHotList) ? dynamicHotList.dynamicHotList : []) {
@@ -549,7 +556,7 @@ function isSuitableRegularWatchAsset(asset = {}) {
   const name = String(asset.name || '').trim();
   if (!symbol) return false;
   if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/.test(symbol)) return false;
-  if (/\b(warrant|right|unit|preferred)\b/i.test(name)) return false;
+  if (/\b(warrants?|rights?|units?|preferred(?:\s+(?:stock|shares?))?)\b/i.test(name)) return false;
   if (/\b(2x|3x|ultrapro|leveraged|inverse)\b/i.test(name)) return false;
   if (LEVERAGED_OR_VOLATILITY_ETFS.has(symbol)) return false;
   return true;

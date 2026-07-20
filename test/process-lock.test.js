@@ -37,3 +37,16 @@ test('stale process locks are replaced', () => {
   assert.equal(replacement.replaced_stale, true);
   assert.equal(readProcessLock({ repoRoot, name: 'trader' }).lock.owner, 'test');
 });
+
+test('a lock owned by a dead pid is immediately replaceable after restart', () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-lock-'));
+  const lockPath = path.join(repoRoot, 'data', 'locks', 'workflow-supervisor.lock.json');
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({
+    name: 'workflow-supervisor', owner: 'old', pid: 99999999,
+    acquired_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  }));
+  const replacement = acquireProcessLock({ repoRoot, name: 'workflow-supervisor', owner: 'new', pid: process.pid });
+  assert.equal(replacement.acquired, true);
+  assert.equal(replacement.replaced_stale, true);
+});

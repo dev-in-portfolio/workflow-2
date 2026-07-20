@@ -21,6 +21,7 @@ const ReasonCode = {
   RELATIVE_VOLUME_SOURCE_MISMATCH: 'RELATIVE_VOLUME_SOURCE_MISMATCH',
   RELATIVE_VOLUME_OUTLIER: 'RELATIVE_VOLUME_OUTLIER',
   SESSION_FRACTION_UNAVAILABLE: 'SESSION_FRACTION_UNAVAILABLE',
+  INTRADAY_MOMENTUM_NOT_QUALIFIED: 'INTRADAY_MOMENTUM_NOT_QUALIFIED',
 };
 
 function buildSelectionV2Score({
@@ -92,6 +93,7 @@ function buildSelectionV2Score({
     && features.spread_pct <= safeNumber(options.selectionV2MaxSpreadPct, 2.5)
     && (features.relative_volume_available === false || features.relative_volume >= safeNumber(options.selectionV2MinRelativeVolume, 0.25))
     && features.freshness_score >= safeNumber(options.selectionV2MinFreshnessScore, 35)
+    && (options.intradayMomentumRequired !== true || features.intraday_momentum_qualified === true)
     && !penalties.hard_block,
   );
 
@@ -218,6 +220,8 @@ function buildMarketFeatures({
   const rewardRiskRatio = Number.isFinite(stopDistance) && stopDistance > 0 && Number.isFinite(targetDistance)
     ? targetDistance / stopDistance
     : null;
+  const intraday = snapshot.intradayMomentum || snapshot.intraday_momentum || null;
+  const episode = snapshot.momentumEpisode || snapshot.momentum_episode || null;
 
   return {
     current_price: roundScore(price),
@@ -229,16 +233,31 @@ function buildMarketFeatures({
     distance_from_intraday_high_pct: roundScore(distanceFromHighPct),
     distance_from_intraday_low_pct: roundScore(distanceFromLowPct),
     position_within_daily_range_pct: roundScore(positionWithinRangePct),
-    one_minute_return_pct: Number.isFinite(oneMinuteReturnPct) ? roundScore(oneMinuteReturnPct) : null,
+    one_minute_return_pct: Number.isFinite(safeNumber(intraday?.one_minute_return_pct, null))
+      ? roundScore(intraday.one_minute_return_pct)
+      : (Number.isFinite(oneMinuteReturnPct) ? roundScore(oneMinuteReturnPct) : null),
+    three_minute_return_pct: roundScore(intraday?.three_minute_return_pct),
+    five_minute_return_pct: roundScore(intraday?.five_minute_return_pct),
+    fifteen_minute_return_pct: roundScore(intraday?.fifteen_minute_return_pct),
     momentum_vs_daily_move_heuristic: Number.isFinite(oneMinuteReturnPct) && Number.isFinite(signedMovePct)
       ? roundScore(oneMinuteReturnPct - (signedMovePct / 20))
       : null,
-    momentum_acceleration_pct: null,
-    momentum_data_quality: 'single_bar_heuristic',
-    momentum_bar_count: Number.isFinite(oneMinuteReturnPct) ? 1 : 0,
+    momentum_acceleration_pct: roundScore(intraday?.acceleration_pct),
+    momentum_data_quality: intraday?.measured ? 'rolling_minute_bars' : 'single_bar_heuristic',
+    momentum_bar_count: intraday?.bar_count ?? (Number.isFinite(oneMinuteReturnPct) ? 1 : 0),
+    intraday_momentum_measured: Boolean(intraday?.measured),
+    intraday_momentum_qualified: Boolean(intraday?.qualified && episode?.active),
+    intraday_momentum_reason_codes: Array.isArray(intraday?.reason_codes) ? intraday.reason_codes : [],
+    momentum_episode_id: episode?.active ? episode.episode_id || null : null,
+    momentum_episode_started_at: episode?.active ? episode.started_at || null : null,
+    trend_consistency_score: intraday?.measured
+      ? roundScore(clamp(safeNumber(intraday?.trend_consistency, 0) * 100, 0, 100))
+      : roundScore(clamp((positionWithinRangePct - 40) * 1.25 + safeNumber(oneMinuteReturnPct, 0) * 10, 0, 100)),
+    volume_acceleration: roundScore(intraday?.volume_acceleration),
+    distance_from_rolling_vwap_pct: roundScore(intraday?.distance_from_rolling_vwap_pct),
+    fade_from_rolling_high_pct: roundScore(intraday?.fade_from_rolling_high_pct),
     reversal_from_peak_pct: roundScore(distanceFromHighPct),
     pullback_depth_pct: Number.isFinite(distanceFromHighPct) ? roundScore(distanceFromHighPct) : null,
-    trend_consistency_score: roundScore(clamp((positionWithinRangePct - 40) * 1.25 + safeNumber(oneMinuteReturnPct, 0) * 10, 0, 100)),
     current_volume: currentVolume,
     current_volume_source: currentVolumeSource,
     minute_volume: minuteVolume,
@@ -271,6 +290,11 @@ function classifySetup(features = {}) {
   const vwapDistance = safeNumber(features.distance_from_vwap_pct, 0);
   const relativeVolume = safeNumber(features.relative_volume, 1);
   const reasonCodes = [];
+
+  if (features.intraday_momentum_qualified === true) {
+    reasonCodes.push('INTRADAY_MOMENTUM_EPISODE_CONFIRMED');
+    return { setup_classification: SetupClassification.MOMENTUM_CONTINUATION, reason_codes: reasonCodes };
+  }
 
   if (move >= 1.5 && highDistance <= 1.2 && rangePosition >= 75 && oneMinute >= 0) {
     reasonCodes.push('BREAKOUT_CONFIRMED');
@@ -321,6 +345,10 @@ function buildPenalties(features = {}, options = {}) {
     reasonCodes.push(ReasonCode.RELATIVE_VOLUME_TOO_LOW);
   }
   if (Number.isFinite(relativeVolume) && relativeVolume > 50) reasonCodes.push(ReasonCode.RELATIVE_VOLUME_OUTLIER);
+  if (options.intradayMomentumRequired === true && features.intraday_momentum_qualified !== true) {
+    reasonCodes.push(ReasonCode.INTRADAY_MOMENTUM_NOT_QUALIFIED);
+    for (const reason of features.intraday_momentum_reason_codes || []) reasonCodes.push(reason);
+  }
 
   return {
     overextension_penalty: overextensionPenalty,
@@ -346,6 +374,15 @@ function scoreMomentum(features, setupClassification) {
   const oneMinute = safeNumber(features.one_minute_return_pct, 0);
   const heuristic = safeNumber(features.momentum_vs_daily_move_heuristic, 0);
   const base = setupClassification === SetupClassification.UNCLASSIFIED ? 2 : 6;
+  if (features.momentum_data_quality === 'rolling_minute_bars') {
+    const threeMinute = safeNumber(features.three_minute_return_pct, 0);
+    const fiveMinute = safeNumber(features.five_minute_return_pct, 0);
+    const acceleration = safeNumber(features.momentum_acceleration_pct, 0);
+    const consistency = safeNumber(features.trend_consistency_score, 0) / 100;
+    const volumeAcceleration = safeNumber(features.volume_acceleration, 1);
+    return clamp(3 + Math.max(0, oneMinute) * 5 + Math.max(0, threeMinute) * 10 + Math.max(0, fiveMinute) * 5
+      + Math.max(0, acceleration) * 4 + consistency * 5 + Math.max(0, volumeAcceleration - 1) * 2, 0, 18);
+  }
   return clamp(base + Math.max(0, oneMinute) * 12 + Math.max(0, heuristic) * 2, 0, 18);
 }
 

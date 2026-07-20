@@ -157,8 +157,8 @@ async function fetchTwelveDataBundle({ fetchImpl, apiKey, baseUrl, symbols }) {
   const quotes = {};
   for (const chunk of chunkSymbols(symbols, 20)) {
     const encodedSymbols = encodeURIComponent(chunk.join(','));
-    const url = `${baseUrl}/quote?symbol=${encodedSymbols}&apikey=${encodeURIComponent(apiKey)}`;
-    const response = await fetchImpl(url, { method: 'GET' });
+    const url = `${baseUrl}/quote?symbol=${encodedSymbols}`;
+    const response = await fetchImpl(url, { method: 'GET', headers: { Authorization: `apikey ${apiKey}`, Accept: 'application/json' } });
     const body = await readJsonResponse(response);
     if (!response.ok) continue;
     Object.assign(quotes, normalizeTwelveDataQuotes(body, chunk));

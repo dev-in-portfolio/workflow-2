@@ -20,6 +20,17 @@ test('dashboard source health includes runtime reddit and regular watch sources'
   }, null, 2));
   fs.writeFileSync(path.join(dataDir, 'performance-history.jsonl'), '');
   fs.writeFileSync(path.join(dataDir, 'policy-history.jsonl'), '');
+  fs.mkdirSync(path.join(dataDir, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'state', 'scanner-runtime.json'), JSON.stringify({
+    updated_at: '2026-06-30T14:05:00.000Z',
+    last_scan_time: '2026-06-30T14:05:00.000Z',
+    sources: [{
+      source: 'twelve_data', enabled: true, configured: true, healthy: true, status: 'healthy',
+      last_successful_request: '2026-06-30T14:04:59.000Z', requests_used_this_minute: 1,
+      estimated_daily_credits_used: 12, estimated_daily_credits_remaining: 788,
+      authentication_state: 'authenticated',
+    }],
+  }, null, 2));
 
   fs.writeFileSync(path.join(dataDir, 'runtime', 'meme-monitor-status.json'), JSON.stringify({
     version: '2026-06-30.meme-monitor-status.1',
@@ -241,6 +252,7 @@ test('dashboard source health includes runtime reddit and regular watch sources'
     const inaccessible = sourceHealth.find((entry) => entry.source === 'wallstreetbetsnew' && entry.status === 'source_not_found_or_inaccessible');
     const quarantined = sourceHealth.find((entry) => entry.source === 'amcstock');
     const errored = sourceHealth.find((entry) => entry.source === 'daytrading');
+    const twelveData = sourceHealth.find((entry) => entry.source === 'twelve_data');
 
     assert.equal(reddit.status, 'active');
     assert.equal(reddit.group, 'meme_monitor');
@@ -262,6 +274,9 @@ test('dashboard source health includes runtime reddit and regular watch sources'
     assert.equal(phaseB.ok, false);
     assert.equal(regular.status, 'active');
     assert.equal(regular.group, 'regular_watch');
+    assert.equal(twelveData.status, 'healthy');
+    assert.equal(twelveData.ok, true);
+    assert.equal(twelveData.authentication_state, 'authenticated');
   } finally {
     await new Promise((resolve) => trader.close(resolve));
   }

@@ -70,7 +70,10 @@ function computePaperOutcome({
     exit_slippage,
     fees,
   ].filter((value) => Number.isFinite(value)).reduce((sum, value) => sum + value, 0);
-  const net_pnl = Number.isFinite(gross_pnl) ? gross_pnl - execution_drag : null;
+  // entry_price and exit_price are confirmed fill prices, so their difference
+  // already contains entry/exit slippage. Keep execution_drag as a diagnostic,
+  // but subtract only fees from realized fill-to-fill P&L.
+  const net_pnl = Number.isFinite(gross_pnl) ? gross_pnl - (fees || 0) : null;
   const execution_drag_ratio = Number.isFinite(net_pnl) && net_pnl !== 0
     ? execution_drag / Math.max(1, Math.abs(net_pnl) + execution_drag)
     : null;
@@ -85,7 +88,7 @@ function computePaperOutcome({
     trade_duration_seconds: optionalNumber(trade_duration_seconds, optionalNumber(holding_period_seconds, null)),
     exit_reason: exit_reason || null,
     exit_state: exit_state || null,
-    accounting_version: '2026-07-13.broker-fill.1',
+    accounting_version: '2026-07-16.broker-fill.2',
     accounting_valid: accountingValid,
     accounting_reason_codes: [...new Set(accounting_reason_codes || [])],
     entry_price_source: entry_price_source || null,

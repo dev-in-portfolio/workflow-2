@@ -18,6 +18,7 @@ const {
   applyIncumbencyDecay,
   buildDiversifiedRanking,
   buildFastLaneSymbols,
+  isSuitableRegularWatchAsset,
   runRegularWatchSources,
 } = require('../src/regular-watch/regular-watch-source-runner');
 const { createRegularWatchLoop } = require('../src/regular-watch/regular-watch-loop');
@@ -157,7 +158,7 @@ test('regular watch runner scans configured symbols and keeps scanner config unc
   const after = buildScannerConfig(env);
   const requestedSymbols = [...new Set(fetchImpl.requested.flatMap((url) => parseRequestedSymbols(url)))];
   assert.deepEqual(after.symbols, before.symbols);
-  assert.deepEqual(status.regularWatchList.map((entry) => entry.symbol), ['AAPL', 'MSFT', 'SMCI', 'SPCX']);
+  assert.deepEqual(status.regularWatchList.map((entry) => entry.symbol).sort(), ['AAPL', 'MSFT', 'SMCI', 'SPCX']);
   assert.equal(requestedSymbols.includes('AAPL'), true);
   assert.equal(requestedSymbols.includes('MSFT'), true);
   assert.ok(fs.existsSync(resolveRegularWatchStatusPath({ dataDir })));
@@ -420,6 +421,14 @@ test('regular watch fast lane rescans prior movers while rotation continues', as
   assert(secondSymbols.some((symbol) => !firstSymbols.includes(symbol)));
 });
 
+test('regular watch excludes plural warrant, right, unit, and preferred asset names', () => {
+  assert.equal(isSuitableRegularWatchAsset({ symbol: 'CCGWW', name: 'Cheche Group Inc Warrants' }), false);
+  assert.equal(isSuitableRegularWatchAsset({ symbol: 'SDHIR', name: 'Special District Holdings Rights' }), false);
+  assert.equal(isSuitableRegularWatchAsset({ symbol: 'AACBU', name: 'AACB Acquisition Units' }), false);
+  assert.equal(isSuitableRegularWatchAsset({ symbol: 'TESTP', name: 'Test Corp Preferred Shares' }), false);
+  assert.equal(isSuitableRegularWatchAsset({ symbol: 'CHRW', name: 'C.H. Robinson Worldwide Inc Common Stock' }), true);
+});
+
 test('regular watch expires repeat incumbents and decays their score', () => {
   const previousStatus = {
     regularWatchMovers: [{ symbol: 'FAV', score: 90, fastLaneStreak: 3 }],
@@ -443,6 +452,29 @@ test('regular watch expires repeat incumbents and decays their score', () => {
   ], { previousStatus, fastLaneSymbols: fastLane.symbols, decayPoints: 5 });
   assert.equal(decayed.find((entry) => entry.symbol === 'KEEP').score, 80);
   assert.equal(decayed.find((entry) => entry.symbol === 'NEW').score, 82);
+});
+
+test('regular watch rotates stale incumbents out after one run', () => {
+  const previousStatus = {
+    regularWatchMovers: [
+      { symbol: 'STALE', score: 95, fastLaneStreak: 1, stale: true },
+      { symbol: 'FRESH', score: 90, fastLaneStreak: 1, stale: false },
+    ],
+    regularWatchList: [
+      { symbol: 'STALE', score: 95, fastLaneStreak: 1, stale: true },
+      { symbol: 'FRESH', score: 90, fastLaneStreak: 1, stale: false },
+    ],
+  };
+
+  const fastLane = buildFastLaneSymbols({
+    enabled: true,
+    limit: 10,
+    maxConsecutiveRuns: 3,
+    previousStatus,
+    universeSymbols: ['STALE', 'FRESH', 'NEW'],
+  });
+
+  assert.deepEqual(fastLane.symbols, ['FRESH']);
 });
 
 test('regular watch visible ranking reserves space for discoveries', () => {

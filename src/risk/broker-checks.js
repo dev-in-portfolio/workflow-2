@@ -20,8 +20,9 @@ function performBrokerChecks(
     if (brokerReason && !reasonCodes.includes(brokerReason)) reasonCodes.push(brokerReason);
   }
 
-  if (config.liveTradingEnabled) warnings.push('LIVE_TRADING_MODE_ENABLED_BUT_NOT_IMPLEMENTED');
-  if (!config.paperAdapterEnabled) reasonCodes.push(RiskReason.PAPER_BROKER_UNAVAILABLE);
+  const liveExecution = String(config.executionMode || config.tradingMode || '').trim().toLowerCase() === 'live'
+    && config.liveTradingEnabled === true;
+  if (!liveExecution && !config.paperAdapterEnabled) reasonCodes.push(RiskReason.PAPER_BROKER_UNAVAILABLE);
 
   if (signalSide === 'buy' && config.blockBuys) {
     reasonCodes.push('BUY_SIDE_BLOCKED');

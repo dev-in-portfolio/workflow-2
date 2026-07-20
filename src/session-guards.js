@@ -22,18 +22,25 @@ const DEFAULTS = {
   maxDailyDrawdownDollars: 5,
   rollingDrawdownEnabled: true,
   maxRollingDrawdownDollars: 6,
-  consecutiveLossEnabled: true,
-  maxConsecutiveLosses: 3,
-  stopoutClusterEnabled: true,
+  // Pattern-based pauses are opt-in. Hard daily and rolling drawdown limits
+  // remain enabled by default and still fail closed.
+  consecutiveLossEnabled: false,
+  maxConsecutiveLosses: 2,
+  consecutiveLossCooldownSeconds: 15 * 60,
+  stopoutClusterEnabled: false,
   stopoutClusterWindowSeconds: 60 * 60,
   stopoutClusterMaxStopouts: 2,
   stopoutClusterCooldownSeconds: 30 * 60,
-  badSessionEnabled: true,
-  lowProfitHighChurnEnabled: true,
+  // Session quality is diagnostic by default. Hard loss, drawdown and stopout
+  // protections remain active; a low win-rate sample must be explicitly opted
+  // into before it can halt entries for the rest of the day.
+  badSessionEnabled: false,
+  lowProfitHighChurnEnabled: false,
   rollingWindowHours: 6,
   historyMaxBytes: 512 * 1024,
   lowProfitThresholdDollars: 0.5,
   highChurnTradeCount: 5,
+  lowProfitHighChurnCooldownSeconds: 30 * 60,
   badSessionMinTrades: 4,
   badSessionWinRateThreshold: 0.4,
 };
@@ -52,6 +59,7 @@ async function evaluateSessionGuards(options = {}) {
     ? options.paperOutcomes
     : readPaperOutcomesFromHistory(options.performanceHistoryPath || path.join(repoRoot, 'data', 'performance-history.jsonl'), safeNumber(options.historyMaxBytes, DEFAULTS.historyMaxBytes));
   const normalizedOutcomes = normalizeOutcomeList(outcomes.filter(isOutcomeAccountingValid), now)
+    .filter((outcome) => outcome.completed)
     .sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
 
   const recentOutcomes = normalizedOutcomes.filter((outcome) => isWithinHours(outcome.recorded_at, now, safeNumber(options.rollingWindowHours, DEFAULTS.rollingWindowHours)));
@@ -85,6 +93,10 @@ async function evaluateSessionGuards(options = {}) {
   const dailyThreshold = Math.abs(safeNumber(options.maxDailyDrawdownDollars ?? env.MAX_DAILY_DRAWDOWN_DOLLARS, DEFAULTS.maxDailyDrawdownDollars));
   const rollingThreshold = Math.abs(safeNumber(options.maxRollingDrawdownDollars ?? env.MAX_ROLLING_DRAWDOWN_DOLLARS, DEFAULTS.maxRollingDrawdownDollars));
   const consecutiveThreshold = Math.max(1, Math.round(safeNumber(options.maxConsecutiveLosses ?? env.MAX_CONSECUTIVE_LOSSES, DEFAULTS.maxConsecutiveLosses)));
+  const consecutiveLossCooldownSeconds = Math.max(60, safeNumber(
+    options.consecutiveLossCooldownSeconds ?? env.CONSECUTIVE_LOSS_GUARD_COOLDOWN_SECONDS,
+    DEFAULTS.consecutiveLossCooldownSeconds,
+  ));
   const stopoutClusterWindowSeconds = Math.max(60, safeNumber(options.stopoutClusterWindowSeconds ?? env.STOPOUT_CLUSTER_WINDOW_SECONDS, DEFAULTS.stopoutClusterWindowSeconds));
   const stopoutClusterMaxStopouts = Math.max(1, Math.round(safeNumber(options.stopoutClusterMaxStopouts ?? env.STOPOUT_CLUSTER_MAX_STOPOUTS, DEFAULTS.stopoutClusterMaxStopouts)));
   const stopoutClusterCooldownSeconds = Math.max(60, safeNumber(options.stopoutClusterCooldownSeconds ?? env.STOPOUT_CLUSTER_COOLDOWN_SECONDS, DEFAULTS.stopoutClusterCooldownSeconds));
@@ -110,24 +122,32 @@ async function evaluateSessionGuards(options = {}) {
   }
 
   if (parseBoolish(options.consecutiveLossEnabled ?? env.CONSECUTIVE_LOSS_GUARD_ENABLED, DEFAULTS.consecutiveLossEnabled) && consecutiveLosses >= consecutiveThreshold) {
-    addGuard(buildGuard({
-      guard: 'consecutive_loss',
-      reasonCodes: [SessionGuardReason.CONSECUTIVE_LOSS_GUARD_ACTIVE],
-      expiresAt: endOfUtcDay(now),
-      explanation: `${consecutiveLosses} consecutive loss(es) reached the limit of ${consecutiveThreshold}.`,
-      details: { consecutive_losses: consecutiveLosses, threshold: consecutiveThreshold },
-    }));
+    const consecutiveLossExpiry = expiryAfterLastOutcome(recentOutcomes, consecutiveLossCooldownSeconds);
+    if (isFuture(consecutiveLossExpiry, now)) {
+      addGuard(buildGuard({
+        guard: 'consecutive_loss',
+        reasonCodes: [SessionGuardReason.CONSECUTIVE_LOSS_GUARD_ACTIVE],
+        expiresAt: consecutiveLossExpiry,
+        explanation: `${consecutiveLosses} consecutive loss(es) reached the limit of ${consecutiveThreshold}; entries pause for ${Math.round(consecutiveLossCooldownSeconds / 60)} minute(s) after the latest completed loss.`,
+        details: {
+          consecutive_losses: consecutiveLosses,
+          threshold: consecutiveThreshold,
+          cooldown_seconds: consecutiveLossCooldownSeconds,
+        },
+      }));
+    }
   }
 
   if (parseBoolish(options.stopoutClusterEnabled ?? env.STOPOUT_CLUSTER_GUARD_ENABLED, DEFAULTS.stopoutClusterEnabled)) {
-    const clusteredStopouts = countRecentStopouts(recentOutcomes, now, stopoutClusterWindowSeconds);
-    if (clusteredStopouts >= stopoutClusterMaxStopouts) {
+    const recentStopouts = listRecentStopouts(recentOutcomes, now, stopoutClusterWindowSeconds);
+    const stopoutExpiry = expiryAfterLastOutcome(recentStopouts, stopoutClusterCooldownSeconds);
+    if (recentStopouts.length >= stopoutClusterMaxStopouts && isFuture(stopoutExpiry, now)) {
       addGuard(buildGuard({
         guard: 'stopout_cluster',
         reasonCodes: [SessionGuardReason.STOPOUT_CLUSTER_GUARD_ACTIVE],
-        expiresAt: new Date(new Date(now).getTime() + (stopoutClusterCooldownSeconds * 1000)).toISOString(),
-        explanation: `${clusteredStopouts} stopout(s) occurred inside the recent cluster window.`,
-        details: { stopouts: clusteredStopouts, window_seconds: stopoutClusterWindowSeconds, cooldown_seconds: stopoutClusterCooldownSeconds },
+        expiresAt: stopoutExpiry,
+        explanation: `${recentStopouts.length} completed stopout(s) occurred inside the recent cluster window.`,
+        details: { stopouts: recentStopouts.length, window_seconds: stopoutClusterWindowSeconds, cooldown_seconds: stopoutClusterCooldownSeconds },
       }));
     }
   }
@@ -135,13 +155,15 @@ async function evaluateSessionGuards(options = {}) {
   if (parseBoolish(options.lowProfitHighChurnEnabled ?? env.LOW_PROFIT_HIGH_CHURN_GUARD_ENABLED, DEFAULTS.lowProfitHighChurnEnabled)) {
     const highChurn = recentOutcomes.length >= safeNumber(options.highChurnTradeCount ?? env.LOW_PROFIT_HIGH_CHURN_TRADE_COUNT, DEFAULTS.highChurnTradeCount);
     const lowProfit = totalPnl <= safeNumber(options.lowProfitThresholdDollars ?? env.LOW_PROFIT_HIGH_CHURN_LOW_PROFIT_DOLLARS, DEFAULTS.lowProfitThresholdDollars);
-    if (highChurn && lowProfit) {
+    const cooldownSeconds = Math.max(60, safeNumber(options.lowProfitHighChurnCooldownSeconds ?? env.LOW_PROFIT_HIGH_CHURN_COOLDOWN_SECONDS, DEFAULTS.lowProfitHighChurnCooldownSeconds));
+    const churnExpiry = expiryAfterLastOutcome(recentOutcomes, cooldownSeconds);
+    if (highChurn && lowProfit && isFuture(churnExpiry, now)) {
       addGuard(buildGuard({
         guard: 'low_profit_high_churn',
         reasonCodes: [SessionGuardReason.LOW_PROFIT_HIGH_CHURN_GUARD_ACTIVE],
-        expiresAt: endOfUtcDay(now),
-        explanation: `Recent trading is busy (${recentOutcomes.length} trades) but profit is only ${formatMoney(totalPnl)}.`,
-        details: { recent_trade_count: recentOutcomes.length, total_pnl: totalPnl },
+        expiresAt: churnExpiry,
+        explanation: `Recent completed trading is busy (${recentOutcomes.length} round trips) but profit is only ${formatMoney(totalPnl)}.`,
+        details: { completed_trade_count: recentOutcomes.length, total_pnl: totalPnl, cooldown_seconds: cooldownSeconds },
       }));
     }
   }
@@ -242,6 +264,13 @@ function normalizeOutcomeList(outcomes = [], now = nowIso()) {
       stop_exit: Boolean(record.stop_exit || record.stopped_out || record.paper_result?.stop_exit),
       trailing_exit: Boolean(record.trailing_exit || record.trailing_profit_exit || record.paper_result?.trailing_exit),
       regime: record.regime || record.market_context?.regime || record.original_signal?.market_context?.regime || null,
+      completed: Boolean(
+        record.exit_reason
+        || record.position_exit
+        || record.original_signal?.position_exit
+        || String(record.original_signal?.side || record.paper_result?.side || record.side || '').toLowerCase() === 'sell'
+        || (record.exit_at && [record.net_pnl, record.adjusted_pnl, record.pnl].some((value) => value !== null && value !== undefined && Number.isFinite(Number(value)))),
+      ),
     }))
     .filter((outcome) => Number.isFinite(new Date(outcome.recorded_at).getTime()));
 }
@@ -268,11 +297,25 @@ function countConsecutiveLosses(outcomes = []) {
 }
 
 function countRecentStopouts(outcomes = [], now = nowIso(), windowSeconds = DEFAULTS.stopoutClusterWindowSeconds) {
+  return listRecentStopouts(outcomes, now, windowSeconds).length;
+}
+
+function listRecentStopouts(outcomes = [], now = nowIso(), windowSeconds = DEFAULTS.stopoutClusterWindowSeconds) {
   const threshold = new Date(new Date(now).getTime() - (windowSeconds * 1000)).getTime();
   return outcomes.filter((outcome) => {
     const recorded = new Date(outcome.recorded_at).getTime();
     return recorded >= threshold && (outcome.stop_exit || /STOP/i.test(String(outcome.exit_reason || '')));
-  }).length;
+  });
+}
+
+function expiryAfterLastOutcome(outcomes = [], cooldownSeconds = 0) {
+  if (!outcomes.length) return null;
+  const last = outcomes.reduce((latest, outcome) => new Date(outcome.recorded_at).getTime() > new Date(latest.recorded_at).getTime() ? outcome : latest);
+  return new Date(new Date(last.recorded_at).getTime() + Math.max(0, cooldownSeconds) * 1000).toISOString();
+}
+
+function isFuture(value, now = nowIso()) {
+  return Boolean(value) && new Date(value).getTime() > new Date(now).getTime();
 }
 
 function sumPnl(outcomes = []) {

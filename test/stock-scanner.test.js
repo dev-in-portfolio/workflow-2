@@ -15,7 +15,27 @@ const {
   normalizeRecentTradePenaltyMap,
   rankScannerBuyCandidates,
   resolveScannerWatchConfig,
+  resolveCorrelationGroup,
+  findCorrelatedPositionConflict,
+  shouldBlockLeveragedProductBuy,
 } = require('../src');
+
+test('scanner blocks a second position in the same leveraged correlation group', () => {
+  assert.equal(resolveCorrelationGroup('SOXS'), 'inverse_equity_risk');
+  assert.equal(resolveCorrelationGroup('SQQQ'), 'inverse_equity_risk');
+  assert.deepEqual(findCorrelatedPositionConflict('SQQQ', ['SOXS']), {
+    group: 'inverse_equity_risk', heldSymbol: 'SOXS',
+  });
+  assert.equal(findCorrelatedPositionConflict('AAPL', ['SOXS']), null);
+  assert.equal(findCorrelatedPositionConflict('SQQQ', ['SQQQ']), null);
+});
+
+test('scanner blocks new leveraged product buys without blocking management of an existing position', () => {
+  assert.equal(shouldBlockLeveragedProductBuy('SOXS', [], false), true);
+  assert.equal(shouldBlockLeveragedProductBuy('SOXS', ['SOXS'], false), false);
+  assert.equal(shouldBlockLeveragedProductBuy('SOXS', [], true), false);
+  assert.equal(shouldBlockLeveragedProductBuy('AAPL', [], false), false);
+});
 
 test('market leader intake merges gainers, actives, and losers without duplicates', async () => {
   const result = await fetchAlpacaMarketLeaders({
@@ -154,6 +174,88 @@ test('stock scanner requires fresh upward pressure when recent momentum gate is 
   assert.equal(skips[0].reason, 'RECENT_UPWARD_MOMENTUM_WEAK');
   assert(rising);
   assert.equal(rising.payload.symbol, 'RISE');
+  assert.equal(rising.payload.provider_confirmation_score, undefined);
+  assert.equal(rising.payload.source_quality_score, 80);
+  assert.equal(rising.payload.contradiction_score, 0);
+});
+
+test('live momentum can require actual upward movement instead of range position alone', () => {
+  const skips = [];
+  const candidate = buildStockCandidateForSymbol('RANGE', {
+    latestQuote: { bp: 10.09, ap: 10.11, t: '2026-06-16T20:00:00.000Z' },
+    latestTrade: { p: 10.10, t: '2026-06-16T20:00:00.000Z' },
+    minuteBar: { o: 10.10, c: 10.10, h: 10.10, l: 10.00, v: 420, t: '2026-06-16T20:00:00.000Z' },
+    prevDailyBar: { c: 9.50, v: 200000 },
+  }, { bp: 10.09, ap: 10.11, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    requireMultiSourceConfirmation: false,
+    requireRecentMomentum: true,
+    requireRecentMove: true,
+    minMovePct: 0.2,
+    minRecentMovePct: 0.15,
+    minRecentRangePct: 0.15,
+    minRecentCloseLocationPct: 70,
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  });
+
+  assert.equal(candidate, null);
+  assert.equal(skips[0].reason, 'RECENT_UPWARD_MOMENTUM_WEAK');
+  assert.equal(skips[0].details.require_recent_move, true);
+});
+
+test('stock scanner distinguishes an absent optional provider from an actual disagreement', () => {
+  const candidate = buildStockCandidateForSymbol('DIFF', {
+    latestQuote: { bp: 10.04, ap: 10.06, t: '2026-06-16T20:00:00.000Z' },
+    latestTrade: { p: 10.05, t: '2026-06-16T20:00:00.000Z' },
+    minuteBar: { o: 9.95, c: 10.05, h: 10.05, l: 9.94, v: 420, t: '2026-06-16T20:00:00.000Z' },
+    prevDailyBar: { c: 9.50, v: 200000 },
+  }, { bp: 10.04, ap: 10.06, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    requireMultiSourceConfirmation: false,
+    twelveDataQuote: { price: 9.50, timestamp: '2026-06-16T20:00:00.000Z' },
+    maxPriceDiffPct: 0.5,
+  });
+
+  assert(candidate);
+  assert.equal(typeof candidate.payload.provider_confirmation_score, 'number');
+  assert(candidate.payload.provider_confirmation_score < 70);
+  assert(candidate.payload.contradiction_score > 0);
+});
+
+test('stock scanner requires persistent momentum and cools a symbol after one weak scan', () => {
+  const persistence = new Map();
+  const skips = [];
+  const options = {
+    receivedAt: '2026-06-16T20:00:01.000Z', notional: 150,
+    requireMultiSourceConfirmation: false, requireRecentMomentum: true,
+    minMovePct: 0.2, minRecentMovePct: 0.03, minRecentRangePct: 0.05,
+    minRecentCloseLocationPct: 60, prolongedMomentumEnabled: true,
+    prolongedMomentumMinScans: 2, prolongedMomentumCooldownSeconds: 120,
+    prolongedMomentumMaxPriceFadePct: 0.05, momentumPersistence: persistence,
+    skipTracker: { record: (reason, details) => skips.push({ reason, details }) },
+  };
+  const snapshot = (price, open = 9.95) => ({
+    latestQuote: { bp: price - 0.01, ap: price + 0.01, t: '2026-06-16T20:00:00.000Z' },
+    latestTrade: { p: price, t: '2026-06-16T20:00:00.000Z' },
+    minuteBar: { o: open, c: price, h: price, l: open - 0.01, v: 420, t: '2026-06-16T20:00:00.000Z' },
+    prevDailyBar: { c: 9.50, v: 200000 },
+  });
+  const first = buildStockCandidateForSymbol('PERSIST', snapshot(10.05), { bp: 10.04, ap: 10.06, t: '2026-06-16T20:00:00.000Z' }, options);
+  const second = buildStockCandidateForSymbol('PERSIST', snapshot(10.08), { bp: 10.07, ap: 10.09, t: '2026-06-16T20:00:00.000Z' }, { ...options, receivedAt: '2026-06-16T20:00:11.000Z' });
+  assert.equal(first, null);
+  assert.equal(skips[0].reason, 'PROLONGED_MOMENTUM_CONFIRMATION_REQUIRED');
+  assert(second);
+
+  const weakSnapshot = snapshot(10.01, 10.01);
+  weakSnapshot.minuteBar.h = 10.03;
+  weakSnapshot.minuteBar.l = 10.00;
+  const weak = buildStockCandidateForSymbol('WEAK', weakSnapshot, { bp: 10, ap: 10.02, t: '2026-06-16T20:00:00.000Z' }, options);
+  const retried = buildStockCandidateForSymbol('WEAK', snapshot(10.06), { bp: 10.05, ap: 10.07, t: '2026-06-16T20:00:00.000Z' }, { ...options, receivedAt: '2026-06-16T20:00:11.000Z' });
+  assert.equal(weak, null);
+  assert.equal(retried, null);
+  assert(skips.some((entry) => entry.reason === 'WEAK_MOMENTUM_COOLDOWN_ACTIVE'));
 });
 
 test('live scanner defaults tighten the entry feed around real momentum', () => {
@@ -736,6 +838,23 @@ test('stock scanner keeps a symbol eligible with only one recent stop exit', () 
   assert.equal(candidate.payload.symbol, 'ABSI');
 });
 
+test('stock scanner blocks buy candidates below the configured price floor', () => {
+  const reasons = [];
+  const candidate = buildStockCandidateForSymbol('CHEAP', rankedSnapshot({
+    bid: 3.99, ask: 4.01, previousClose: 3.9, volume: 100000,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), { bp: 3.99, ap: 4.01, t: '2026-06-16T20:00:00.000Z' }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 150,
+    minPrice: 10,
+    allowContrarianEntries: true,
+    skipTracker: { record(reason, details) { reasons.push({ reason, details }); } },
+  });
+  assert.equal(candidate, null);
+  assert.equal(reasons[0].reason, 'PRICE_BELOW_ENTRY_MINIMUM');
+  assert.equal(reasons[0].details.min_price, 10);
+});
+
 test('stock scanner blocks immediate re-entry using the broker filled-sell timestamp', () => {
   const skips = [];
   const candidate = buildStockCandidateForSymbol('ABSI', rankedSnapshot({
@@ -901,6 +1020,7 @@ test('stock scanner posts candidates to the local paper order endpoint', async (
     enabled: true,
     baseUrl: 'https://data.alpaca.markets',
     twelveDataApiKey: 'twelve-key',
+    twelveDataEnabled: true,
     twelveDataBaseUrl: 'https://api.twelvedata.com',
     localBaseUrl: `http://127.0.0.1:${localPort}`,
     apiKeyId: 'key',
@@ -1885,6 +2005,7 @@ test('stock scanner skips buy candidates when buys are blocked', async () => {
     enabled: true,
     baseUrl: 'https://data.alpaca.markets',
     twelveDataApiKey: 'twelve-key',
+    twelveDataEnabled: true,
     twelveDataBaseUrl: 'https://api.twelvedata.com',
     localBaseUrl: `http://127.0.0.1:${localPort}`,
     apiKeyId: 'key',
@@ -2196,6 +2317,7 @@ test('stock scanner ignores dynamic watchlist symbols when the feature is disabl
       MEME_PRIORITY_OVERRIDE_ENABLED: 'false',
       MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
       TWELVEDATA_API_KEY: 'td-key',
+      TWELVE_DATA_ENABLED: 'true',
     },
     snapshots: {
       AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
@@ -2267,6 +2389,7 @@ test('stock scanner includes fresh dynamic watchlist symbols and keeps expired s
       MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
       MEME_HOT_LIST_TTL_MINUTES: '120',
       TWELVEDATA_API_KEY: 'td-key',
+      TWELVE_DATA_ENABLED: 'true',
     },
     snapshots: {
       AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
@@ -2412,6 +2535,7 @@ test('stock scanner uses the dynamic source universe and records source metadata
       MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
       MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
       TWELVEDATA_API_KEY: 'td-key',
+      TWELVE_DATA_ENABLED: 'true',
     },
     snapshots: {
       AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),
@@ -2508,6 +2632,7 @@ test('stock scanner reports an empty dynamic source without falling back to the 
       MEME_PRIORITY_OVERRIDE_ENABLED: 'true',
       MEME_HOT_SLOT_ROTATION_ENABLED: 'false',
       TWELVEDATA_API_KEY: 'td-key',
+      TWELVE_DATA_ENABLED: 'true',
     },
     snapshots: {
       AAA: rankedSnapshot({ bid: 9.90, ask: 10.10, previousClose: 9.50, volume: 1_000_000, timestamp: '2026-06-19T15:00:00.000Z' }),

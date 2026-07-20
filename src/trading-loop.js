@@ -68,6 +68,24 @@ async function processTradingSignal(signalOrRequest = {}, options = {}) {
     };
   }
 
+  const executionMode = String(
+    options.executionMode
+      || policy.executionMode
+      || policy.tradingMode
+      || (options.executionAdapter?.paperTrading === false ? 'live' : 'paper'),
+  ).trim().toLowerCase();
+  if (executionMode === 'live' && riskDecision.decision !== 'APPROVED_FOR_EXECUTION') {
+    return {
+      accepted: false,
+      stage: 'decision',
+      reason_codes: ['EXECUTION_MODE_DECISION_MISMATCH'],
+      signal,
+      riskDecision,
+      broker_reconciliation: brokerReconciliation,
+      market_context: reconciledMarketContext,
+    };
+  }
+
   const orderResult = buildPaperOrder(signal, riskDecision, {
     ...options,
     policy,

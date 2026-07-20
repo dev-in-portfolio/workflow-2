@@ -20,7 +20,7 @@ test('stock scanner launcher maps live policy exit rules into scanner options', 
   });
 });
 
-test('stock scanner launcher enforces live entry momentum floors over weak env defaults', () => {
+test('stock scanner launcher honors explicit operator entry thresholds', () => {
   const overrides = buildLiveEntryOverrides({
     minMovePct: 0.1,
     requireRecentMomentum: false,
@@ -32,16 +32,17 @@ test('stock scanner launcher enforces live entry momentum floors over weak env d
     STOCK_SCANNER_MIN_RECENT_MOVE_PCT: '0.03',
     STOCK_SCANNER_MIN_RECENT_RANGE_PCT: '0.05',
     STOCK_SCANNER_MIN_RECENT_CLOSE_LOCATION_PCT: '60',
+    SCANNER_MIN_ADJUSTED_RANK_SCORE: '6',
   });
 
   assert.deepEqual(overrides, {
-    minMovePct: 0.25,
+    minMovePct: 0.2,
     requireRecentMomentum: false,
-    minRecentMovePct: 0.15,
-    minRecentRangePct: 0.15,
-    minRecentCloseLocationPct: 65,
+    minRecentMovePct: 0.03,
+    minRecentRangePct: 0.05,
+    minRecentCloseLocationPct: 60,
     allowContrarianEntries: false,
-    minAdjustedRankScore: 8,
+    minAdjustedRankScore: 6,
     scannerSelectionV2ShadowEnabled: true,
     scannerSelectionV2AuthorityEnabled: true,
   });
@@ -82,6 +83,7 @@ test('stock scanner launcher preserves env-driven multi-source confirmation beha
     main({
       ...process.env,
       TWELVE_DATA_API_KEY: 'test-twelve-data',
+      TWELVE_DATA_ENABLED: 'true',
       STOCK_SCANNER_SYMBOLS: 'NVDA',
     });
   } finally {

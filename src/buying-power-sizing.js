@@ -14,6 +14,13 @@ function positiveNumber(value, fallback = null) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function calculateSlotAwareDeploymentPct({ baseDeploymentPct = 100, maxSlots = null, remainingSlots = null } = {}) {
+  const base = Math.max(0, Math.min(100, safeNumber(baseDeploymentPct, 100)));
+  const maximum = Math.max(1, Math.floor(safeNumber(maxSlots, 1)));
+  const remaining = Math.max(1, Math.min(maximum, Math.floor(safeNumber(remainingSlots, maximum))));
+  return Math.max(0, Math.min(100, base * (maximum / remaining)));
+}
+
 function calculateBuyingPowerSize(options = {}) {
   const symbol = String(options.symbol || '').trim().toUpperCase() || null;
   const side = String(options.side || 'buy').trim().toLowerCase();
@@ -151,4 +158,5 @@ function rejected({
 
 module.exports = {
   calculateBuyingPowerSize,
+  calculateSlotAwareDeploymentPct,
 };

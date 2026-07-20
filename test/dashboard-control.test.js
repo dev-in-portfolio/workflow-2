@@ -127,7 +127,7 @@ test('dashboard control routes serve the operator tab and route actions locally'
     assert(operatorHtml.includes('Enable SEC EDGAR'));
     assert(operatorHtml.includes('Phase A data sources can be enabled independently.'));
     assert(operatorHtml.includes('Enable Stocktwits Source'));
-    assert(operatorHtml.includes('Enable Polygon Source'));
+    assert(operatorHtml.includes('Enable Massive (formerly Polygon.io) Source'));
     assert(operatorHtml.includes('Enable Alpha Vantage Source'));
     assert(operatorHtml.includes('Refresh All Phase B Sources Now'));
     assert(operatorHtml.includes('Regular Watch Intelligence'));

@@ -60,6 +60,50 @@ test('ordinary candidates retain the configured normal scan and time confirmatio
   assert.equal(entry.confirmation_seconds_required, 8);
 });
 
+test('an expired symbol starts a fresh confirmation window when it reappears', () => {
+  const result = reconcileCandidateLifecycleState({
+    previousState: { candidates: { 'REAL::breakout': {
+      candidate_key: 'REAL::breakout', symbol: 'REAL', setup_key: 'breakout',
+      status: 'expired', first_seen_at: '2026-06-18T15:00:00.000Z',
+      last_seen_at: '2026-06-18T15:01:00.000Z', scans_seen: 12,
+      rank_history: [{ at: '2026-06-18T15:01:00.000Z', decayed_rank: 90, status: 'expired' }],
+      reason_codes: ['CANDIDATE_QUEUE_EXPIRED', 'CANDIDATE_MAX_AGE_EXCEEDED'],
+    } } },
+    candidates: [candidate('REAL', 'breakout', 88)],
+    now: '2026-06-19T15:00:00.000Z', queueEnabled: true,
+    confirmationRequired: true, minScansBeforeEntry: 2,
+    minSecondsBeforeEntry: 8, maxAgeSeconds: 600, rankFloor: 60,
+    scannerMode: 'hunt', huntToMonitorLatchEnabled: false,
+  });
+  const entry = result.state.candidates['REAL::breakout'];
+  assert.equal(entry.status, 'watching');
+  assert.equal(entry.scans_seen, 1);
+  assert.equal(entry.first_seen_at, '2026-06-19T15:00:00.000Z');
+  assert(!entry.reason_codes.includes('CANDIDATE_MAX_AGE_EXCEEDED'));
+});
+
+test('candidate lifecycle resets confirmation state at the New York trading-date boundary', () => {
+  const previous = reconcileCandidateLifecycleState({
+    previousState: {}, candidates: [candidate('RESET', 'breakout', 88)],
+    now: '2026-06-18T19:59:00.000Z', queueEnabled: true,
+    confirmationRequired: true, minScansBeforeEntry: 2,
+    minSecondsBeforeEntry: 8, rankFloor: 60, scannerMode: 'hunt',
+    huntToMonitorLatchEnabled: false,
+  }).state;
+  const next = reconcileCandidateLifecycleState({
+    previousState: previous, candidates: [candidate('RESET', 'breakout', 89)],
+    now: '2026-06-19T13:30:00.000Z', queueEnabled: true,
+    confirmationRequired: true, minScansBeforeEntry: 2,
+    minSecondsBeforeEntry: 8, rankFloor: 60, scannerMode: 'hunt',
+    huntToMonitorLatchEnabled: false,
+  });
+  const entry = next.state.candidates['RESET::breakout'];
+  assert.equal(next.state.trading_date, '2026-06-19');
+  assert.equal(entry.first_seen_at, '2026-06-19T13:30:00.000Z');
+  assert.equal(entry.scans_seen, 1);
+  assert.equal(entry.status, 'watching');
+});
+
 test('candidate lifecycle progresses from watching to eligible after enough scans and time', () => {
   const first = reconcileCandidateLifecycleState({
     previousState: {},
