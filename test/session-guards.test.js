@@ -109,3 +109,42 @@ test('session guard summary keeps the display shape compact', async () => {
   assert.equal(summary.active_guard_count, 0);
   assert.equal(summary.manage_only, false);
 });
+
+test('session guards lock out symbols that experienced losses today', async () => {
+  const guards = await evaluateSessionGuards({
+    now: '2026-06-16T15:00:00.000Z',
+    paperOutcomes: [
+      {
+        symbol: 'IREN',
+        recorded_at: '2026-06-16T14:10:00.000Z',
+        net_pnl: -3.6,
+        pnl: -3.6,
+        exit_reason: 'STOP_LOSS_DOLLARS',
+        stop_exit: true,
+      },
+      {
+        symbol: 'NVDA',
+        recorded_at: '2026-06-16T14:20:00.000Z',
+        net_pnl: 5.2,
+        pnl: 5.2,
+        exit_reason: 'TRAILING_PROFIT_GIVEBACK',
+        stop_exit: false,
+      },
+    ],
+    dailyDrawdownEnabled: false,
+    rollingDrawdownEnabled: false,
+    consecutiveLossEnabled: false,
+    stopoutClusterEnabled: false,
+    badSessionEnabled: false,
+    lowProfitHighChurnEnabled: false,
+    symbolDailyLossLockoutEnabled: true,
+    maxDailySymbolLossDollars: 3.5,
+  });
+
+  assert(guards.daily_locked_symbols.IREN);
+  assert.equal(guards.daily_locked_symbols.IREN.loss_trades, 1);
+  assert.equal(guards.daily_locked_symbols.IREN.pnl, -3.6);
+  assert.equal(guards.daily_locked_symbols.NVDA, undefined);
+  assert.equal(guards.daily_locked_symbol_count, 1);
+});
+

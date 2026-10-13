@@ -1216,6 +1216,86 @@ test('stock scanner trails winners after peak profit and sell on giveback', () =
   assert.equal(giveback.exitState.real_gain, true);
 });
 
+test('stock scanner lets large runners breathe with dynamic percentage trailing giveback', () => {
+  const runnerStillActiveSkips = [];
+  const runnerStillActive = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80', unrealized_pl: '6.50' },
+    stopLossDollars: 3.5,
+    trailingProfitStartDollars: 2.0,
+    trailingProfitGivebackDollars: 0.75,
+    trailingProfitGivebackPct: 0.25,
+    trailingState: { positions: { NVDA: { peak_unrealized_pl: 8.0 } } },
+    skipTracker: { record: (reason, detail) => runnerStillActiveSkips.push({ reason, detail }) },
+  });
+  // At peak $8.00 with 25% giveback ($2.00 room), $6.50 is above the $6.00 exit floor so it should NOT exit prematurely
+  assert.equal(runnerStillActive, null);
+  assert.equal(runnerStillActiveSkips[0]?.reason, 'EXIT_TARGET_NOT_MET');
+  assert.equal(runnerStillActiveSkips[0]?.detail?.exit_mode, 'profit_protection_active');
+
+  const runnerGiveback = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80', unrealized_pl: '5.90' },
+    stopLossDollars: 3.5,
+    trailingProfitStartDollars: 2.0,
+    trailingProfitGivebackDollars: 0.75,
+    trailingProfitGivebackPct: 0.25,
+    trailingState: { positions: { NVDA: { peak_unrealized_pl: 8.0 } } },
+  });
+  // Once it pulls back to $5.90 (<= $6.00), it triggers profit exit
+  assert(runnerGiveback);
+  assert.equal(runnerGiveback.exitState.exit_reason, 'TRAILING_PROFIT_GIVEBACK');
+  assert.equal(runnerGiveback.exitState.exit_mode, 'trailing_profit_giveback_triggered');
+  assert.equal(runnerGiveback.exitState.dynamic_giveback_dollars, 2.0);
+});
+
+test('stock scanner liquidates open positions near market close for end of day cash discipline', () => {
+  const eodExit = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T19:56:00.000Z',
+    maxSpreadPct: 0.8,
+    position: { symbol: 'NVDA', qty: '2', qty_available: '2', avg_entry_price: '80', unrealized_pl: '0.10' },
+    stopLossDollars: 3.5,
+    eodLiquidationMinutes: 5,
+    intradayRegime: {
+      market_open: true,
+      minutes_until_close: 4,
+      regime: 'near_close_manage_only',
+    },
+  });
+
+  assert(eodExit);
+  assert.equal(eodExit.payload.side, 'sell');
+  assert.equal(eodExit.exitState.exit_reason, 'END_OF_DAY_LIQUIDATION');
+  assert.equal(eodExit.exitState.exit_mode, 'market_close_liquidation');
+  assert.equal(eodExit.exitState.eod_liquidation_active, true);
+});
+
+test('stock scanner blocks buy re-entry when symbol is locked out for daily losses', () => {
+  const skips = [];
+  const candidate = buildStockCandidateForSymbol('IREN', stockSnapshot(), stockQuote(), {
+    receivedAt: '2026-06-16T15:00:00.000Z',
+    sessionGuards: {
+      daily_locked_symbols: {
+        IREN: {
+          symbol: 'IREN',
+          pnl: -3.5,
+          loss_trades: 1,
+          explanation: 'Symbol IREN has accumulated -$3.50 across 1 loss(es) today, locking it out for the rest of the day.',
+        },
+      },
+    },
+    skipTracker: { record: (reason, detail) => skips.push({ reason, detail }) },
+  });
+
+  assert.equal(candidate, null);
+  assert.equal(skips[0]?.reason, 'DAILY_SYMBOL_LOSS_LOCKOUT');
+  assert.equal(skips[0]?.detail?.symbol, 'IREN');
+  assert.equal(skips[0]?.detail?.daily_pnl, -3.5);
+});
+
+
 test('stock scanner exits stale positions that never become runners', () => {
   const stale = buildStockCandidateForSymbol('SVC', {
     latestQuote: { bp: 8.61, ap: 8.63, t: '2026-07-07T15:36:00.000Z' },

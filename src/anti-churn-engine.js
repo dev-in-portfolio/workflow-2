@@ -269,7 +269,8 @@ function classifyExitOutcome(input = {}) {
   const rapidRoundTrip = Number.isFinite(tradeDurationSeconds) && tradeDurationSeconds <= rapidRoundTripSeconds;
   const absolutePnl = Math.abs(Number.isFinite(pnl) ? pnl : firstFinite(grossPnl, 0));
   const tinyExit = Number.isFinite(absolutePnl) && absolutePnl <= tinyExitDollars;
-  const churnLike = Boolean(
+  const isEodExit = /END_OF_DAY|MARKET_CLOSE|LIQUIDATION/i.test(exitReasonUpper);
+  const churnLike = !isEodExit && Boolean(
     input.churn_exit
       || input.churn_score >= DEFAULTS.churnGuardScoreThreshold
       || (rapidRoundTrip && tinyExit)
@@ -292,6 +293,23 @@ function classifyExitOutcome(input = {}) {
       tradeDurationSeconds,
       partialFill: true,
       churnLike,
+    });
+  }
+
+  if (isEodExit) {
+    return withClassification({
+      classification: Number.isFinite(pnl) && pnl >= 0 ? AntiChurnClassification.CLEAN_WIN : AntiChurnClassification.GOOD_LOSS,
+      severity: 'low',
+      reasonCodes: [Number.isFinite(pnl) && pnl >= 0 ? AntiChurnReason.CLEAN_WIN : AntiChurnReason.GOOD_LOSS],
+      explanation: 'End of day liquidation completed.',
+      stopExit: false,
+      trailingExit,
+      pnl,
+      grossPnl,
+      executionDrag,
+      tradeDurationSeconds,
+      partialFill: false,
+      churnLike: false,
     });
   }
 

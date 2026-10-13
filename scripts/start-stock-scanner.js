@@ -29,6 +29,8 @@ function buildPolicyExitOverrides(policy = {}) {
     stopLossMaxDollars: policy.positionStopLossMaxDollars,
     trailingProfitStartDollars: policy.trailingProfitStartDollars,
     trailingProfitGivebackDollars: policy.trailingProfitGivebackDollars,
+    trailingProfitGivebackPct: policy.trailingProfitGivebackPct,
+    eodLiquidationMinutes: policy.eodLiquidationMinutes,
     sellNetProfitFloorDollars: policy.sellNetProfitFloorDollars,
     stalePositionExitEnabled: policy.stalePositionExitEnabled,
     stalePositionMaxHoldMinutes: policy.stalePositionMaxHoldMinutes,
@@ -102,6 +104,10 @@ function main(env = process.env) {
     scannerEnv.STOCK_SCANNER_SYMBOLS || env.STOCK_SCANNER_SYMBOLS,
     [],
   );
+  const effectiveStopLossMaxDollars = Math.max(
+    Number(policyExitOverrides.stopLossMaxDollars || 0),
+    Number(scannerEnv.POSITION_STOP_LOSS_MAX_DOLLARS || 0),
+  );
   const scanner = createStockScanner({
     env: scannerEnv,
     scannerConfig: buildScannerConfig(scannerEnv),
@@ -111,13 +117,15 @@ function main(env = process.env) {
     keepAlive: true,
     runtimeStateEnabled: true,
     symbols: stockSymbols,
+    scannerSymbolSource: scannerEnv.SCANNER_SYMBOL_SOURCE || scannerEnv.STOCK_SCANNER_WATCH_SOURCE || 'dynamic',
     intervalMs: 10_000,
     maxCandidatesPerRun: 8,
     notional: Number(livePolicy.buyNotionalTarget || runtimeEnv.BUY_NOTIONAL_TARGET || 150),
     ...liveEntryOverrides,
     ...liveExitOverrides,
-    ...policyExitOverrides,
     ...liveRiskOverrides,
+    ...policyExitOverrides,
+    ...(effectiveStopLossMaxDollars > 0 ? { stopLossMaxDollars: effectiveStopLossMaxDollars } : {}),
   });
   scanner.start();
   process.stdout.write(`${JSON.stringify({

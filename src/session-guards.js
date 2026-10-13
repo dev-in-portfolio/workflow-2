@@ -15,6 +15,7 @@ const SessionGuardReason = {
   MARKET_OUTCOME_GUARD_ACTIVE: 'MARKET_OUTCOME_GUARD_ACTIVE',
   MANAGE_ONLY_MODE_ACTIVE: 'MANAGE_ONLY_MODE_ACTIVE',
   SETUP_FATIGUE_ACTIVE: 'SETUP_FATIGUE_ACTIVE',
+  DAILY_SYMBOL_LOSS_LOCKOUT: 'DAILY_SYMBOL_LOSS_LOCKOUT',
 };
 
 const DEFAULTS = {
@@ -36,6 +37,9 @@ const DEFAULTS = {
   highChurnTradeCount: 5,
   badSessionMinTrades: 4,
   badSessionWinRateThreshold: 0.4,
+  symbolDailyLossLockoutEnabled: true,
+  maxDailySymbolLossDollars: 3.5,
+  maxDailySymbolLossTrades: 1,
 };
 
 async function evaluateSessionGuards(options = {}) {
@@ -184,6 +188,39 @@ async function evaluateSessionGuards(options = {}) {
     }));
   }
 
+  const symbolStats = new Map();
+  for (const outcome of dayOutcomes) {
+    const sym = outcome.symbol;
+    if (!sym) continue;
+    const stats = symbolStats.get(sym) || { pnl: 0, lossCount: 0, stopCount: 0, tradeCount: 0 };
+    const pnl = safeNumber(outcome.net_pnl, 0);
+    stats.pnl += pnl;
+    stats.tradeCount += 1;
+    if (pnl < 0) stats.lossCount += 1;
+    if (outcome.stop_exit || /STOP/i.test(String(outcome.exit_reason || ''))) stats.stopCount += 1;
+    symbolStats.set(sym, stats);
+  }
+
+  const symbolLossThreshold = Math.abs(safeNumber(options.maxDailySymbolLossDollars ?? env.MAX_DAILY_SYMBOL_LOSS_DOLLARS, DEFAULTS.maxDailySymbolLossDollars));
+  const symbolLossTradesThreshold = Math.max(1, safeNumber(options.maxDailySymbolLossTrades ?? env.MAX_DAILY_SYMBOL_LOSS_TRADES, DEFAULTS.maxDailySymbolLossTrades));
+
+  const dailyLockedSymbols = {};
+  if (parseBoolish(options.symbolDailyLossLockoutEnabled ?? env.SYMBOL_DAILY_LOSS_LOCKOUT_ENABLED, DEFAULTS.symbolDailyLossLockoutEnabled)) {
+    for (const [sym, stats] of symbolStats.entries()) {
+      if ((Number.isFinite(stats.pnl) && stats.pnl <= -symbolLossThreshold) || stats.lossCount >= symbolLossTradesThreshold) {
+        dailyLockedSymbols[sym] = {
+          symbol: sym,
+          pnl: roundNumber(stats.pnl),
+          loss_trades: stats.lossCount,
+          stop_trades: stats.stopCount,
+          trade_count: stats.tradeCount,
+          expires_at: endOfUtcDay(now),
+          explanation: `Symbol ${sym} has accumulated ${formatMoney(stats.pnl)} across ${stats.lossCount} loss(es) today, locking it out for the rest of the day.`,
+        };
+      }
+    }
+  }
+
   const buyBlocked = activeGuards.length > 0;
   const manageOnly = buyBlocked || Boolean(intradayRegime.manage_only);
   if (manageOnly) reasonCodes.add(SessionGuardReason.MANAGE_ONLY_MODE_ACTIVE);
@@ -200,6 +237,8 @@ async function evaluateSessionGuards(options = {}) {
       ? activeGuards.map((guard) => guard.explanation).filter(Boolean).join(' ')
       : 'No active session guards.',
     intraday_regime: intradayRegime,
+    daily_locked_symbols: dailyLockedSymbols,
+    daily_locked_symbol_count: Object.keys(dailyLockedSymbols).length,
     metrics: {
       recent_trade_count: recentOutcomes.length,
       daily_pnl: dailyPnl,
@@ -222,6 +261,8 @@ function summarizeSessionGuards(guards = null) {
     manage_only: Boolean(guards.manage_only),
     active_guard_count: Array.isArray(guards.active_guards) ? guards.active_guards.length : 0,
     active_guards: guards.active_guards || [],
+    daily_locked_symbols: guards.daily_locked_symbols || {},
+    daily_locked_symbol_count: Object.keys(guards.daily_locked_symbols || {}).length,
     reason_codes: guards.reason_codes || [],
     expires_at: guards.expires_at || null,
     explanation: guards.explanation || '',
@@ -236,6 +277,7 @@ function normalizeOutcomeList(outcomes = [], now = nowIso()) {
     .map((entry) => entry?.record || entry)
     .filter(Boolean)
     .map((record) => ({
+      symbol: String(record.symbol || record.original_signal?.symbol || record.market_context?.symbol || '').trim().toUpperCase() || null,
       recorded_at: normalizeIso(record.recorded_at || record.paper_result?.filled_at || record.paper_result?.filledAt || now),
       net_pnl: safeNumber(record.net_pnl ?? record.adjusted_pnl ?? record.pnl, 0),
       exit_reason: record.exit_reason || record.original_signal?.market_context?.exit_state?.exit_reason || record.market_context?.exit_state?.exit_reason || record.exit_state?.exit_reason || null,

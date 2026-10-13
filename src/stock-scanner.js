@@ -138,7 +138,7 @@ function createStockScanner(options = {}) {
     : parseSymbolList(env.STOCK_SCANNER_SYMBOLS, []);
   const scannerSymbolSource = normalizeScannerSymbolSource(options.scannerSymbolSource
     ?? scannerConfig.scannerSymbolSource
-    ?? (Object.prototype.hasOwnProperty.call(env, 'SCANNER_SYMBOL_SOURCE') ? env.SCANNER_SYMBOL_SOURCE : 'approved'));
+    ?? (Object.prototype.hasOwnProperty.call(env, 'SCANNER_SYMBOL_SOURCE') ? env.SCANNER_SYMBOL_SOURCE : (env.STOCK_SCANNER_WATCH_SOURCE || 'approved')));
   const marketLeadersEnabled = options.marketLeadersEnabled ?? parseBool(env.STOCK_SCANNER_MARKET_LEADERS_ENABLED, true);
   const marketMoversTop = Math.max(1, Math.min(50, Math.floor(safeNumber(options.marketMoversTop ?? env.STOCK_SCANNER_MARKET_MOVERS_TOP, 50))));
   const marketMostActivesTop = Math.max(1, Math.min(100, Math.floor(safeNumber(options.marketMostActivesTop ?? env.STOCK_SCANNER_MARKET_MOST_ACTIVES_TOP, 100))));
@@ -154,6 +154,8 @@ function createStockScanner(options = {}) {
   const stopLossMaxDollars = Math.max(stopLossDollars, safeNumber(options.stopLossMaxDollars ?? env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5));
   const trailingProfitStartDollars = Math.max(0.01, Number(options.trailingProfitStartDollars ?? env.TRAILING_PROFIT_START_DOLLARS ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars) || LIVE_STOCK_POLICY_DEFAULTS.trailingProfitStartDollars);
   const trailingProfitGivebackDollars = Math.max(0.01, Number(options.trailingProfitGivebackDollars ?? env.TRAILING_PROFIT_GIVEBACK_DOLLARS ?? LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars) || LIVE_STOCK_POLICY_DEFAULTS.trailingProfitGivebackDollars);
+  const trailingProfitGivebackPct = Math.max(0, safeNumber(options.trailingProfitGivebackPct ?? env.TRAILING_PROFIT_GIVEBACK_PCT, 0.25));
+  const eodLiquidationMinutes = Math.max(1, safeNumber(options.eodLiquidationMinutes ?? env.EOD_LIQUIDATION_MINUTES, 5));
   const stalePositionExitEnabled = options.stalePositionExitEnabled ?? parseBool(env.STOCK_SCANNER_STALE_POSITION_EXIT_ENABLED, LIVE_STOCK_POLICY_DEFAULTS.stalePositionExitEnabled);
   const stalePositionMaxHoldMinutes = Math.max(1, safeNumber(options.stalePositionMaxHoldMinutes ?? env.STOCK_SCANNER_STALE_POSITION_MAX_HOLD_MINUTES, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMaxHoldMinutes));
   const stalePositionMinPeakProfitDollars = Math.max(0, safeNumber(options.stalePositionMinPeakProfitDollars ?? env.STOCK_SCANNER_STALE_POSITION_MIN_PEAK_PROFIT_DOLLARS, LIVE_STOCK_POLICY_DEFAULTS.stalePositionMinPeakProfitDollars));
@@ -719,6 +721,8 @@ function createStockScanner(options = {}) {
         stopLossMaxDollars,
         trailingProfitStartDollars,
         trailingProfitGivebackDollars,
+        trailingProfitGivebackPct,
+        eodLiquidationMinutes,
         stalePositionExitEnabled,
         stalePositionMaxHoldMinutes,
         stalePositionMinPeakProfitDollars,
@@ -889,6 +893,8 @@ function createStockScanner(options = {}) {
           stopLossMaxDollars,
           trailingProfitStartDollars,
           trailingProfitGivebackDollars,
+          trailingProfitGivebackPct,
+          eodLiquidationMinutes,
           stalePositionExitEnabled,
           stalePositionMaxHoldMinutes,
           stalePositionMinPeakProfitDollars,
@@ -2331,6 +2337,8 @@ function buildCandidates(bundle, options = {}) {
       stopLossMaxDollars: options.stopLossMaxDollars,
       trailingProfitStartDollars: options.trailingProfitStartDollars,
       trailingProfitGivebackDollars: options.trailingProfitGivebackDollars,
+      trailingProfitGivebackPct: options.trailingProfitGivebackPct,
+      eodLiquidationMinutes: options.eodLiquidationMinutes,
       stalePositionExitEnabled: options.stalePositionExitEnabled,
       stalePositionMaxHoldMinutes: options.stalePositionMaxHoldMinutes,
       stalePositionMinPeakProfitDollars: options.stalePositionMinPeakProfitDollars,
@@ -2888,6 +2896,20 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
         reason_codes: options.sessionGuards.reason_codes || [],
         explanation: options.sessionGuards.explanation || null,
         expires_at: options.sessionGuards.expires_at || null,
+      });
+    }
+  }
+  const dailySymbolLock = options.sessionGuards?.daily_locked_symbols?.[symbol];
+  if (dailySymbolLock) {
+    if (previewMode) {
+      previewReasonCodes.push('DAILY_SYMBOL_LOSS_LOCKOUT');
+    } else {
+      return skip('DAILY_SYMBOL_LOSS_LOCKOUT', {
+        symbol,
+        daily_pnl: dailySymbolLock.pnl,
+        loss_trades: dailySymbolLock.loss_trades,
+        expires_at: dailySymbolLock.expires_at,
+        explanation: dailySymbolLock.explanation,
       });
     }
   }
@@ -3647,6 +3669,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const stopLossMaxDollars = Math.max(Math.abs(stopLossDollars), safeNumber(options.stopLossMaxDollars, Math.abs(stopLossDollars)));
   const trailingStart = options.trailingProfitStartDollars ?? 0.5;
   const trailingGiveback = options.trailingProfitGivebackDollars ?? 0.3;
+  const trailingGivebackPct = Math.max(0, safeNumber(options.trailingProfitGivebackPct ?? options.trailingGivebackPct, 0));
   const sellNetProfitFloorDollars = Math.max(0, safeNumber(options.sellNetProfitFloorDollars, 0));
   const peak = safeNumber(trailingRecord.peak_unrealized_pl, null);
   const openedAt = normalizeIso(options.position?.opened_at || options.position?.filled_at || trailingRecord.opened_at || trailingRecord.first_seen_at || null);
@@ -3666,10 +3689,11 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const exitSlippage = Math.max(0, safeNumber(options.exitSlippage ?? options.position?.exit_slippage ?? options.position?.exitSlippage, 0));
   const fees = Math.max(0, safeNumber(options.fees ?? options.position?.fees ?? options.position?.estimated_fees, 0));
   const executionDrag = entrySlippage + exitSlippage + fees;
+  const dynamicGiveback = Math.max(trailingGiveback, Number.isFinite(peak) && peak > 0 ? peak * trailingGivebackPct : 0);
   const effectiveTrailingStart = Math.max(trailingStart, sellNetProfitFloorDollars + trailingGiveback + executionDrag);
   const staleRecyclePeakCeiling = Math.max(staleMinPeakProfit, effectiveTrailingStart);
   const trailingActive = Number.isFinite(peak) && peak >= effectiveTrailingStart;
-  const trailingSellAt = trailingActive ? peak - trailingGiveback : null;
+  const trailingSellAt = trailingActive ? peak - dynamicGiveback : null;
   const brokerPnlTrusted = options.position?.current_price !== undefined || options.position?.currentPrice !== undefined || options.position?.market_value !== undefined || options.position?.marketValue !== undefined;
   const grossPnl = brokerPnlTrusted && Number.isFinite(unrealized)
     ? unrealized
@@ -3695,9 +3719,19 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
   const distanceToStopPerShare = Number.isFinite(currentPrice) && Number.isFinite(hardStopPrice)
     ? currentPrice - hardStopPrice
     : null;
+  const eodLiquidationMinutes = Math.max(1, safeNumber(options.eodLiquidationMinutes, 5));
+  const minutesUntilClose = safeNumber(options.intradayRegime?.minutes_until_close, null);
+  const isNearMarketClose = Boolean(
+    options.intradayRegime?.market_open
+    && Number.isFinite(minutesUntilClose)
+    && minutesUntilClose <= eodLiquidationMinutes,
+  );
   let exitReason = null;
   let exitMode = trailingActive ? 'profit_protection_active' : 'pre_target_hard_stop_only';
-  if (Number.isFinite(unrealized) && unrealized <= -effectiveStopLossDollars) {
+  if (isNearMarketClose) {
+    exitReason = 'END_OF_DAY_LIQUIDATION';
+    exitMode = 'market_close_liquidation';
+  } else if (Number.isFinite(unrealized) && unrealized <= -effectiveStopLossDollars) {
     exitReason = 'STOP_LOSS_DOLLARS';
     exitMode = 'hard_stop_triggered';
   } else if (trailingActive && Number.isFinite(unrealized) && unrealized <= trailingSellAt) {
@@ -3741,11 +3775,15 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
     position_market_value: Number.isFinite(positionMarketValue) ? roundCurrency(positionMarketValue) : null,
     distance_to_stop_dollars: Number.isFinite(unrealized) ? roundCurrency(unrealized + effectiveStopLossDollars) : null,
     distance_to_stop_per_share: Number.isFinite(distanceToStopPerShare) ? roundCurrency(distanceToStopPerShare) : null,
+    eod_liquidation_active: isNearMarketClose,
+    minutes_until_close: Number.isFinite(minutesUntilClose) ? roundScore(minutesUntilClose) : null,
     profit_protection_active: trailingActive,
     trailing_active: trailingActive,
     trailing_peak_unrealized_pl: Number.isFinite(peak) ? roundCurrency(peak) : null,
     trailing_activation_profit_dollars: roundCurrency(effectiveTrailingStart),
     trailing_sell_if_unrealized_pl_at_or_below: Number.isFinite(trailingSellAt) ? roundCurrency(trailingSellAt) : null,
+    trailing_profit_giveback_pct: roundCurrency(trailingGivebackPct),
+    dynamic_giveback_dollars: roundCurrency(dynamicGiveback),
     sell_net_profit_floor_dollars: roundCurrency(sellNetProfitFloorDollars),
     sell_price: Number.isFinite(currentPrice) ? roundCurrency(currentPrice) : null,
     entry_price: Number.isFinite(entryPrice) ? roundCurrency(entryPrice) : null,

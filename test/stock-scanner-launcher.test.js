@@ -20,6 +20,18 @@ test('stock scanner launcher maps live policy exit rules into scanner options', 
   });
 });
 
+test('stock scanner launcher maps dynamic giveback and EOD liquidation rules into scanner options', () => {
+  const overrides = buildPolicyExitOverrides({
+    trailingProfitGivebackPct: 0.25,
+    eodLiquidationMinutes: 5,
+  });
+
+  assert.deepEqual(overrides, {
+    trailingProfitGivebackPct: 0.25,
+    eodLiquidationMinutes: 5,
+  });
+});
+
 test('stock scanner launcher enforces live entry momentum floors over weak env defaults', () => {
   const overrides = buildLiveEntryOverrides({
     minMovePct: 0.1,
