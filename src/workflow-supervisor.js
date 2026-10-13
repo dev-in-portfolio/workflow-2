@@ -152,7 +152,9 @@ function createWorkflowSupervisor(options = {}) {
       await stopServices({ finalStatus: 'recovering' });
       await start({ monitor: true, recovery: true });
     }, monitorIntervalMs);
-    monitorTimer.unref?.();
+    if (options.unrefMonitor !== false) {
+      monitorTimer.unref?.();
+    }
   }
 
   async function stopServices({ finalStatus = 'stopped' } = {}) {

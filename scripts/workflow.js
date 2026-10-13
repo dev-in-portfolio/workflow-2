@@ -26,15 +26,17 @@ async function main(argv = process.argv.slice(2)) {
     const errFd = fs.openSync(errPath, 'a');
     const command = `${process.execPath} ${__filename} start --foreground`;
     const child = spawn(process.execPath, [__filename, 'start', '--foreground'], { cwd: repoRoot, detached: true, windowsHide: true, stdio: ['ignore', outFd, errFd] });
-    try { await waitForSpawn(child); } catch (error) {
+    try {
+      await waitForSpawn(child);
+    } catch (error) {
+      try { fs.closeSync(outFd); } catch { /* ignore */ }
+      try { fs.closeSync(errFd); } catch { /* ignore */ }
       process.stderr.write(`Workflow supervisor launch failed. Command: ${command}. Code: ${error.code || 'unknown'}. Error: ${error.message}. Log: ${errPath}\n`);
       return 1;
-    } finally {
-      fs.closeSync(outFd); fs.closeSync(errFd);
     }
     child.unref(); process.stdout.write(`Workflow supervisor launched (PID ${child.pid}). Command: ${command}. Logs: ${outPath}, ${errPath}\n`); return 0;
   }
-  const supervisor = createWorkflowSupervisor({ repoRoot });
+  const supervisor = createWorkflowSupervisor({ repoRoot, unrefMonitor: false });
   if (action === 'stop') {
     const previous = readState(statePath);
     const result = await supervisor.stop();
@@ -55,7 +57,12 @@ async function main(argv = process.argv.slice(2)) {
   }
   const result = await supervisor.start();
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (action === 'start' && argv.includes('--foreground') && result.ok) await new Promise(() => {});
+  if (action === 'start' && argv.includes('--foreground') && result.ok) {
+    await new Promise((resolve) => {
+      process.on('SIGINT', resolve);
+      process.on('SIGTERM', resolve);
+    });
+  }
   return result.ok ? 0 : 1;
 }
 function readState(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; } }

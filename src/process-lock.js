@@ -73,6 +73,7 @@ function listProcessLocks({ repoRoot = resolveRepoRoot() } = {}) {
 
 function isStaleProcessLock(lock = {}, staleMs = DEFAULT_STALE_MS) {
   if (lock.pid && isPidAlive(lock.pid)) return false;
+  if (lock.pid && !isPidAlive(lock.pid)) return true;
   const updatedAt = new Date(lock.updated_at || lock.acquired_at || 0).getTime();
   if (!Number.isFinite(updatedAt)) return true;
   return Date.now() - updatedAt > staleMs;
