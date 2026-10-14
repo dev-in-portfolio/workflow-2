@@ -136,6 +136,7 @@ function startTradingControlServer(env = process.env, options = {}) {
     startupPolicyPatch,
     buyNotionalTarget: config.BUY_NOTIONAL_TARGET,
     minBuyNotional: config.MIN_BUY_NOTIONAL,
+    dynamicBuySizingEnabled: config.DYNAMIC_BUY_SIZING_ENABLED,
     autoPolicyRefresh: config.AUTO_POLICY_REFRESH,
     autoPolicyRefreshMinBlockedCount: config.AUTO_POLICY_REFRESH_MIN_BLOCKED_COUNT,
     autoPolicyRefreshMinRejectionPressureScore: config.AUTO_POLICY_REFRESH_MIN_REJECTION_PRESSURE_SCORE,

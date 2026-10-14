@@ -46,13 +46,37 @@ function buildPortfolioSnapshot({ positions = [], openOrders = [], account = nul
   };
 }
 
-function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = {}, requireBrokerCash = false } = {}) {
+function allocateBuyNotional({
+  targetNotional,
+  minBuyNotional = 25,
+  portfolio = {},
+  requireBrokerCash = false,
+  dynamicSizing = false,
+  maxBuyNotional = null,
+} = {}) {
   const cashBufferFactor = 0.99;
+  const isDynamic = Boolean(
+    dynamicSizing
+    || targetNotional === null
+    || targetNotional === 'dynamic'
+    || (portfolio && portfolio.dynamicSizing)
+    || (typeof process !== 'undefined' && process.env && (process.env.DYNAMIC_BUY_SIZING_ENABLED === 'true' || process.env.DYNAMIC_BUY_SIZING_ENABLED === '1')),
+  );
   const requested = Math.max(1, safeNumber(targetNotional, 150));
   const floor = Math.max(1, safeNumber(minBuyNotional, 25));
   const remainingSlots = safeNumber(portfolio.remaining_position_slots, null);
   if (Number.isFinite(remainingSlots) && remainingSlots <= 0) {
-    return { accepted: false, reason: 'MAX_POSITION_SLOTS_FILLED', requested, notional: 0, floor, remaining_slots: 0, slot_budget: 0, cash_source: null };
+    return {
+      accepted: false,
+      reason: 'MAX_POSITION_SLOTS_FILLED',
+      requested: isDynamic ? 0 : requested,
+      notional: 0,
+      floor,
+      remaining_slots: 0,
+      slot_budget: 0,
+      cash_source: null,
+      dynamic_sizing: isDynamic,
+    };
   }
   const cashCandidates = [portfolio.buying_power, portfolio.cash]
     .map((value) => safeNumber(value, null))
@@ -62,15 +86,26 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
       return {
         accepted: false,
         reason: 'BUYING_POWER_UNAVAILABLE',
-        requested,
+        requested: isDynamic ? 0 : requested,
         notional: 0,
         floor,
         remaining_slots: remainingSlots,
         slot_budget: 0,
         cash_source: null,
+        dynamic_sizing: isDynamic,
       };
     }
-    return { accepted: true, reason: null, requested, notional: requested, floor, remaining_slots: remainingSlots, slot_budget: requested, cash_source: 'unavailable_fallback' };
+    return {
+      accepted: true,
+      reason: null,
+      requested,
+      notional: requested,
+      floor,
+      remaining_slots: remainingSlots,
+      slot_budget: requested,
+      cash_source: 'unavailable_fallback',
+      dynamic_sizing: isDynamic,
+    };
   }
   const cash = safeNumber(portfolio.cash, null);
   const buyingPower = safeNumber(portfolio.buying_power, null);
@@ -81,13 +116,14 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
       accepted: false,
       reason: 'PARTIAL_FILL_RESERVES_BUYING_POWER',
       reason_codes: ['OPEN_ORDER_RESERVES_BUYING_POWER', 'PARTIAL_FILL_RESERVES_BUYING_POWER', 'BUYING_POWER_REDUCED_BY_OPEN_ORDERS'],
-      requested,
+      requested: isDynamic ? 0 : requested,
       notional: 0,
       floor,
       remaining_slots: remainingSlots,
       reserved_notional: reservedNotional,
       slot_budget: 0,
       cash_source: null,
+      dynamic_sizing: isDynamic,
     };
   }
   const cashSource = Number.isFinite(cash) && Number.isFinite(buyingPower)
@@ -97,24 +133,31 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
   const slotBudget = Number.isFinite(remainingSlots) && remainingSlots > 0
     ? spendableCash / remainingSlots
     : spendableCash;
-  const notional = Math.min(requested, Math.floor(slotBudget * 100) / 100);
+  const roundedSlotBudget = Math.floor(slotBudget * 100) / 100;
+  const ceiling = safeNumber(maxBuyNotional, null);
+  const cappedSlotBudget = Number.isFinite(ceiling) && ceiling > 0
+    ? Math.min(ceiling, roundedSlotBudget)
+    : roundedSlotBudget;
+  const notional = isDynamic ? cappedSlotBudget : Math.min(requested, roundedSlotBudget);
+  const effectiveRequested = isDynamic ? cappedSlotBudget : requested;
   if (notional < floor) {
     return {
       accepted: false,
       reason: 'CASH_TOO_LOW_FOR_TARGET_SIZE',
-      requested,
+      requested: effectiveRequested,
       notional,
       floor,
       remaining_slots: remainingSlots,
       spendable_cash: spendableCash,
-      slot_budget: Math.floor(slotBudget * 100) / 100,
+      slot_budget: roundedSlotBudget,
       cash_source: cashSource,
+      dynamic_sizing: isDynamic,
     };
   }
   return {
     accepted: true,
     reason: null,
-    requested,
+    requested: effectiveRequested,
     notional,
     floor,
     remaining_slots: remainingSlots,
@@ -123,8 +166,9 @@ function allocateBuyNotional({ targetNotional, minBuyNotional = 25, portfolio = 
     reason_codes: reservedNotional > 0
       ? ['OPEN_ORDER_RESERVES_BUYING_POWER', 'PARTIAL_FILL_RESERVES_BUYING_POWER', 'BUYING_POWER_REDUCED_BY_OPEN_ORDERS']
       : [],
-    slot_budget: Math.floor(slotBudget * 100) / 100,
+    slot_budget: roundedSlotBudget,
     cash_source: cashSource,
+    dynamic_sizing: isDynamic,
   };
 }
 

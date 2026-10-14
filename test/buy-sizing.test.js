@@ -226,3 +226,75 @@ test('buy notional target is configurable with a sane default', () => {
   assert.equal(customSizing.quantity, 3);
   assert.equal(customSizing.notional, 144.75);
 });
+
+test('buy sizing preserves dynamic_buying_power notional and sizes fractional shares accurately', () => {
+  const order = buildPaperOrderRequestFromSignal({
+    signal_id: 'sig-dyn-bp',
+    action_candidate: 'paper_buy',
+    symbol: 'FAST',
+    asset_type: 'stock',
+    price: 51.785,
+    notional: 148.50,
+    supports_fractional_shares: true,
+    sizing_method: 'dynamic_buying_power',
+  });
+
+  assert.equal(order.supports_fractional_shares, true);
+  assert(order.quantity > 0);
+  // 148.50 / 51.785 = 2.867625 shares -> 2.867625 * 51.785 = 148.50
+  assert.equal(order.notional <= 148.50, true);
+  assert.equal(order.notional >= 148.45, true);
+  assert.equal(order.sizing_method, 'dynamic_buying_power');
+});
+
+test('buildPaperOrder dynamically allocates ~50% cash with 0 open positions and ~100% with 1 position', () => {
+  const { buildPaperOrder } = require('../src/trading/order-builder');
+  // Case 1: 0 open positions, 2 slots remaining, $300 cash -> ~50% ($148.50)
+  const result0 = buildPaperOrder({
+    signal_id: 'sig-dyn-0',
+    action_candidate: 'paper_buy',
+    asset_type: 'stock',
+    symbol: 'FAST',
+    side: 'buy',
+    entry_price: 50,
+    price: 50,
+    supports_fractional_shares: true,
+    sizing_method: 'dynamic_buying_power',
+  }, { decision: 'APPROVED_FOR_EXECUTION' }, {
+    dynamicBuySizingEnabled: true,
+    portfolio: {
+      cash: 300,
+      buying_power: 300,
+      remaining_position_slots: 2,
+    },
+  });
+
+  assert.equal(result0.accepted, true);
+  assert.equal(result0.paperOrderRequest.submitted_notional, 148.50);
+  assert.equal(result0.paperOrderRequest.quantity, 2.97);
+
+  // Case 2: 1 open position, 1 slot remaining, $150 cash -> ~100% ($148.50)
+  const result1 = buildPaperOrder({
+    signal_id: 'sig-dyn-1',
+    action_candidate: 'paper_buy',
+    asset_type: 'stock',
+    symbol: 'FAST',
+    side: 'buy',
+    entry_price: 50,
+    price: 50,
+    supports_fractional_shares: true,
+    sizing_method: 'dynamic_buying_power',
+  }, { decision: 'APPROVED_FOR_EXECUTION' }, {
+    dynamicBuySizingEnabled: true,
+    portfolio: {
+      cash: 150,
+      buying_power: 150,
+      remaining_position_slots: 1,
+    },
+  });
+
+  assert.equal(result1.accepted, true);
+  assert.equal(result1.paperOrderRequest.submitted_notional, 148.50);
+  assert.equal(result1.paperOrderRequest.quantity, 2.97);
+});
+

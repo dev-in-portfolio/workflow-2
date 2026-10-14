@@ -332,6 +332,46 @@ test('stock scanner writes buying-power sizing when selected explicitly', () => 
   assert.equal(candidate.payload.market_context.scanner.sizing_method, 'buying_power');
 });
 
+test('stock scanner writes dynamic buying power sizing when allocation dynamic_sizing is active', () => {
+  const candidate = buildStockCandidateForSymbol('MTAL', rankedSnapshot({
+    bid: 5.07,
+    ask: 5.09,
+    previousClose: 5,
+    volume: 100000,
+    timestamp: '2026-06-16T20:00:00.000Z',
+  }), {
+    bp: 5.07,
+    ap: 5.09,
+    t: '2026-06-16T20:00:00.000Z',
+  }, {
+    receivedAt: '2026-06-16T20:00:01.000Z',
+    notional: 148.50,
+    allocation: {
+      accepted: true,
+      dynamic_sizing: true,
+      requested: 148.50,
+      notional: 148.50,
+      floor: 20,
+      remaining_slots: 2,
+    },
+    allowContrarianEntries: true,
+    portfolio: {
+      account: { equity: '300.00', cash: '300.00', buying_power: '300.00' },
+      cash: 300,
+      buying_power: 300,
+      remaining_position_slots: 2,
+    },
+  });
+
+  assert(candidate);
+  assert.equal(candidate.payload.sizing_method, 'dynamic_buying_power');
+  assert.equal(candidate.payload.notional, 148.50);
+  assert.equal(candidate.payload.submitted_notional, 148.50);
+  assert.equal(candidate.payload.supports_fractional_shares, true);
+  assert.equal(candidate.payload.market_context.scanner.sizing_method, 'dynamic_buying_power');
+  assert.equal(candidate.payload.market_context.scanner.sizing_explanation.limiter, 'DYNAMIC_BUYING_POWER_SLOT');
+});
+
 test('stock scanner applies a 20 point rank penalty to a recent sell symbol', () => {
   const plain = buildStockCandidateForSymbol('NVDA', stockSnapshot(), stockQuote(), {
     receivedAt: '2026-06-16T20:00:01.000Z',

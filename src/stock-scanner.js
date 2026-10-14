@@ -146,6 +146,7 @@ function createStockScanner(options = {}) {
   const intervalMs = Math.max(5_000, Number(options.intervalMs ?? Number(env.STOCK_SCANNER_INTERVAL_SECONDS || 10) * 1000) || 10_000);
   const maxCandidatesPerRun = Math.max(1, Number(options.maxCandidatesPerRun ?? env.STOCK_SCANNER_MAX_CANDIDATES ?? 2) || 2);
   const notional = Math.max(1, Number(options.notional ?? env.BUY_NOTIONAL_TARGET ?? 150) || 150);
+  const dynamicBuySizingEnabled = options.dynamicBuySizingEnabled ?? parseBool(env.DYNAMIC_BUY_SIZING_ENABLED, false);
   const minBuyNotional = Math.max(1, Number(options.minBuyNotional ?? env.MIN_BUY_NOTIONAL ?? 25) || 25);
   const maxOpenPositions = Math.max(1, Number(options.maxOpenPositions ?? env.MAX_OPEN_POSITIONS ?? 2) || 2);
   const maxStalenessSeconds = Math.max(1, safeNumber(options.maxStalenessSeconds ?? env.MAX_STALENESS_SECONDS ?? 60, 60));
@@ -635,8 +636,15 @@ function createStockScanner(options = {}) {
           floor: minBuyNotional,
           remaining_slots: portfolio.remaining_position_slots,
           broker_state_required: true,
+          dynamic_sizing: dynamicBuySizingEnabled,
         }
-        : allocateBuyNotional({ targetNotional: notional, minBuyNotional, portfolio, requireBrokerCash: true });
+        : allocateBuyNotional({
+            targetNotional: notional,
+            minBuyNotional,
+            portfolio,
+            requireBrokerCash: true,
+            dynamicSizing: dynamicBuySizingEnabled,
+          });
       const skipTracker = createSkipTracker();
       const legacyRecentTradePenalties = loadRecentTradePenalties({
         env,
@@ -4165,7 +4173,21 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     sizingExplanation.limiter = 'EXECUTION_QUALITY_SIZE_MULTIPLIER';
     sizingExplanation.notes.push('Execution-quality size reduction was applied.');
   }
-  if (options.allocation?.accepted && Number.isFinite(safeNumber(options.allocation?.requested, null)) && Number.isFinite(safeNumber(options.allocation?.notional, null)) && options.allocation.notional < options.allocation.requested) {
+  if (options.allocation?.accepted && options.allocation?.dynamic_sizing) {
+    candidateNotional = options.allocation.notional;
+    candidateSupportsFractionalShares = true;
+    sizingMethod = 'dynamic_buying_power';
+    sizingExplanation.mode = 'dynamic_buying_power';
+    sizingExplanation.requested_notional = roundCurrency(options.allocation.notional);
+    sizingExplanation.target_notional = roundCurrency(options.allocation.notional);
+    sizingExplanation.submitted_notional = roundCurrency(candidateNotional);
+    sizingExplanation.limiter = 'DYNAMIC_BUYING_POWER_SLOT';
+    sizingExplanation.notes.push(
+      options.allocation.remaining_slots === 2
+        ? 'Dynamic buying power allocation active (~50% cash deployment for slot 1).'
+        : 'Dynamic buying power allocation active (~100% remaining cash deployment for slot 2).',
+    );
+  } else if (options.allocation?.accepted && Number.isFinite(safeNumber(options.allocation?.requested, null)) && Number.isFinite(safeNumber(options.allocation?.notional, null)) && options.allocation.notional < options.allocation.requested) {
     sizingExplanation.target_notional = roundCurrency(options.allocation.requested);
     sizingExplanation.submitted_notional = roundCurrency(Math.min(candidateNotional, options.allocation.notional));
     sizingExplanation.limiter = options.allocation.cash_limited ? 'BUYING_POWER_CAP' : (options.allocation.reason || 'ALLOCATION_CAP');

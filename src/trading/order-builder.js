@@ -10,7 +10,15 @@ function buildPaperOrder(signal, riskDecision, options = {}) {
   const portfolio = options.portfolio || {};
   const executionAdapter = options.executionAdapter;
 
-  const requestedBuyNotionalTarget = policy.buyNotionalTarget ?? options.buyNotionalTarget ?? 150;
+  const dynamicBuySizingEnabled = Boolean(
+    options.dynamicBuySizingEnabled
+    ?? policy.dynamicBuySizingEnabled
+    ?? (typeof process !== 'undefined' && process.env && (process.env.DYNAMIC_BUY_SIZING_ENABLED === 'true' || process.env.DYNAMIC_BUY_SIZING_ENABLED === '1')),
+  );
+  const isDynamicSignal = String(signal.sizing_method || signal.sizing_mode || '').trim().toLowerCase() === 'dynamic_buying_power';
+  const requestedBuyNotionalTarget = isDynamicSignal && Number.isFinite(Number(signal.notional))
+    ? Number(signal.notional)
+    : (policy.buyNotionalTarget ?? options.buyNotionalTarget ?? 150);
   const minBuyNotional = Math.max(1, Number(policy.minBuyNotional ?? options.minBuyNotional ?? 25) || 25);
   const strictBrokerCash = isBuySignal(signal) && isBrokerBackedExecutionAdapter(executionAdapter);
   const liveBuyBudget = isBuySignal(signal)
@@ -19,6 +27,7 @@ function buildPaperOrder(signal, riskDecision, options = {}) {
       minBuyNotional,
       portfolio,
       requireBrokerCash: strictBrokerCash,
+      dynamicSizing: dynamicBuySizingEnabled || isDynamicSignal,
     })
     : { target: requestedBuyNotionalTarget, requested: requestedBuyNotionalTarget, cash_limited: false };
   const effectiveBuyNotionalTarget = liveBuyBudget.notional ?? liveBuyBudget.target;
@@ -41,9 +50,12 @@ function buildPaperOrder(signal, riskDecision, options = {}) {
     buyNotionalTarget: effectiveBuyNotionalTarget,
   });
   if (paperOrderRequest && isBuySignal(signal)) {
-    paperOrderRequest.requested_notional = requestedBuyNotionalTarget;
+    paperOrderRequest.requested_notional = liveBuyBudget.requested ?? requestedBuyNotionalTarget;
     paperOrderRequest.submitted_notional = effectiveBuyNotionalTarget;
     paperOrderRequest.min_buy_notional = minBuyNotional;
+    if (isDynamicSignal || liveBuyBudget.dynamic_sizing) {
+      paperOrderRequest.sizing_method = 'dynamic_buying_power';
+    }
     if (strictBrokerCash) paperOrderRequest.require_idempotency = true;
   }
   if (paperOrderRequest) assertExecutionRequest(paperOrderRequest);

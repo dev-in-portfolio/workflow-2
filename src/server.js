@@ -113,7 +113,7 @@ function createTradingControlServer(options = {}) {
       const result = await processTradingSignal({
         ...body, signal: candidate,
         market_context: { ...(body.market_context || body.marketContext || candidate.market_context || candidate.marketContext || {}), ...resolveExecutionQualityContext(state.performance, candidate.created_at || body.created_at || undefined) },
-      }, { audit: state.audit, executionAdapter: state.executionAdapter, performance: state.performance, policySnapshot, buyNotionalTarget: options.buyNotionalTarget, minBuyNotional: options.minBuyNotional, source: 'direct', confirmationAttempts: 6, confirmationDelayMs: 500, confirmationMaxDelayMs: 1500 });
+      }, { audit: state.audit, executionAdapter: state.executionAdapter, performance: state.performance, policySnapshot, buyNotionalTarget: options.buyNotionalTarget, minBuyNotional: options.minBuyNotional, dynamicBuySizingEnabled: options.dynamicBuySizingEnabled, source: 'direct', confirmationAttempts: 6, confirmationDelayMs: 500, confirmationMaxDelayMs: 1500 });
       if (!result.accepted) return { status: 400, body: { accepted: false, stage: result.stage, error: result.reason_codes?.[0] || 'NON_TRADE_DECISION', reason_codes: result.reason_codes || [] } };
       return { status: 200, body: { accepted: true, stage: result.stage, signal: result.signal, risk_decision: result.riskDecision, paper_order_request: result.paperOrderRequest, paper_order: result.paperOrder, order_confirmation: result.confirmation, paper_result: result.paperResult, execution_outcome: result.paperOutcome, paper_outcome: result.paperOutcome } };
     } },
@@ -174,7 +174,7 @@ function createTradingControlServer(options = {}) {
     },
     'signal-created': async ({ body, record }) => {
       const policySnapshot = state.performance.getPolicySnapshot();
-      const result = await processTradingSignal({ ...body, signal: body.signal || body, market_context: { ...(body.market_context || body.marketContext || {}), ...resolveExecutionQualityContext(state.performance, (body.signal || body).created_at || body.created_at || undefined) } }, { audit: state.audit, executionAdapter: state.executionAdapter, performance: state.performance, policySnapshot, buyNotionalTarget: options.buyNotionalTarget, minBuyNotional: options.minBuyNotional, source: 'webhook', confirmationAttempts: 6, confirmationDelayMs: 500, confirmationMaxDelayMs: 1500 });
+      const result = await processTradingSignal({ ...body, signal: body.signal || body, market_context: { ...(body.market_context || body.marketContext || {}), ...resolveExecutionQualityContext(state.performance, (body.signal || body).created_at || body.created_at || undefined) } }, { audit: state.audit, executionAdapter: state.executionAdapter, performance: state.performance, policySnapshot, buyNotionalTarget: options.buyNotionalTarget, minBuyNotional: options.minBuyNotional, dynamicBuySizingEnabled: options.dynamicBuySizingEnabled, source: 'webhook', confirmationAttempts: 6, confirmationDelayMs: 500, confirmationMaxDelayMs: 1500 });
       if (result.signal && result.riskDecision) state.reviewQueue.push(buildReviewItem({ signal: result.signal, riskDecision: result.riskDecision }));
       if (result.accepted) maybeRefreshPolicyFromLearning(result.signal.created_at || body.created_at || undefined, 'signal-created');
       if (!result.accepted) return { status: 400, body: { accepted: false, stage: result.stage, reason_codes: result.reason_codes || [] } };

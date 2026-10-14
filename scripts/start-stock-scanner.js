@@ -121,6 +121,7 @@ function main(env = process.env) {
     intervalMs: 10_000,
     maxCandidatesPerRun: 8,
     notional: Number(livePolicy.buyNotionalTarget || runtimeEnv.BUY_NOTIONAL_TARGET || 150),
+    dynamicBuySizingEnabled: scannerEnv.DYNAMIC_BUY_SIZING_ENABLED === 'true' || scannerEnv.DYNAMIC_BUY_SIZING_ENABLED === '1',
     ...liveEntryOverrides,
     ...liveExitOverrides,
     ...liveRiskOverrides,

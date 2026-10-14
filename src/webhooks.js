@@ -101,6 +101,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
         ?? options.policy?.buyNotionalTarget
         ?? signal.buy_notional_target
         ?? signal.notional_target
+        ?? signal.notional
         ?? DEFAULT_BUY_NOTIONAL_TARGET,
       DEFAULT_BUY_NOTIONAL_TARGET,
     ),
@@ -122,7 +123,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
     ?? signal.fractional_shares
     ?? (assetType === 'crypto' || symbol.includes('/'));
   const preserveSignalSizing = Boolean(options.respectSignalQuantity)
-    || ['risk_budget', 'buying_power'].includes(
+    || ['risk_budget', 'buying_power', 'dynamic_buying_power'].includes(
       String(signal.sizing_method || signal.sizing_mode || '').trim().toLowerCase(),
     );
 
@@ -146,7 +147,7 @@ function resolveBuyOrderSizing(signal, options = {}) {
     // Buying-power sizing has already applied deployment, reserve, buffer, and
     // whole-share limits against the live broker balance. Scaling it again here
     // silently discards deployable cash.
-    const appliedSizeMultiplier = signalSizingMethod === 'buying_power' ? 1 : sizeMultiplier;
+    const appliedSizeMultiplier = (signalSizingMethod === 'buying_power' || signalSizingMethod === 'dynamic_buying_power') ? 1 : sizeMultiplier;
     const scaledQuantity = signalQuantity * appliedSizeMultiplier;
     const quantity = supportsFractionalShares ? floorToDecimals(scaledQuantity, 6) : Math.floor(scaledQuantity);
     if (!(quantity > 0)) {
