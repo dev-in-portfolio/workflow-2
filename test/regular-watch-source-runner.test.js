@@ -130,3 +130,41 @@ test('applyIncumbencyDecay preserves active runners and applies dormancy penalti
   assert.equal(dormant.score, 70);
 });
 
+test('buildFastLaneSymbols trashes low scorers and evicts repeat incumbents past max consecutive runs', () => {
+  const previousStatus = {
+    regularWatchList: [
+      { symbol: 'HOT_RUNNER', score: 75, fastLaneStreak: 1 },
+      { symbol: 'STALE_LOW', score: 12, fastLaneStreak: 0 },
+      { symbol: 'EXPIRED_INCUMBENT', score: 80, fastLaneStreak: 3 },
+    ],
+    regularWatchMovers: [
+      { symbol: 'DEAD_MOVER', score: 15, movePct: 0.1, fastLaneStreak: 0 },
+      { symbol: 'HOT_MOVER', score: 65, movePct: 4.5, fastLaneStreak: 0 },
+    ],
+  };
+
+  const fastLane = buildFastLaneSymbols({
+    enabled: true,
+    limit: 10,
+    maxConsecutiveRuns: 3,
+    minFastLaneScore: 35,
+    previousStatus,
+    coreSymbols: ['EXPIRED_INCUMBENT', 'CORE_FRESH'],
+    universeSymbols: ['HOT_RUNNER', 'STALE_LOW', 'EXPIRED_INCUMBENT', 'DEAD_MOVER', 'HOT_MOVER', 'CORE_FRESH'],
+  });
+
+  // HOT_RUNNER (score 75 >= 35, streak 1 < 3): included
+  assert.ok(fastLane.symbols.includes('HOT_RUNNER'));
+  // HOT_MOVER (score 65 >= 35): included
+  assert.ok(fastLane.symbols.includes('HOT_MOVER'));
+  // CORE_FRESH (score 80, streak 0): included
+  assert.ok(fastLane.symbols.includes('CORE_FRESH'));
+
+  // STALE_LOW (score 12 < 35): trashed, not in fast lane
+  assert.ok(!fastLane.symbols.includes('STALE_LOW'));
+  // DEAD_MOVER (score 15 < 35, movePct 0.1 < 1.0): trashed, not in fast lane
+  assert.ok(!fastLane.symbols.includes('DEAD_MOVER'));
+  // EXPIRED_INCUMBENT (streak 3 >= maxConsecutiveRuns 3): evicted, not in fast lane
+  assert.ok(!fastLane.symbols.includes('EXPIRED_INCUMBENT'));
+});
+
