@@ -9,6 +9,7 @@ const { fetchAlpacaMarketSignals, fetchAlpacaAssetSignals, fetchNasdaqHaltsSigna
 const { fetchPolygonMarketSignals } = require('../meme-monitor/sources/polygon-market-source');
 const { fetchAlphaVantageSignals } = require('../meme-monitor/sources/alpha-vantage-source');
 const { loadDynamicHotList, resolveDynamicHotListPath } = require('../meme-monitor/hot-list-store');
+const { fetchAlpacaMarketLeaders } = require('../stock-scanner');
 
 function resolveRegularWatchSymbols(env = process.env) {
   const scannerConfig = buildScannerConfig(env);
@@ -85,6 +86,17 @@ async function runRegularWatchSources(options = {}) {
     timeoutMs,
     fallbackSymbols: resolveRegularWatchSymbols(env),
   });
+  const timedFetch = createTimedFetch(fetchImpl, timeoutMs);
+  const marketLeaders = options.marketLeaders || await (options.fetchMarketLeaders || fetchAlpacaMarketLeaders)({
+    fetchImpl: timedFetch,
+    apiKeyId: String(env.ALPACA_API_KEY_ID || '').trim(),
+    apiSecretKey: String(env.ALPACA_API_SECRET_KEY || '').trim(),
+    baseUrl: String(env.ALPACA_DATA_API_BASE_URL || env.ALPACA_MARKET_DATA_BASE_URL || 'https://data.alpaca.markets').trim(),
+    moversTop: 50,
+    mostActivesTop: 100,
+    timeoutMs,
+  }).catch(() => ({ symbols: [], gainers: [], mostActives: [] }));
+
   const fastLane = buildFastLaneSymbols({
     enabled: fastLaneEnabled,
     limit: effectiveFastLaneLimit,
@@ -96,12 +108,15 @@ async function runRegularWatchSources(options = {}) {
       env,
       now,
     }),
+    marketLeaders,
+    coreSymbols: VOLATILE_STOCK_SYMBOLS,
     universeSymbols: universe.symbols,
   });
   const rotation = selectRotatingSymbolBatch({
     symbols: universe.symbols,
     batchSize: Math.max(1, maxSymbols - fastLane.symbols.length),
     previousOffset: previousStatus.universe?.rotation?.next_offset,
+    prioritySymbols: [...VOLATILE_STOCK_SYMBOLS, ...(marketLeaders?.symbols || [])],
   });
   const symbols = uniqueSymbols([...fastLane.symbols, ...rotation.symbols]).slice(0, maxSymbols);
   const scannedToday = updateScannedTodaySymbols({
@@ -136,7 +151,6 @@ async function runRegularWatchSources(options = {}) {
     return saveRegularWatchStatus(idle, { dataDir, filePath: statusPath });
   }
 
-  const timedFetch = createTimedFetch(fetchImpl, timeoutMs);
   const sourceResults = await runEnabledSources({
     env,
     fetchImpl: timedFetch,
@@ -467,7 +481,12 @@ async function fetchAlpacaRegularStockUniverse({ env = process.env, fetchImpl = 
   }
 }
 
-function selectRotatingSymbolBatch({ symbols = [], batchSize = 500, previousOffset = 0 } = {}) {
+function selectRotatingSymbolBatch({
+  symbols = [],
+  batchSize = 500,
+  previousOffset = 0,
+  prioritySymbols = [],
+} = {}) {
   const unique = normalizeRegularWatchSymbols(symbols, []);
   const size = Math.max(1, Math.floor(Number(batchSize) || 500));
   if (!unique.length) {
@@ -476,12 +495,25 @@ function selectRotatingSymbolBatch({ symbols = [], batchSize = 500, previousOffs
   if (size >= unique.length) {
     return { symbols: unique, offset: 0, next_offset: 0, batch_size: size, full_eligible_count: unique.length, wrapped: true };
   }
-  const offset = Math.max(0, Math.floor(Number(previousOffset) || 0)) % unique.length;
-  const selected = [];
-  for (let index = 0; index < size; index += 1) {
-    selected.push(unique[(offset + index) % unique.length]);
+
+  const prioritySet = new Set(normalizeRegularWatchSymbols(prioritySymbols, []).filter((sym) => unique.includes(sym)));
+  const priorityList = [...prioritySet];
+  const broaderSymbols = unique.filter((sym) => !prioritySet.has(sym));
+
+  const priorityQuota = Math.min(priorityList.length, Math.floor(size * 0.3));
+  const broaderQuota = size - priorityQuota;
+  const selectedPriority = priorityList.slice(0, priorityQuota);
+
+  const broaderCount = broaderSymbols.length || 1;
+  const offset = Math.max(0, Math.floor(Number(previousOffset) || 0)) % broaderCount;
+  const selectedBroader = [];
+  for (let index = 0; index < broaderQuota; index += 1) {
+    selectedBroader.push(broaderSymbols[(offset + index) % broaderCount]);
   }
-  const nextOffset = (offset + size) % unique.length;
+  const nextOffset = (offset + broaderQuota) % broaderCount;
+
+  const selected = uniqueSymbols([...selectedPriority, ...selectedBroader]).slice(0, size);
+
   return {
     symbols: selected,
     offset,
@@ -497,6 +529,8 @@ function buildFastLaneSymbols({
   limit = 250,
   previousStatus = {},
   dynamicHotList = null,
+  marketLeaders = null,
+  coreSymbols = [],
   universeSymbols = [],
   maxConsecutiveRuns = 3,
 } = {}) {
@@ -514,8 +548,17 @@ function buildFastLaneSymbols({
     sourceCounts[source] = (sourceCounts[source] || 0) + 1;
     candidates.push({ symbol: normalized, source, score: Number(score) || 0 });
   };
+  for (const symbol of Array.isArray(marketLeaders?.gainers) ? marketLeaders.gainers : []) {
+    add(symbol, 'market_leader_gainers', 95);
+  }
+  for (const symbol of Array.isArray(marketLeaders?.mostActives) ? marketLeaders.mostActives : []) {
+    add(symbol, 'market_leader_most_actives', 90);
+  }
   for (const entry of Array.isArray(previousStatus?.regularWatchMovers) ? previousStatus.regularWatchMovers : []) {
     add(entry?.symbol, 'previous_regular_watch_movers', entry?.score ?? entry?.regularWatchScore, entry?.fastLaneStreak);
+  }
+  for (const symbol of Array.isArray(coreSymbols) ? coreSymbols : []) {
+    add(symbol, 'core_volatile_universe', 80);
   }
   for (const entry of Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList.slice(0, max) : []) {
     if (String(entry?.status || '').toLowerCase() === 'blocked') continue;
@@ -547,9 +590,11 @@ function buildFastLaneSymbols({
 function isSuitableRegularWatchAsset(asset = {}) {
   const symbol = String(asset.symbol || '').trim().toUpperCase();
   const name = String(asset.name || '').trim();
+  const exchange = String(asset.exchange || '').trim().toUpperCase();
   if (!symbol) return false;
-  if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/.test(symbol)) return false;
-  if (/\b(warrant|right|unit|preferred)\b/i.test(name)) return false;
+  if (exchange === 'OTC') return false;
+  if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/i.test(symbol)) return false;
+  if (/\b(warrant|right|unit|preferred|fund|trust|etn|debt|note)\b/i.test(name)) return false;
   if (/\b(2x|3x|ultrapro|leveraged|inverse)\b/i.test(name)) return false;
   if (LEVERAGED_OR_VOLATILITY_ETFS.has(symbol)) return false;
   return true;
@@ -572,11 +617,21 @@ function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbo
     const fastLaneStreak = fastLane.has(symbol) ? Math.max(1, Number(prior?.fastLaneStreak || 0) + 1) : 0;
     const rawScore = Number(entry?.score || 0);
     const incumbencyPenalty = fastLaneStreak > 1 ? Math.max(0, fastLaneStreak - 1) * Math.max(0, Number(decayPoints) || 0) : 0;
+
+    const movePct = Math.abs(Number(entry?.movePct || 0));
+    const volumeMultiple = Number(entry?.volumeMultiple || entry?.relativeVolume || 0);
+    const activeRunner = movePct >= 1.5 || volumeMultiple >= 1.5;
+    const effectivePenalty = activeRunner ? Math.floor(incumbencyPenalty / 2) : incumbencyPenalty;
+
+    const dormant = (Number(entry?.volume || 0) === 0 && movePct < 0.1) || Boolean(entry?.stale);
+    const dormancyPenalty = dormant ? 10 : 0;
+
     return {
       ...entry,
       rawScore,
-      score: Math.max(0, rawScore - incumbencyPenalty),
-      incumbencyPenalty,
+      score: Math.max(0, rawScore - effectivePenalty - dormancyPenalty),
+      incumbencyPenalty: effectivePenalty,
+      dormancyPenalty,
       fastLaneStreak,
       discoveryCandidate: !fastLane.has(symbol),
     };
