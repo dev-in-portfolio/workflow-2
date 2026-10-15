@@ -73,7 +73,7 @@ async function runRegularWatchSources(options = {}) {
   const fastLaneLimit = Math.max(0, Number(options.fastLaneLimit || env.REGULAR_WATCH_FAST_LANE_LIMIT || 250) || 250);
   const explorationShare = clampRatio(options.explorationShare ?? env.REGULAR_WATCH_EXPLORATION_SHARE, 0.8);
   const maxConsecutiveFastLaneRuns = Math.max(1, Math.floor(Number(options.maxConsecutiveFastLaneRuns || env.REGULAR_WATCH_FAST_LANE_MAX_CONSECUTIVE_RUNS || 3) || 3));
-  const minFastLaneScore = Math.max(0, Number(options.minFastLaneScore || env.REGULAR_WATCH_FAST_LANE_MIN_SCORE || 35) || 35);
+  const minFastLaneScore = Math.max(0, Number(options.minFastLaneScore || env.REGULAR_WATCH_MIN_RAW_SCORE || env.REGULAR_WATCH_FAST_LANE_MIN_SCORE || 90) || 90);
   const incumbentDecayPoints = Math.max(0, Number(options.incumbentDecayPoints || env.REGULAR_WATCH_INCUMBENT_DECAY_POINTS || 5) || 5);
   const discoveryDisplayShare = clampRatio(options.discoveryDisplayShare ?? env.REGULAR_WATCH_DISCOVERY_DISPLAY_SHARE, 0.25);
   const effectiveFastLaneLimit = Math.min(fastLaneLimit, Math.max(0, Math.floor(maxSymbols * (1 - explorationShare))));
@@ -177,6 +177,7 @@ async function runRegularWatchSources(options = {}) {
     previousStatus,
     fastLaneSymbols: fastLane.symbols,
     decayPoints: incumbentDecayPoints,
+    minRawScore: minFastLaneScore,
   });
   const regularWatchList = buildDiversifiedRanking(symbolEntries, {
     displayedTopLimit,
@@ -548,7 +549,7 @@ function buildFastLaneSymbols({
   const previousStreakMap = new Map((Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList : [])
     .map((entry) => [String(entry?.symbol || '').toUpperCase(), Number(entry?.fastLaneStreak || 0)]));
   const previousScoreMap = new Map((Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList : [])
-    .map((entry) => [String(entry?.symbol || '').toUpperCase(), Number(entry?.score ?? entry?.rawScore ?? 0)]));
+    .map((entry) => [String(entry?.symbol || '').toUpperCase(), Number(entry?.rawScore ?? entry?.score ?? 0)]));
 
   const add = (symbol, source, score = 0, streak = null) => {
     const normalized = String(symbol || '').trim().toUpperCase();
@@ -571,10 +572,10 @@ function buildFastLaneSymbols({
     add(symbol, 'market_leader_most_actives', 90);
   }
   for (const entry of Array.isArray(previousStatus?.regularWatchMovers) ? previousStatus.regularWatchMovers : []) {
-    const score = Number(entry?.score ?? entry?.regularWatchScore ?? 0);
+    const rawScore = Number(entry?.rawScore ?? entry?.score ?? entry?.regularWatchScore ?? 0);
     const movePct = Math.abs(Number(entry?.movePct || 0));
-    if (score < minFastLaneScore && movePct < 1.0) continue;
-    add(entry?.symbol, 'previous_regular_watch_movers', score, entry?.fastLaneStreak);
+    if (rawScore < minFastLaneScore && movePct < 1.0) continue;
+    add(entry?.symbol, 'previous_regular_watch_movers', rawScore, entry?.fastLaneStreak);
   }
   for (const symbol of Array.isArray(coreSymbols) ? coreSymbols : []) {
     const prevScore = previousScoreMap.get(String(symbol).toUpperCase());
@@ -583,10 +584,10 @@ function buildFastLaneSymbols({
   }
   for (const entry of Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList.slice(0, max) : []) {
     if (String(entry?.status || '').toLowerCase() === 'blocked') continue;
-    const score = Number(entry?.score ?? entry?.regularWatchScore ?? 0);
-    if (score < minFastLaneScore) continue;
+    const rawScore = Number(entry?.rawScore ?? entry?.score ?? entry?.regularWatchScore ?? 0);
+    if (rawScore < minFastLaneScore) continue;
     if (entry?.stale) continue;
-    add(entry?.symbol, 'previous_regular_watch_top', score, entry?.fastLaneStreak);
+    add(entry?.symbol, 'previous_regular_watch_top', rawScore, entry?.fastLaneStreak);
   }
   for (const entry of Array.isArray(dynamicHotList?.dynamicHotList) ? dynamicHotList.dynamicHotList : []) {
     add(entry?.symbol, 'dynamic_hot_list', entry?.marketConfirmationScore ?? entry?.memeHeatScore);
@@ -631,7 +632,7 @@ const LEVERAGED_OR_VOLATILITY_ETFS = new Set([
   'UVXY', 'VIXY', 'VXX', 'YANG', 'YINN', 'ZSL',
 ]);
 
-function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbols = [], decayPoints = 5, maxDecayPenalty = 30 } = {}) {
+function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbols = [], decayPoints = 5, maxDecayPenalty = 30, minRawScore = 90 } = {}) {
   const previous = new Map((Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList : [])
     .map((entry) => [String(entry?.symbol || '').toUpperCase(), entry]));
   const fastLane = new Set(normalizeRegularWatchSymbols(fastLaneSymbols, []));
@@ -652,6 +653,9 @@ function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbo
     const dormant = (hasVolume && Number(entry.volume) === 0 && movePct < 0.1) || Boolean(entry?.stale);
     const dormancyPenalty = dormant ? 10 : 0;
 
+    const trashed = rawScore < minRawScore;
+    const trashedReason = trashed ? 'raw_score_below_90' : null;
+
     return {
       ...entry,
       rawScore,
@@ -660,6 +664,8 @@ function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbo
       dormancyPenalty,
       fastLaneStreak,
       discoveryCandidate: !fastLane.has(symbol),
+      trashed,
+      trashedReason,
     };
   });
 }

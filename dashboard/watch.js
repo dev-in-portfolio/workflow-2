@@ -95,7 +95,9 @@ function render(snapshot) {
   $('watchMoverCount').textContent = formatCount(regularWatchMovers.length);
   $('watchDynamicCount').textContent = formatCount(dynamicHotList.length);
   $('watchHotHotCount').textContent = formatCount(hotHotList.length);
-  $('regularWatchMeta').textContent = `Approved symbols: ${formatCount(regularWatchList.length)}`;
+  const qualifiedWatch = regularWatchList.filter((item) => !item.trashed && Number(item.rawScore ?? item.score ?? 0) >= 90);
+  const trashedCount = regularWatchList.length - qualifiedWatch.length;
+  $('regularWatchMeta').textContent = `${formatCount(qualifiedWatch.length)} approved (raw score ≥ 90)${trashedCount > 0 ? `, ${formatCount(trashedCount)} trashed` : ''}`;
   $('regularWatchMoversMeta').textContent = regularWatchMovers.length ? 'Sorted by opportunity score' : 'No movement data';
   $('dynamicHotListMeta').textContent = resolveColumnMeta(watch.dynamicHotList, 'Dynamic hot list');
   $('hotHotListMeta').textContent = `${resolveColumnMeta(watch.hotHotList, 'Hot hot list')} | rotation ${formatHotSlotRotationStatus(hotSlotRotation)}`;
@@ -155,7 +157,7 @@ function renderRegularWatchList(items) {
     <article class="watch-card">
       <div class="watch-card-top">
         <strong><code>${escapeHtml(item.symbol || '-')}</code></strong>
-        <span class="tag ${watchTone(item.status)}">${escapeHtml(String(item.status || 'stale').toUpperCase())}</span>
+        <span class="tag ${item.trashed ? 'amber' : watchTone(item.status)}">${escapeHtml(item.trashed ? 'TRASHED (<90)' : String(item.status || 'stale').toUpperCase())}</span>
       </div>
       <div class="watch-card-grid">
         <span><b>Last price</b> ${escapeHtml(formatCurrency(item.lastPrice ?? item.currentPrice))}</span>
