@@ -73,7 +73,8 @@ async function runRegularWatchSources(options = {}) {
   const fastLaneLimit = Math.max(0, Number(options.fastLaneLimit || env.REGULAR_WATCH_FAST_LANE_LIMIT || 250) || 250);
   const explorationShare = clampRatio(options.explorationShare ?? env.REGULAR_WATCH_EXPLORATION_SHARE, 0.8);
   const maxConsecutiveFastLaneRuns = Math.max(1, Math.floor(Number(options.maxConsecutiveFastLaneRuns || env.REGULAR_WATCH_FAST_LANE_MAX_CONSECUTIVE_RUNS || 3) || 3));
-  const minFastLaneScore = Math.max(0, Number(options.minFastLaneScore || env.REGULAR_WATCH_MIN_RAW_SCORE || env.REGULAR_WATCH_FAST_LANE_MIN_SCORE || 90) || 90);
+  const minFastLaneScore = Math.max(0, Number(options.minFastLaneScore || env.REGULAR_WATCH_MIN_RAW_SCORE || env.REGULAR_WATCH_FAST_LANE_MIN_SCORE || 35) || 35);
+  const minRawScore = Math.max(0, Number(options.minRawScore || options.minFastLaneScore || env.REGULAR_WATCH_MIN_RAW_SCORE || env.REGULAR_WATCH_FAST_LANE_MIN_SCORE || 90) || 90);
   const incumbentDecayPoints = Math.max(0, Number(options.incumbentDecayPoints || env.REGULAR_WATCH_INCUMBENT_DECAY_POINTS || 5) || 5);
   const discoveryDisplayShare = clampRatio(options.discoveryDisplayShare ?? env.REGULAR_WATCH_DISCOVERY_DISPLAY_SHARE, 0.25);
   const effectiveFastLaneLimit = Math.min(fastLaneLimit, Math.max(0, Math.floor(maxSymbols * (1 - explorationShare))));
@@ -114,11 +115,17 @@ async function runRegularWatchSources(options = {}) {
     coreSymbols: VOLATILE_STOCK_SYMBOLS,
     universeSymbols: universe.symbols,
   });
+  const trashedPreviousSymbols = new Set(
+    (Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList : [])
+      .filter((entry) => entry?.trashed === true || Number(entry?.rawScore ?? entry?.score ?? 0) < minFastLaneScore)
+      .map((entry) => String(entry?.symbol || '').toUpperCase()),
+  );
   const rotation = selectRotatingSymbolBatch({
     symbols: universe.symbols,
     batchSize: Math.max(1, maxSymbols - fastLane.symbols.length),
     previousOffset: previousStatus.universe?.rotation?.next_offset,
-    prioritySymbols: [...VOLATILE_STOCK_SYMBOLS, ...(marketLeaders?.symbols || [])],
+    prioritySymbols: [...VOLATILE_STOCK_SYMBOLS, ...(marketLeaders?.symbols || [])]
+      .filter((sym) => !trashedPreviousSymbols.has(String(sym || '').toUpperCase())),
   });
   const symbols = uniqueSymbols([...fastLane.symbols, ...rotation.symbols]).slice(0, maxSymbols);
   const scannedToday = updateScannedTodaySymbols({
@@ -177,7 +184,7 @@ async function runRegularWatchSources(options = {}) {
     previousStatus,
     fastLaneSymbols: fastLane.symbols,
     decayPoints: incumbentDecayPoints,
-    minRawScore: minFastLaneScore,
+    minRawScore,
   });
   const regularWatchList = buildDiversifiedRanking(symbolEntries, {
     displayedTopLimit,
@@ -505,7 +512,12 @@ function selectRotatingSymbolBatch({
 
   const priorityQuota = Math.min(priorityList.length, Math.floor(size * 0.3));
   const broaderQuota = size - priorityQuota;
-  const selectedPriority = priorityList.slice(0, priorityQuota);
+  const priorityCount = priorityList.length || 1;
+  const priorityStart = Math.max(0, Math.floor(Number(previousOffset) || 0)) % priorityCount;
+  const selectedPriority = [];
+  for (let index = 0; index < priorityQuota; index += 1) {
+    selectedPriority.push(priorityList[(priorityStart + index) % priorityCount]);
+  }
 
   const broaderCount = broaderSymbols.length || 1;
   const offset = Math.max(0, Math.floor(Number(previousOffset) || 0)) % broaderCount;
@@ -554,12 +566,13 @@ function buildFastLaneSymbols({
   const add = (symbol, source, score = 0, streak = null) => {
     const normalized = String(symbol || '').trim().toUpperCase();
     if (!normalized || (universe.size && !universe.has(normalized))) return;
+    const prevScore = previousScoreMap.get(normalized);
+    if (prevScore !== undefined && prevScore < minFastLaneScore) return;
     const effectiveStreak = streak !== null && streak !== undefined
       ? Number(streak || 0)
       : (previousStreakMap.get(normalized) || 0);
 
-    const isLiveMarketLeaderGainer = source === 'market_leader_gainers';
-    if (!isLiveMarketLeaderGainer && effectiveStreak >= maxConsecutiveRuns) return;
+    if (effectiveStreak >= maxConsecutiveRuns) return;
 
     sourceCounts[source] = (sourceCounts[source] || 0) + 1;
     candidates.push({ symbol: normalized, source, score: Number(score) || 0 });
@@ -573,8 +586,7 @@ function buildFastLaneSymbols({
   }
   for (const entry of Array.isArray(previousStatus?.regularWatchMovers) ? previousStatus.regularWatchMovers : []) {
     const rawScore = Number(entry?.rawScore ?? entry?.score ?? entry?.regularWatchScore ?? 0);
-    const movePct = Math.abs(Number(entry?.movePct || 0));
-    if (rawScore < minFastLaneScore && movePct < 1.0) continue;
+    if (rawScore < minFastLaneScore) continue;
     add(entry?.symbol, 'previous_regular_watch_movers', rawScore, entry?.fastLaneStreak);
   }
   for (const symbol of Array.isArray(coreSymbols) ? coreSymbols : []) {

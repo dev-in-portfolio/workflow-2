@@ -1810,8 +1810,9 @@ function summarizeRecentEntries(entries = []) {
           last_side: null,
           last_price: null,
         };
-        const signedQuantity = side === 'sell' ? -quantity : quantity;
-        current.net_quantity += signedQuantity;
+        current.net_quantity = side === 'sell'
+          ? Math.max(0, current.net_quantity - quantity)
+          : current.net_quantity + quantity;
         current.last_trade_at = orderAt || current.last_trade_at;
         current.last_side = side || current.last_side;
         current.last_price = safeNumber(entry.record?.paper_result?.average_fill_price ?? entry.record?.paper_order_request?.entry_price ?? entry.record?.entry_price ?? null, current.last_price);
@@ -3980,7 +3981,7 @@ function resolveLiveMarketRules(env = {}, policySnapshot = null, scannerRuntime 
     sell_profit_threshold_pct: safeNumber(policy.sellProfitThresholdPct, resolveProfitExitThresholdPct(env, 'stocks')),
     sell_net_profit_floor_dollars: resolveProfitExitFloorDollars(policySnapshot, env),
     position_sizing: {
-      mode: String(env.POSITION_SIZING_MODE || (parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED) ? 'risk_budget' : 'fixed_notional')).trim().toLowerCase(),
+      mode: String(env.POSITION_SIZING_MODE || (parseBoolForDrift(env.RISK_BUDGET_SIZING_ENABLED) ? 'risk_budget' : (parseBoolForDrift(env.DYNAMIC_BUY_SIZING_ENABLED) ? 'dynamic_buying_power' : 'fixed_notional'))).trim().toLowerCase(),
       max_buying_power_deployment_pct: safeNumber(env.MAX_BUYING_POWER_DEPLOYMENT_PCT, 100),
       buying_power_market_order_buffer_pct: safeNumber(env.BUYING_POWER_MARKET_ORDER_BUFFER_PCT, 0),
       buying_power_cash_reserve: safeNumber(env.BUYING_POWER_CASH_RESERVE ?? env.CASH_RESERVE_DOLLARS, 0),

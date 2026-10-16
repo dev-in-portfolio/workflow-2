@@ -130,16 +130,18 @@ test('applyIncumbencyDecay preserves active runners and applies dormancy penalti
   assert.equal(dormant.score, 70);
 });
 
-test('buildFastLaneSymbols trashes candidates with raw score below 90 and evicts repeat incumbents', () => {
+test('buildFastLaneSymbols trashes candidates with raw score below 90 and evicts repeat incumbents across all sources', () => {
   const previousStatus = {
     regularWatchList: [
       { symbol: 'ELITE_RUNNER', score: 92, rawScore: 92, fastLaneStreak: 1 },
       { symbol: 'MID_RUNNER', score: 75, rawScore: 75, fastLaneStreak: 1 },
       { symbol: 'STALE_LOW', score: 12, rawScore: 12, fastLaneStreak: 0 },
       { symbol: 'EXPIRED_INCUMBENT', score: 95, rawScore: 95, fastLaneStreak: 3 },
+      { symbol: 'FADED_GAINER', score: 73, rawScore: 73, fastLaneStreak: 1 },
     ],
     regularWatchMovers: [
       { symbol: 'DEAD_MOVER', score: 15, rawScore: 15, movePct: 0.1, fastLaneStreak: 0 },
+      { symbol: 'BIG_MOVE_LOW_SCORE', score: 68, rawScore: 68, movePct: 16.8, fastLaneStreak: 1 },
       { symbol: 'ELITE_MOVER', score: 91, rawScore: 91, movePct: 4.5, fastLaneStreak: 0 },
     ],
   };
@@ -150,24 +152,33 @@ test('buildFastLaneSymbols trashes candidates with raw score below 90 and evicts
     maxConsecutiveRuns: 3,
     minFastLaneScore: 90,
     previousStatus,
+    marketLeaders: {
+      gainers: ['FADED_GAINER', 'EXPIRED_INCUMBENT', 'FRESH_GAINER'],
+      mostActives: ['MID_RUNNER'],
+    },
     coreSymbols: ['EXPIRED_INCUMBENT', 'CORE_FRESH'],
-    universeSymbols: ['ELITE_RUNNER', 'MID_RUNNER', 'STALE_LOW', 'EXPIRED_INCUMBENT', 'DEAD_MOVER', 'ELITE_MOVER', 'CORE_FRESH'],
+    universeSymbols: ['ELITE_RUNNER', 'MID_RUNNER', 'STALE_LOW', 'EXPIRED_INCUMBENT', 'FADED_GAINER', 'FRESH_GAINER', 'DEAD_MOVER', 'BIG_MOVE_LOW_SCORE', 'ELITE_MOVER', 'CORE_FRESH'],
   });
 
   // ELITE_RUNNER (rawScore 92 >= 90, streak 1 < 3): included
   assert.ok(fastLane.symbols.includes('ELITE_RUNNER'));
   // ELITE_MOVER (rawScore 91 >= 90): included
   assert.ok(fastLane.symbols.includes('ELITE_MOVER'));
+  // FRESH_GAINER (no prior score): included
+  assert.ok(fastLane.symbols.includes('FRESH_GAINER'));
   // CORE_FRESH (no prior score): included
   assert.ok(fastLane.symbols.includes('CORE_FRESH'));
 
-  // MID_RUNNER (rawScore 75 < 90): trashed, not in fast lane
+  // MID_RUNNER (rawScore 75 < 90): trashed, not in fast lane even if in mostActives
   assert.ok(!fastLane.symbols.includes('MID_RUNNER'));
+  // FADED_GAINER (rawScore 73 < 90): trashed, not in fast lane even if in gainers
+  assert.ok(!fastLane.symbols.includes('FADED_GAINER'));
+  // BIG_MOVE_LOW_SCORE (rawScore 68 < 90, movePct 16.8): trashed, not in fast lane
+  assert.ok(!fastLane.symbols.includes('BIG_MOVE_LOW_SCORE'));
   // STALE_LOW (rawScore 12 < 90): trashed, not in fast lane
   assert.ok(!fastLane.symbols.includes('STALE_LOW'));
   // DEAD_MOVER (rawScore 15 < 90): trashed, not in fast lane
   assert.ok(!fastLane.symbols.includes('DEAD_MOVER'));
-  // EXPIRED_INCUMBENT (streak 3 >= maxConsecutiveRuns 3): evicted, not in fast lane
+  // EXPIRED_INCUMBENT (streak 3 >= maxConsecutiveRuns 3): evicted, not in fast lane even if in gainers
   assert.ok(!fastLane.symbols.includes('EXPIRED_INCUMBENT'));
 });
-
