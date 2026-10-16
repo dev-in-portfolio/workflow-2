@@ -631,7 +631,7 @@ function isSuitableRegularWatchAsset(asset = {}) {
   if (!symbol) return false;
   if (exchange === 'OTC') return false;
   if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/i.test(symbol)) return false;
-  if (symbol.length === 5 && (symbol.endsWith('W') || symbol.endsWith('R') || symbol.endsWith('U'))) return false;
+  if (symbol.length === 5 && (symbol.endsWith('W') || symbol.endsWith('R') || symbol.endsWith('U') || symbol.endsWith('Z'))) return false;
   if (/\b(warrant|right|unit|preferred|fund|trust|etn|debt|note)\b/i.test(name)) return false;
   if (/\b(2x|3x|1\.5x|1x|ultrapro|ultrashort|ultra|leveraged|inverse|bear|bull|daily\s+target|direxion|graniteshares|t-rex|defiance)\b/i.test(name)) return false;
   if (LEVERAGED_OR_VOLATILITY_ETFS.has(symbol)) return false;

@@ -4737,7 +4737,7 @@ async function fetchAlpacaMarketLeaders({ fetchImpl, apiKeyId, apiSecretKey, bas
     const s = String(sym || '').trim().toUpperCase();
     if (!s) return true;
     if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/i.test(s)) return true;
-    if (s.length === 5 && (s.endsWith('W') || s.endsWith('R') || s.endsWith('U'))) return true;
+    if (s.length === 5 && (s.endsWith('W') || s.endsWith('R') || s.endsWith('U') || s.endsWith('Z'))) return true;
     if (LEVERAGED_OR_VOLATILITY_ETFS.has(s)) return true;
     return false;
   };
