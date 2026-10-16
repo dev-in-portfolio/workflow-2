@@ -631,6 +631,7 @@ function isSuitableRegularWatchAsset(asset = {}) {
   if (!symbol) return false;
   if (exchange === 'OTC') return false;
   if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/i.test(symbol)) return false;
+  if (symbol.length === 5 && (symbol.endsWith('W') || symbol.endsWith('R') || symbol.endsWith('U'))) return false;
   if (/\b(warrant|right|unit|preferred|fund|trust|etn|debt|note)\b/i.test(name)) return false;
   if (/\b(2x|3x|1\.5x|1x|ultrapro|ultrashort|ultra|leveraged|inverse|bear|bull|daily\s+target|direxion|graniteshares|t-rex|defiance)\b/i.test(name)) return false;
   if (LEVERAGED_OR_VOLATILITY_ETFS.has(symbol)) return false;
@@ -652,7 +653,9 @@ function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbo
     const movePct = Math.abs(Number(entry?.movePct || 0));
     const volumeMultiple = Number(entry?.volumeMultiple || entry?.relativeVolume || 0);
     const activeRunner = movePct >= 1.5 || volumeMultiple >= 1.5;
-    const effectivePenalty = activeRunner ? Math.floor(incumbencyPenalty / 2) : incumbencyPenalty;
+    const effectivePenalty = (rawScore >= minRawScore && activeRunner && !entry?.stale)
+      ? Math.min(Math.floor(incumbencyPenalty / 2), Math.max(0, rawScore - minRawScore))
+      : (activeRunner ? Math.floor(incumbencyPenalty / 2) : incumbencyPenalty);
 
     const hasVolume = Number.isFinite(entry?.volume);
     const dormant = (hasVolume && Number(entry.volume) === 0 && movePct < 0.1) || Boolean(entry?.stale);

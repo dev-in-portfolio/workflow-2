@@ -2497,7 +2497,11 @@ function buildCandidates(bundle, options = {}) {
         && selectionV2?.qualified === true
         && safeNumber(selectionV2.final_opportunity_score, 0) >= singleProviderMinOpportunityScore
         && safeNumber(scannerContext.spread_pct, Number.POSITIVE_INFINITY) <= singleProviderMaxSpreadPct
-        && safeNumber(selectionV2.features?.one_minute_return_pct, 0) > 0
+        && (safeNumber(selectionV2.features?.one_minute_return_pct, 0) > 0
+          || (safeNumber(selectionV2.features?.one_minute_return_pct, 0) >= -0.25
+            && regularWatchEntry
+            && !regularWatchEntry.trashed
+            && safeNumber(regularWatchEntry.rawScore ?? regularWatchEntry.score, 0) >= 90))
         && safeNumber(selectionV2.features?.relative_volume, 0) >= 1,
       );
       const features = selectionV2?.features || {};
@@ -3897,6 +3901,7 @@ function buildExitCandidate({ symbol, snapshot, latestQuote, currentPrice, previ
 function assessRecentUpwardMomentum({
   currentPrice,
   minuteBar = null,
+  dailyBar = null,
   minRecentMovePct = 0.03,
   minRecentRangePct = 0.05,
   minRecentCloseLocationPct = 60,
@@ -3924,15 +3929,33 @@ function assessRecentUpwardMomentum({
     && recentRangePct >= minRange
     && Number.isFinite(closeLocationPct)
     && closeLocationPct >= minCloseLocation;
+
+  // Intraday breakout acceptance: if daily bar confirms a strong intraday runner holding near the highs
+  // and the current 1-minute bar is not actively dumping (>= -0.25%)
+  const dailyOpen = safeNumber(dailyBar?.o ?? dailyBar?.open, null);
+  const dailyHigh = safeNumber(dailyBar?.h ?? dailyBar?.high, null);
+  const dailyLow = safeNumber(dailyBar?.l ?? dailyBar?.low, null);
+  const dailyMoveFromOpenPct = Number.isFinite(dailyOpen) && dailyOpen > 0 ? ((close - dailyOpen) / dailyOpen) * 100 : null;
+  const dailyRangeLocationPct = Number.isFinite(dailyHigh) && Number.isFinite(dailyLow) && dailyHigh > dailyLow
+    ? ((close - dailyLow) / (dailyHigh - dailyLow)) * 100
+    : null;
+  const intradayBreakoutAccepted = Number.isFinite(dailyMoveFromOpenPct)
+    && dailyMoveFromOpenPct >= 2.0
+    && Number.isFinite(dailyRangeLocationPct)
+    && dailyRangeLocationPct >= minCloseLocation
+    && (recentMovePct === null || recentMovePct >= -0.25);
+
+  const accepted = moveAccepted || pressureAccepted || intradayBreakoutAccepted;
   return {
-    accepted: moveAccepted || pressureAccepted,
-    reason_code: moveAccepted || pressureAccepted ? null : 'RECENT_UPWARD_MOMENTUM_WEAK',
+    accepted,
+    reason_code: accepted ? null : 'RECENT_UPWARD_MOMENTUM_WEAK',
     recent_move_pct: Number.isFinite(recentMovePct) ? roundScore(recentMovePct) : null,
     min_recent_move_pct: roundScore(minMove),
     recent_range_pct: Number.isFinite(recentRangePct) ? roundScore(recentRangePct) : null,
     min_recent_range_pct: roundScore(minRange),
     close_location_pct: Number.isFinite(closeLocationPct) ? roundScore(closeLocationPct) : null,
     min_recent_close_location_pct: roundScore(minCloseLocation),
+    intraday_breakout_accepted: intradayBreakoutAccepted,
   };
 }
 
@@ -3956,6 +3979,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   const recentMomentum = assessRecentUpwardMomentum({
     currentPrice,
     minuteBar: snapshot.minuteBar || snapshot.minute_bar || null,
+    dailyBar: snapshot.dailyBar || snapshot.daily_bar || null,
     minRecentMovePct: options.minRecentMovePct,
     minRecentRangePct: options.minRecentRangePct,
     minRecentCloseLocationPct: options.minRecentCloseLocationPct,
@@ -4698,9 +4722,17 @@ async function fetchAlpacaMarketLeaders({ fetchImpl, apiKeyId, apiSecretKey, bas
   ]);
   const movers = moversResult.body;
   const actives = activesResult.body;
-  const gainers = uniqueNormalizedSymbols((movers?.gainers || []).map((entry) => entry?.symbol || entry));
-  const losers = uniqueNormalizedSymbols((movers?.losers || []).map((entry) => entry?.symbol || entry));
-  const mostActives = uniqueNormalizedSymbols((actives?.most_actives || actives?.mostActives || []).map((entry) => entry?.symbol || entry));
+  const isExcludedLeaderSymbol = (sym) => {
+    const s = String(sym || '').trim().toUpperCase();
+    if (!s) return true;
+    if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/i.test(s)) return true;
+    if (s.length === 5 && (s.endsWith('W') || s.endsWith('R') || s.endsWith('U'))) return true;
+    if (LEVERAGED_OR_VOLATILITY_ETFS.has(s)) return true;
+    return false;
+  };
+  const gainers = uniqueNormalizedSymbols((movers?.gainers || []).map((entry) => entry?.symbol || entry)).filter((sym) => !isExcludedLeaderSymbol(sym));
+  const losers = uniqueNormalizedSymbols((movers?.losers || []).map((entry) => entry?.symbol || entry)).filter((sym) => !isExcludedLeaderSymbol(sym));
+  const mostActives = uniqueNormalizedSymbols((actives?.most_actives || actives?.mostActives || []).map((entry) => entry?.symbol || entry)).filter((sym) => !isExcludedLeaderSymbol(sym));
   const symbols = uniqueNormalizedSymbols([...gainers, ...mostActives, ...losers]);
   return {
     symbols,
