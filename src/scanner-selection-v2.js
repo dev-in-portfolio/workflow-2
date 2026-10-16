@@ -212,7 +212,10 @@ function buildMarketFeatures({
     : positionWithinRangePct;
   const quoteAgeSeconds = ageSeconds(latestQuote.t || latestQuote.timestamp || snapshot.latestTrade?.t || minuteBar.t || receivedAt, receivedAt);
   const barAgeSeconds = ageSeconds(minuteBar.t || minuteBar.timestamp || receivedAt, receivedAt);
-  const freshnessScore = clamp(100 - Math.max(quoteAgeSeconds || 0, barAgeSeconds || 0) / 3, 0, 100);
+  const primaryQuoteAge = Number.isFinite(quoteAgeSeconds) ? quoteAgeSeconds : barAgeSeconds;
+  const secondaryBarAge = Number.isFinite(barAgeSeconds) ? Math.min(barAgeSeconds, 180) : primaryQuoteAge;
+  const effectiveAgeSeconds = (primaryQuoteAge || 0) * 0.75 + (secondaryBarAge || 0) * 0.25;
+  const freshnessScore = clamp(100 - effectiveAgeSeconds / 3, 0, 100);
   const stopDistance = safeNumber(structureStop?.stop_distance ?? null, null);
   const targetDistance = Number.isFinite(stopDistance) ? Math.max(stopDistance * 1.8, price * 0.02) : null;
   const rewardRiskRatio = Number.isFinite(stopDistance) && stopDistance > 0 && Number.isFinite(targetDistance)
