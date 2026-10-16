@@ -964,6 +964,7 @@ function createSymbolEntry(symbol) {
     blockedReason: null,
     currentPrice: null,
     previousClose: null,
+    openPrice: null,
     movePct: null,
     spreadPct: null,
     ageSeconds: null,
@@ -991,6 +992,7 @@ function applySignal(entry, signal) {
   entry.riskWarnings.push(...riskWarnings);
   entry.currentPrice = pickNumber(signal.currentPrice ?? signal.details?.currentPrice ?? signal.marketContext?.currentPrice, entry.currentPrice);
   entry.previousClose = pickNumber(signal.previousClose ?? signal.details?.previousClose ?? signal.marketContext?.previousClose, entry.previousClose);
+  entry.openPrice = pickNumber(signal.openPrice ?? signal.details?.openPrice ?? signal.marketContext?.openPrice, entry.openPrice);
   entry.movePct = pickNumber(signal.movePct ?? signal.marketContext?.movePct, entry.movePct);
   entry.spreadPct = pickNumber(signal.spreadPct ?? signal.details?.spreadPct ?? signal.marketContext?.spreadPct, entry.spreadPct);
   entry.volume = pickNumber(signal.volume ?? signal.details?.volume ?? signal.marketContext?.volume, entry.volume);
