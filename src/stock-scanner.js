@@ -3,7 +3,7 @@ const path = require('path');
 const { buildProviderConfirmationFromContext, normalizeMarketData } = require('./market-data');
 const { parseBool } = require('./config');
 const { nowIso, safeNumber, hashObject, clamp, resolveRepoRoot } = require('./util');
-const { APPROVED_LIVE_MARKET_SYMBOLS, parseSymbolList } = require('./volatile-stock-universe');
+const { APPROVED_LIVE_MARKET_SYMBOLS, LEVERAGED_OR_VOLATILITY_ETFS, parseSymbolList } = require('./volatile-stock-universe');
 const { loadRegularWatchState, resolveRegularWatchStatePath } = require('./regular-watch/regular-watch-feature-state');
 const { loadRegularWatchStatus, resolveRegularWatchStatusPath } = require('./regular-watch/regular-watch-status');
 const { allocateBuyNotional, buildPortfolioSnapshot } = require('./portfolio-allocation');
@@ -139,7 +139,8 @@ function createStockScanner(options = {}) {
   const scannerSymbolSource = normalizeScannerSymbolSource(options.scannerSymbolSource
     ?? scannerConfig.scannerSymbolSource
     ?? (Object.prototype.hasOwnProperty.call(env, 'SCANNER_SYMBOL_SOURCE') ? env.SCANNER_SYMBOL_SOURCE : (env.STOCK_SCANNER_WATCH_SOURCE || 'approved')));
-  const marketLeadersEnabled = options.marketLeadersEnabled ?? parseBool(env.STOCK_SCANNER_MARKET_LEADERS_ENABLED, true);
+  const marketLeadersEnabled = options.marketLeadersEnabled
+    ?? parseBool(env.STOCK_SCANNER_MARKET_LEADERS_ENABLED, scannerSymbolSource !== 'dynamic');
   const marketMoversTop = Math.max(1, Math.min(50, Math.floor(safeNumber(options.marketMoversTop ?? env.STOCK_SCANNER_MARKET_MOVERS_TOP, 50))));
   const marketMostActivesTop = Math.max(1, Math.min(100, Math.floor(safeNumber(options.marketMostActivesTop ?? env.STOCK_SCANNER_MARKET_MOST_ACTIVES_TOP, 100))));
   const excludedBuySymbols = parseSymbolList(options.excludedBuySymbols ?? env.STOCK_SCANNER_EXCLUDED_BUY_SYMBOLS, []);
@@ -2565,10 +2566,40 @@ function buildCandidates(bundle, options = {}) {
         candidate.priorityOverrideSortScore = candidate.rankScore + priorityOverrideBonus;
         candidate.regularWatchSortScore = Math.max(candidate.regularWatchSortScore, candidate.priorityOverrideSortScore);
       }
+      if (
+        candidate.payload.side === 'buy'
+        && options.scannerSymbolSource === 'dynamic'
+        && regularWatchEntry?.trashed === true
+        && !isPriorityOverrideSymbol
+      ) {
+        options.skipTracker?.record?.('REGULAR_WATCH_RAW_SCORE_TRASHED', {
+          symbol,
+          raw_score: regularWatchEntry.rawScore ?? regularWatchEntry.score ?? null,
+          trashed_reason: regularWatchEntry.trashedReason || 'raw_score_below_90',
+        });
+        continue;
+      }
       if (candidate.payload.side === 'buy' && options.scannerSelectionV2AuthorityEnabled && !selectionV2?.qualified) {
         options.skipTracker?.record?.(selectionV2?.reason_codes?.[0] || 'SELECTION_V2_NOT_QUALIFIED', {
           symbol,
           selection_v2: selectionV2 || null,
+        });
+        continue;
+      }
+      if (
+        candidate.payload.side === 'buy'
+        && options.scannerSelectionV2AuthorityEnabled
+        && !secondaryConfirmationAvailable
+        && !candidate.payload.single_source_momentum_override
+      ) {
+        options.skipTracker?.record?.('SINGLE_PROVIDER_QUALIFICATION_NOT_MET', {
+          symbol,
+          opportunity_score: selectionV2?.final_opportunity_score ?? null,
+          min_opportunity_score: singleProviderMinOpportunityScore,
+          spread_pct: scannerContext.spread_pct,
+          max_spread_pct: singleProviderMaxSpreadPct,
+          one_minute_return_pct: selectionV2?.features?.one_minute_return_pct ?? null,
+          relative_volume: selectionV2?.features?.relative_volume ?? null,
         });
         continue;
       }
@@ -2972,6 +3003,10 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   if (Array.isArray(options.excludedBuySymbols) && options.excludedBuySymbols.includes(symbol)) {
     if (previewMode) previewReasonCodes.push('SYMBOL_EXCLUDED_FROM_BUYS');
     else return skip('SYMBOL_EXCLUDED_FROM_BUYS');
+  }
+  if (LEVERAGED_OR_VOLATILITY_ETFS.has(symbol)) {
+    if (previewMode) previewReasonCodes.push('LEVERAGED_OR_VOLATILITY_ETF_EXCLUDED');
+    else return skip('LEVERAGED_OR_VOLATILITY_ETF_EXCLUDED');
   }
 
   const candidate = buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previousClose, spreadPct, options: { ...options, previewMode, previewReasonCodes } });
@@ -3489,8 +3524,16 @@ function resolveScannerSymbolUniverse({
     env,
     now: currentDate,
   });
-  const regularWatchListSymbols = uniqueNormalizedSymbols((Array.isArray(regularWatch?.regularWatchList) ? regularWatch.regularWatchList : []).map((entry) => entry?.symbol));
-  const regularWatchMoverSymbols = uniqueNormalizedSymbols((Array.isArray(regularWatch?.regularWatchMovers) ? regularWatch.regularWatchMovers : []).map((entry) => entry?.symbol));
+  const regularWatchListSymbols = uniqueNormalizedSymbols(
+    (Array.isArray(regularWatch?.regularWatchList) ? regularWatch.regularWatchList : [])
+      .filter((entry) => !entry?.trashed)
+      .map((entry) => entry?.symbol),
+  );
+  const regularWatchMoverSymbols = uniqueNormalizedSymbols(
+    (Array.isArray(regularWatch?.regularWatchMovers) ? regularWatch.regularWatchMovers : [])
+      .filter((entry) => !entry?.trashed)
+      .map((entry) => entry?.symbol),
+  );
   const dynamicHotSymbols = uniqueNormalizedSymbols((Array.isArray(hotList?.dynamicHotList) ? hotList.dynamicHotList : []).map((entry) => entry?.symbol));
   const hotHotSymbols = uniqueNormalizedSymbols((Array.isArray(hotList?.hotHotList) ? hotList.hotHotList : []).map((entry) => entry?.symbol));
   const dynamicSourceSymbols = uniqueNormalizedSymbols([

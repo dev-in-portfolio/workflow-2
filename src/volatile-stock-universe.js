@@ -126,8 +126,22 @@ function resolveRotatingStockSymbols(value, minimumPreferredCount = 20) {
   return VOLATILE_STOCK_SYMBOLS.slice();
 }
 
+const LEVERAGED_OR_VOLATILITY_ETFS = new Set([
+  'AAPU', 'AAPD', 'AGQ', 'AMDL', 'AMDS', 'BERZ', 'BITU', 'BITX', 'BOIL', 'BULZ', 'BZQ',
+  'CONI', 'CONL', 'CURE', 'CWEB', 'DFEN', 'DIG', 'DPST', 'DRN', 'DRV', 'DUST', 'DXD',
+  'EDC', 'ERX', 'ERY', 'ETHD', 'ETHT', 'FAS', 'FAZ', 'FNGD', 'FNGU', 'GDXD', 'GDXU',
+  'GGLL', 'GGLS', 'GLL', 'HIBL', 'HIBS', 'JDST', 'JNUG', 'KOLD', 'LABD', 'LABU', 'METD',
+  'METU', 'MSFD', 'MSFU', 'MSTU', 'MSTZ', 'NAIL', 'NUGT', 'NVD', 'NVDD', 'NVDL', 'NVDU',
+  'PLTD', 'PLTU', 'PSQ', 'QID', 'QLD', 'RETL', 'RWM', 'SBIT', 'SCO', 'SDOW', 'SDS',
+  'SOXL', 'SOXS', 'SPXL', 'SPXS', 'SPXU', 'SQQQ', 'SRTY', 'SSO', 'SVIX', 'SVXY', 'TBF',
+  'TBT', 'TECL', 'TECS', 'TMF', 'TMV', 'TNA', 'TQQQ', 'TSLL', 'TSLQ', 'TSLS', 'TTT',
+  'TWM', 'TZA', 'UBT', 'UCO', 'UGL', 'UPRO', 'URTY', 'UVIX', 'UVXY', 'VIXY', 'VXX',
+  'WANT', 'WEBL', 'WEBS', 'YANG', 'YINN', 'ZSL',
+]);
+
 module.exports = {
   APPROVED_LIVE_MARKET_SYMBOLS,
+  LEVERAGED_OR_VOLATILITY_ETFS,
   VOLATILE_STOCK_SYMBOLS,
   parseSymbolList,
   resolveRotatingStockSymbols,

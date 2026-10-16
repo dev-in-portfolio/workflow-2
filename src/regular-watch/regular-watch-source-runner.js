@@ -2,7 +2,7 @@ const { loadRegularWatchState, resolveRegularWatchStatePath } = require('./regul
 const { loadRegularWatchStatus, saveRegularWatchStatus, resolveRegularWatchStatusPath } = require('./regular-watch-status');
 const { scoreRegularWatchSymbol } = require('./regular-watch-score');
 const { buildScannerConfig } = require('../scanner-config');
-const { VOLATILE_STOCK_SYMBOLS, parseSymbolList, resolveRotatingStockSymbols } = require('../volatile-stock-universe');
+const { LEVERAGED_OR_VOLATILITY_ETFS, VOLATILE_STOCK_SYMBOLS, parseSymbolList, resolveRotatingStockSymbols } = require('../volatile-stock-universe');
 const { nowIso } = require('../util');
 const { buildSourceStatus, fetchJsonWithTimeout, redactSourceMessage } = require('../source-fetch');
 const { fetchAlpacaMarketSignals, fetchAlpacaAssetSignals, fetchNasdaqHaltsSignals, fetchSecEdgarSignals } = require('../meme-monitor/phase-a-source-runner');
@@ -620,17 +620,10 @@ function isSuitableRegularWatchAsset(asset = {}) {
   if (exchange === 'OTC') return false;
   if (/\.(WS|W|U|R|RT|PR[A-Z]?)$/i.test(symbol)) return false;
   if (/\b(warrant|right|unit|preferred|fund|trust|etn|debt|note)\b/i.test(name)) return false;
-  if (/\b(2x|3x|ultrapro|leveraged|inverse)\b/i.test(name)) return false;
+  if (/\b(2x|3x|1\.5x|1x|ultrapro|ultrashort|ultra|leveraged|inverse|bear|bull|daily\s+target|direxion|graniteshares|t-rex|defiance)\b/i.test(name)) return false;
   if (LEVERAGED_OR_VOLATILITY_ETFS.has(symbol)) return false;
   return true;
 }
-
-const LEVERAGED_OR_VOLATILITY_ETFS = new Set([
-  'AGQ', 'BOIL', 'BZQ', 'DIG', 'DUST', 'EDC', 'ERY', 'FAS', 'FAZ', 'GDXU', 'JNUG', 'KOLD',
-  'LABD', 'LABU', 'NUGT', 'QLD', 'SCO', 'SDOW', 'SOXL', 'SOXS', 'SPXU', 'SSO', 'SVIX',
-  'TBT', 'TECL', 'TECS', 'TMF', 'TMV', 'TNA', 'TQQQ', 'TZA', 'UCO', 'UGL', 'UPRO', 'UVIX',
-  'UVXY', 'VIXY', 'VXX', 'YANG', 'YINN', 'ZSL',
-]);
 
 function applyIncumbencyDecay(entries = [], { previousStatus = {}, fastLaneSymbols = [], decayPoints = 5, maxDecayPenalty = 30, minRawScore = 90 } = {}) {
   const previous = new Map((Array.isArray(previousStatus?.regularWatchList) ? previousStatus.regularWatchList : [])
@@ -1101,6 +1094,7 @@ function createTimedFetch(fetchImpl, timeoutMs) {
 }
 
 module.exports = {
+  LEVERAGED_OR_VOLATILITY_ETFS,
   buildBaseSourceEntries,
   buildContextSourceStatus,
   buildIdleStatus,

@@ -897,9 +897,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
 
   const regime = resolveMarketRegime(currentDate);
   const activePolicySnapshot = unwrapPolicySnapshot(riskPolicy.data) || unwrapPolicySnapshot(overnightStatus.data?.policy_snapshot) || livePolicyFile || null;
-  const liveMarketRules = resolveLiveMarketRules(runtimeEnv, activePolicySnapshot);
+  const liveMarketRules = resolveLiveMarketRules(runtimeEnv, activePolicySnapshot, scannerRuntimeFile);
   const liveMarketSchedule = resolveLiveMarketAutomationSchedule(currentDate);
-  const configDrift = buildConfigDrift(activePolicySnapshot, runtimeEnv);
+  const configDrift = buildConfigDrift(activePolicySnapshot, runtimeEnv, scannerRuntimeFile);
   const envLocalMetaForPolicy = getFileStat(path.resolve(options.repoRoot || path.resolve(__dirname, '..'), '.env.local'));
   const policyHealth = preflightLatest?.policy?.health || evaluatePolicyHealth({
     policySnapshot: activePolicySnapshot,
@@ -3750,8 +3750,12 @@ function approvedSymbolMatch(symbol, candidate) {
   return normalizeWatchSymbol(candidate.symbol) === symbol;
 }
 
-function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
+function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}, scannerRuntime = null) {
   const policy = activePolicySnapshot?.policy || {};
+  const activeStopLossMaxDollars = safeNumber(
+    scannerRuntime?.exit_rules?.stop_loss_max_dollars,
+    policy.positionStopLossMaxDollars,
+  );
   const expected = {
     maxOpenPositions: safeNumber(runtimeEnv.MAX_OPEN_POSITIONS, null),
     buyNotionalTarget: safeNumber(runtimeEnv.BUY_NOTIONAL_TARGET, null),
@@ -3772,7 +3776,7 @@ function buildConfigDrift(activePolicySnapshot, runtimeEnv = {}) {
     ['approvedSymbols', policy.approvedSymbols, expected.approvedSymbols],
     ['positionStopLossDollars', policy.positionStopLossDollars, expected.positionStopLossDollars],
     ['positionStopLossNotionalPct', policy.positionStopLossNotionalPct, expected.positionStopLossNotionalPct],
-    ['positionStopLossMaxDollars', policy.positionStopLossMaxDollars, expected.positionStopLossMaxDollars],
+    ['positionStopLossMaxDollars', activeStopLossMaxDollars, expected.positionStopLossMaxDollars],
     ['trailingProfitStartDollars', policy.trailingProfitStartDollars, expected.trailingProfitStartDollars],
     ['trailingProfitGivebackDollars', policy.trailingProfitGivebackDollars, expected.trailingProfitGivebackDollars],
     ['blockedBuyCalibrationBuckets', policy.blockedBuyCalibrationBuckets, expected.blockedBuyCalibrationBuckets],
@@ -3956,7 +3960,7 @@ function unwrapPolicyEffectiveness(payload) {
   return payload;
 }
 
-function resolveLiveMarketRules(env = {}, policySnapshot = null) {
+function resolveLiveMarketRules(env = {}, policySnapshot = null, scannerRuntime = null) {
   const policy = policySnapshot?.policy || {};
   return {
     workflow: 'Live Market',
@@ -3967,7 +3971,10 @@ function resolveLiveMarketRules(env = {}, policySnapshot = null) {
     min_buy_notional: safeNumber(policy.minBuyNotional, safeNumber(env.MIN_BUY_NOTIONAL, 25)),
     stop_loss_dollars: safeNumber(policy.positionStopLossDollars, safeNumber(env.POSITION_STOP_LOSS_DOLLARS, 1)),
     stop_loss_notional_pct: safeNumber(policy.positionStopLossNotionalPct, safeNumber(env.POSITION_STOP_LOSS_NOTIONAL_PCT, 0.75)),
-    stop_loss_max_dollars: safeNumber(policy.positionStopLossMaxDollars, safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5)),
+    stop_loss_max_dollars: safeNumber(
+      scannerRuntime?.exit_rules?.stop_loss_max_dollars,
+      safeNumber(policy.positionStopLossMaxDollars, safeNumber(env.POSITION_STOP_LOSS_MAX_DOLLARS, 2.5)),
+    ),
     trailing_profit_start_dollars: safeNumber(policy.trailingProfitStartDollars, safeNumber(env.TRAILING_PROFIT_START_DOLLARS, 0.5)),
     trailing_profit_giveback_dollars: safeNumber(policy.trailingProfitGivebackDollars, safeNumber(env.TRAILING_PROFIT_GIVEBACK_DOLLARS, 0.3)),
     sell_profit_threshold_pct: safeNumber(policy.sellProfitThresholdPct, resolveProfitExitThresholdPct(env, 'stocks')),
