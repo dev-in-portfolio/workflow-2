@@ -2336,8 +2336,10 @@ function buildCandidates(bundle, options = {}) {
     const snapshot = bundle.snapshots[symbol] || {};
     const latestQuote = bundle.latestQuotes[symbol] || snapshot.latestQuote || snapshot.latest_quote || {};
     const setupKey = resolveCandidateSetupKey({ symbol, snapshot, options });
+    const regularWatchEntry = regularWatchEntryBySymbol.get(symbol) || null;
     const candidate = buildStockCandidateForSymbol(symbol, snapshot, latestQuote, {
       receivedAt: now,
+      regularWatchEntry,
       notional: options.notional,
       allocation: options.allocation,
       runId: options.runId,
@@ -2462,7 +2464,6 @@ function buildCandidates(bundle, options = {}) {
         partialFillSummary: options.partialFillSummary || null,
         enabled: regularWatchPositionAwarenessEnabled,
       });
-      const regularWatchEntry = regularWatchEntryBySymbol.get(symbol) || null;
       const regularWatchComparison = buildRegularWatchComparison({
         symbol,
         candidate,
@@ -3905,6 +3906,7 @@ function assessRecentUpwardMomentum({
   minRecentMovePct = 0.03,
   minRecentRangePct = 0.05,
   minRecentCloseLocationPct = 60,
+  regularWatchEntry = null,
 } = {}) {
   const price = safeNumber(currentPrice, null);
   const open = safeNumber(minuteBar?.o ?? minuteBar?.open, null);
@@ -3945,7 +3947,15 @@ function assessRecentUpwardMomentum({
     && dailyRangeLocationPct >= minCloseLocation
     && (recentMovePct === null || recentMovePct >= -0.25);
 
-  const accepted = moveAccepted || pressureAccepted || intradayBreakoutAccepted;
+  const isRegularWatchRunner = Boolean(
+    regularWatchEntry
+    && !regularWatchEntry.trashed
+    && safeNumber(regularWatchEntry.rawScore ?? regularWatchEntry.score, 0) >= 90,
+  );
+  const regularWatchBreakoutAccepted = isRegularWatchRunner
+    && (recentMovePct === null || recentMovePct >= -0.25);
+
+  const accepted = moveAccepted || pressureAccepted || intradayBreakoutAccepted || regularWatchBreakoutAccepted;
   return {
     accepted,
     reason_code: accepted ? null : 'RECENT_UPWARD_MOMENTUM_WEAK',
@@ -3955,7 +3965,7 @@ function assessRecentUpwardMomentum({
     min_recent_range_pct: roundScore(minRange),
     close_location_pct: Number.isFinite(closeLocationPct) ? roundScore(closeLocationPct) : null,
     min_recent_close_location_pct: roundScore(minCloseLocation),
-    intraday_breakout_accepted: intradayBreakoutAccepted,
+    intraday_breakout_accepted: intradayBreakoutAccepted || regularWatchBreakoutAccepted,
   };
 }
 
@@ -3983,6 +3993,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     minRecentMovePct: options.minRecentMovePct,
     minRecentRangePct: options.minRecentRangePct,
     minRecentCloseLocationPct: options.minRecentCloseLocationPct,
+    regularWatchEntry: options.regularWatchEntry,
   });
   if (options.requireRecentMomentum === true && !recentMomentum.accepted) {
     options.skipTracker?.record?.(recentMomentum.reason_code || 'RECENT_MOMENTUM_WEAK', {
