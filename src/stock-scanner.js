@@ -171,8 +171,9 @@ function createStockScanner(options = {}) {
   const singleSourceMomentumEnabled = options.singleSourceMomentumEnabled ?? parseBool(env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_ENABLED, false);
   const singleSourceMomentumMinRankScore = Math.max(0, safeNumber(options.singleSourceMomentumMinRankScore ?? env.STOCK_SCANNER_SINGLE_SOURCE_MOMENTUM_MIN_RANK_SCORE, 500));
   const singleProviderQualifiedEnabled = options.singleProviderQualifiedEnabled ?? parseBool(env.STOCK_SCANNER_SINGLE_PROVIDER_QUALIFIED_ENABLED, true);
-  const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MIN_OPPORTUNITY_SCORE, 70));
-  const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MAX_SPREAD_PCT, 0.75));
+  const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MIN_OPPORTUNITY_SCORE, 45));
+  const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MAX_SPREAD_PCT, 2.0));
+  const singleProviderMinRelativeVolume = Math.max(0, safeNumber(options.singleProviderMinRelativeVolume ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MIN_RELATIVE_VOLUME, 0.70));
   const minMovePct = Math.max(0, safeNumber(options.minMovePct ?? scannerConfig.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minMovePct : 0));
   const requireRecentMomentum = options.requireRecentMomentum ?? scannerConfig.requireRecentMomentum ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, stricterLiveEntryDefaults);
   const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? scannerConfig.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03));
@@ -749,6 +750,7 @@ function createStockScanner(options = {}) {
         singleProviderQualifiedEnabled,
         singleProviderMinOpportunityScore,
         singleProviderMaxSpreadPct,
+        singleProviderMinRelativeVolume,
         minMovePct,
         requireRecentMomentum,
         minRecentMovePct,
@@ -921,6 +923,7 @@ function createStockScanner(options = {}) {
           singleProviderQualifiedEnabled,
           singleProviderMinOpportunityScore,
           singleProviderMaxSpreadPct,
+          singleProviderMinRelativeVolume,
           minMovePct,
           requireRecentMomentum,
           minRecentMovePct,
@@ -1594,6 +1597,7 @@ function createStockScanner(options = {}) {
       singleProviderQualifiedEnabled,
       singleProviderMinOpportunityScore,
       singleProviderMaxSpreadPct,
+      singleProviderMinRelativeVolume,
       marketLeadersEnabled,
       marketMoversTop,
       marketMostActivesTop,
@@ -2489,8 +2493,9 @@ function buildCandidates(bundle, options = {}) {
         })
         : null;
       const singleProviderQualifiedEnabled = options.singleProviderQualifiedEnabled !== false;
-      const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore, 70));
-      const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct, 0.75));
+      const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore, 45));
+      const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct, 2.0));
+      const singleProviderMinRelativeVolume = Math.max(0, safeNumber(options.singleProviderMinRelativeVolume, 0.70));
       const singleProviderEligible = Boolean(
         candidate.payload.side === 'buy'
         && singleProviderQualifiedEnabled
@@ -2499,11 +2504,8 @@ function buildCandidates(bundle, options = {}) {
         && safeNumber(selectionV2.final_opportunity_score, 0) >= singleProviderMinOpportunityScore
         && safeNumber(scannerContext.spread_pct, Number.POSITIVE_INFINITY) <= singleProviderMaxSpreadPct
         && (safeNumber(selectionV2.features?.one_minute_return_pct, 0) > 0
-          || (safeNumber(selectionV2.features?.one_minute_return_pct, 0) >= -0.25
-            && regularWatchEntry
-            && !regularWatchEntry.trashed
-            && safeNumber(regularWatchEntry.rawScore ?? regularWatchEntry.score, 0) >= 90))
-        && safeNumber(selectionV2.features?.relative_volume, 0) >= 1,
+          || safeNumber(selectionV2.features?.one_minute_return_pct, 0) >= -0.25)
+        && safeNumber(selectionV2.features?.relative_volume, 0) >= singleProviderMinRelativeVolume,
       );
       const features = selectionV2?.features || {};
       const quoteAgeSeconds = safeNumber(features.quote_age_seconds, Number.POSITIVE_INFINITY);
@@ -3903,6 +3905,7 @@ function assessRecentUpwardMomentum({
   currentPrice,
   minuteBar = null,
   dailyBar = null,
+  movePct = null,
   minRecentMovePct = 0.03,
   minRecentRangePct = 0.05,
   minRecentCloseLocationPct = 60,
@@ -3938,13 +3941,15 @@ function assessRecentUpwardMomentum({
   const dailyHigh = safeNumber(dailyBar?.h ?? dailyBar?.high, null);
   const dailyLow = safeNumber(dailyBar?.l ?? dailyBar?.low, null);
   const dailyMoveFromOpenPct = Number.isFinite(dailyOpen) && dailyOpen > 0 ? ((close - dailyOpen) / dailyOpen) * 100 : null;
+  const sessionMovePct = Number.isFinite(movePct) ? movePct : dailyMoveFromOpenPct;
   const dailyRangeLocationPct = Number.isFinite(dailyHigh) && Number.isFinite(dailyLow) && dailyHigh > dailyLow
     ? ((close - dailyLow) / (dailyHigh - dailyLow)) * 100
     : null;
-  const intradayBreakoutAccepted = Number.isFinite(dailyMoveFromOpenPct)
-    && dailyMoveFromOpenPct >= 2.0
+  const isUpOnDay = (Number.isFinite(dailyMoveFromOpenPct) && dailyMoveFromOpenPct >= 2.0)
+    || (Number.isFinite(sessionMovePct) && sessionMovePct >= 2.0);
+  const intradayBreakoutAccepted = isUpOnDay
     && Number.isFinite(dailyRangeLocationPct)
-    && dailyRangeLocationPct >= minCloseLocation
+    && dailyRangeLocationPct >= 45
     && (recentMovePct === null || recentMovePct >= -0.25);
 
   const isRegularWatchRunner = Boolean(
@@ -3990,6 +3995,7 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
     currentPrice,
     minuteBar: snapshot.minuteBar || snapshot.minute_bar || null,
     dailyBar: snapshot.dailyBar || snapshot.daily_bar || null,
+    movePct,
     minRecentMovePct: options.minRecentMovePct,
     minRecentRangePct: options.minRecentRangePct,
     minRecentCloseLocationPct: options.minRecentCloseLocationPct,
