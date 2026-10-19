@@ -864,7 +864,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const brokerLocalReconciliation = readJsonFileIfPresent(brokerLocalReconciliationPath);
   const partialFillStatePath = path.join(dataDir, 'runtime', 'partial-fill-state.json');
   const partialFillState = readJsonFileIfPresent(partialFillStatePath);
-  const executionQualityStatePath = path.join(dataDir, 'runtime', 'execution-quality-state.json');
+  const executionQualityStatePath = fs.existsSync(path.join(dataDir, 'state', 'execution-quality-state.json'))
+    ? path.join(dataDir, 'state', 'execution-quality-state.json')
+    : path.join(dataDir, 'runtime', 'execution-quality-state.json');
   const executionQualityState = readJsonFileIfPresent(executionQualityStatePath) || loadExecutionQualityState(executionQualityStatePath);
   const memeMonitorStatePath = resolveMemeMonitorStatePath({ dataDir });
   const memeMonitorState = loadMemeMonitorState({ env: runtimeEnv, filePath: memeMonitorStatePath });
@@ -876,7 +878,9 @@ async function buildDashboardSnapshot(options = {}, context = {}, state = {}) {
   const regularWatchStatus = loadRegularWatchStatus({ dataDir, filePath: regularWatchStatusPath });
   const dynamicHotListPath = resolveDynamicHotListPath({ dataDir });
   const dynamicHotList = loadDynamicHotList({ dataDir, filePath: dynamicHotListPath });
-  const candidateLifecycleStatePath = path.join(dataDir, 'runtime', 'candidate-lifecycle-state.json');
+  const candidateLifecycleStatePath = fs.existsSync(path.join(dataDir, 'state', 'candidate-lifecycle-state.json'))
+    ? path.join(dataDir, 'state', 'candidate-lifecycle-state.json')
+    : path.join(dataDir, 'runtime', 'candidate-lifecycle-state.json');
   const candidateLifecycleState = readJsonFileIfPresent(candidateLifecycleStatePath);
   const setupFatigueStatePath = path.join(dataDir, 'runtime', 'setup-fatigue-state.json');
   const setupFatigueState = readJsonFileIfPresent(setupFatigueStatePath) || loadSetupFatigueState(setupFatigueStatePath);
@@ -2619,6 +2623,7 @@ function buildHomeSummary(snapshot = {}) {
     live: buildCompactLiveSummary(snapshot.live || {}),
     control: buildCompactControlSummary(snapshot.control || {}),
     regime: snapshot.regime || {},
+    recent_activity: snapshot.recent_activity || null,
     alerts: Array.isArray(snapshot.alerts) ? snapshot.alerts.slice(0, 20) : [],
     memeMonitor: buildCompactMemeMonitorSummary(snapshot.memeMonitor || {}),
     hotListStatus: buildHomeHotListStatus(snapshot),
@@ -2722,6 +2727,9 @@ function buildCompactScannerRuntime(runtime = {}) {
 function compactCandidateLifecycleSummary(summary = null) {
   if (!summary || typeof summary !== 'object') return null;
   return {
+    status: summary.status || 'ACTIVE',
+    scanner_mode: summary.scanner_mode || 'hunt',
+    queue_enabled: Boolean(summary.queue_enabled),
     eligible_count: summary.eligible_count ?? 0,
     blocked_count: summary.blocked_count ?? 0,
     watched_count: summary.watched_count ?? 0,

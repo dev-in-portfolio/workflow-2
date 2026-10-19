@@ -416,8 +416,23 @@ function renderGuards(sessionGuards, setupFatigueSummary) {
   const activeGuards = Array.isArray(sessionGuards?.active_guards) ? sessionGuards.active_guards : [];
   const pausedSetups = Array.isArray(setupFatigueSummary?.paused_setups) ? setupFatigueSummary.paused_setups : [];
   if (!activeGuards.length && !pausedSetups.length) {
-    meta.textContent = 'No active guards';
-    target.innerHTML = '<div class="empty-state">No guard state is currently active.</div>';
+    meta.textContent = 'All guards clear';
+    const regime = sessionGuards?.intraday_regime?.regime || 'regular';
+    const lockedCount = sessionGuards?.daily_locked_symbol_count || 0;
+    target.innerHTML = `
+      <article class="trade-card guard-card">
+        <div class="trade-card-top">
+          <strong>Risk Circuit Breakers</strong>
+          <span class="trade-pnl ok">NORMAL / CLEAR</span>
+        </div>
+        <div class="trade-card-grid">
+          <span><b>Regime</b> ${escapeHtml(String(regime).toUpperCase())}</span>
+          <span><b>Buys Allowed</b> ${sessionGuards?.buy_blocked ? 'Blocked' : 'Allowed'}</span>
+          <span><b>Daily Locked</b> ${formatCount(lockedCount)}</span>
+          <span><b>Fatigue Setups</b> 0 Paused</span>
+        </div>
+      </article>
+    `;
     return;
   }
   meta.textContent = `${activeGuards.length} guard(s), ${pausedSetups.length} paused setup(s)`;
@@ -457,8 +472,22 @@ function renderCandidateLifecycle(summary) {
   const blocked = Array.isArray(summary?.blocked_candidates) ? summary.blocked_candidates : [];
   const expired = Array.isArray(summary?.expired_candidates) ? summary.expired_candidates : [];
   if (!watched.length && !eligible.length && !blocked.length && !expired.length) {
-    meta.textContent = 'No lifecycle state';
-    target.innerHTML = '<div class="empty-state">No candidate lifecycle state is currently active.</div>';
+    const isDirectHunt = summary?.queue_enabled === false || summary?.scanner_mode === 'hunt';
+    meta.textContent = isDirectHunt ? 'Direct hunt mode' : 'No lifecycle state';
+    target.innerHTML = `
+      <article class="trade-card guard-card lifecycle-card neutral">
+        <div class="trade-card-top">
+          <strong>Candidate Intake</strong>
+          <span class="trade-pnl neutral">${escapeHtml((summary?.scanner_mode || 'HUNT').toUpperCase())}</span>
+        </div>
+        <div class="trade-card-grid">
+          <span><b>Intake Mode</b> ${isDirectHunt ? 'Direct Execution (Immediate Entry)' : 'No queued candidates'}</span>
+          <span><b>State</b> Active Screening</span>
+          <span><b>Evaluation</b> Continuous 10s Cycle</span>
+          <span><b>Allocation</b> Available slot required</span>
+        </div>
+      </article>
+    `;
     return;
   }
   meta.textContent = `${formatCount(summary?.eligible_count)} eligible, ${formatCount(summary?.blocked_count)} blocked`;
