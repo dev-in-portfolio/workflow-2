@@ -2766,8 +2766,22 @@ function buildCompactControlSummary(control = {}) {
   };
 }
 
+function isPidAlive(pid) {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function applySupervisorState(control, supervisor) {
   if (!control || !supervisor) return control;
+  const isFresh = supervisor.updated_at && (Date.now() - new Date(supervisor.updated_at).getTime() < 300_000);
+  const supervisorAlive = Boolean(isFresh && supervisor.supervisor_pid && isPidAlive(supervisor.supervisor_pid));
+  if (!supervisorAlive) {
+    return { ...control, supervisor: null };
+  }
   const merged = { ...control, supervisor };
   if (supervisor.status !== 'healthy') return merged;
   merged.workflow = { ...(control.workflow || {}), status: 'healthy', issues: [] };
