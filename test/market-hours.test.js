@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isRegularUsMarketHours, resolveMarketRegime } = require('../src/market-hours');
+const { isRegularUsMarketHours, resolveMarketRegime, resolveIntradayStockRegime } = require('../src/market-hours');
 const { createMarketAwareScanner } = require('../src/market-aware-scanner');
 
 test('market-hours helper returns stocks during regular US market hours', () => {
@@ -94,3 +94,14 @@ function makeScanner(name, options, calls) {
     },
   };
 }
+
+
+test('resolveIntradayStockRegime activates midday lull between 11:30 AM and 1:30 PM ET', () => {
+  // 2026-10-20T16:00:00.000Z is 12:00 PM EDT (noon), exactly in the 11:30-13:30 lull window
+  const noon = new Date('2026-10-20T16:00:00.000Z');
+  const regime = resolveIntradayStockRegime(noon, { middayLullThrottleEnabled: true });
+  assert.equal(regime.regime, 'midday_lull');
+  assert.equal(regime.buys_allowed, false);
+  assert.equal(regime.manage_only, true);
+  assert.equal(regime.reason_code, 'MIDDAY_LULL_MANAGE_ONLY');
+});

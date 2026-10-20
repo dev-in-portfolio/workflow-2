@@ -3250,3 +3250,37 @@ test('position stop loss is capped in total dollars instead of multiplying by sh
   assert.equal(oneShare, 1.125);
   assert.equal(thirtyShares, 1.125);
 });
+
+
+test('stock scanner skips sub- microcaps when minStockPrice floor is enabled', () => {
+  const candidate = buildStockCandidateForSymbol('BEZ', {
+    latestQuote: { bp: 7.68, ap: 7.70, t: '2026-10-20T13:45:00.000Z' },
+    latestTrade: { p: 7.69, t: '2026-10-20T13:45:00.000Z' },
+    minuteBar: { v: 5000, h: 7.75, l: 7.60, t: '2026-10-20T13:45:00.000Z' },
+    prevDailyBar: { c: 7.20, v: 500000 },
+  }, {
+    bp: 7.68, ap: 7.70, t: '2026-10-20T13:45:00.000Z',
+  }, {
+    receivedAt: '2026-10-20T13:45:01.000Z',
+    minStockPrice: 12.0,
+    notional: 150,
+  });
+  assert.equal(candidate, null);
+});
+
+test('stock scanner skips wide spread stocks when maxAllowedSpreadPct is enabled', () => {
+  const candidate = buildStockCandidateForSymbol('WIDE', {
+    latestQuote: { bp: 20.00, ap: 20.20, t: '2026-10-20T13:45:00.000Z' },
+    latestTrade: { p: 20.10, t: '2026-10-20T13:45:00.000Z' },
+    minuteBar: { v: 5000, h: 20.25, l: 20.00, t: '2026-10-20T13:45:00.000Z' },
+    prevDailyBar: { c: 19.50, v: 500000 },
+  }, {
+    bp: 20.00, ap: 20.20, t: '2026-10-20T13:45:00.000Z',
+  }, {
+    receivedAt: '2026-10-20T13:45:01.000Z',
+    minStockPrice: 12.0,
+    maxAllowedSpreadPct: 0.35,
+    notional: 150,
+  });
+  assert.equal(candidate, null);
+});

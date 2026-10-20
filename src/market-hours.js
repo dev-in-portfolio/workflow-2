@@ -72,6 +72,21 @@ function resolveIntradayStockRegime(date = new Date(), options = {}) {
       minutes_until_close: minutesUntilClose,
     };
   }
+  const middayLullThrottleEnabled = Boolean(options.middayLullThrottleEnabled ?? (process.env.MIDDAY_LULL_THROTTLE_ENABLED === 'true' || process.env.LIVE_TRADING_ENABLED === 'true'));
+  const middayLullStartMinutes = Math.max(0, Number(options.middayLullStartMinutes ?? 120) || 120);
+  const middayLullEndMinutes = Math.max(middayLullStartMinutes, Number(options.middayLullEndMinutes ?? 240) || 240);
+  if (middayLullThrottleEnabled && minutesSinceOpen >= middayLullStartMinutes && minutesSinceOpen < middayLullEndMinutes) {
+    return {
+      regime: 'midday_lull',
+      market_open: true,
+      manage_only: true,
+      buys_allowed: false,
+      sells_allowed: true,
+      reason_code: 'MIDDAY_LULL_MANAGE_ONLY',
+      minutes_since_open: minutesSinceOpen,
+      minutes_until_close: minutesUntilClose,
+    };
+  }
   if (minutesUntilClose <= nearCloseMinutes) {
     return {
       regime: 'near_close_manage_only',

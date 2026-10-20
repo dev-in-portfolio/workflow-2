@@ -102,6 +102,12 @@ function mapSourceLabel(key) {
   return SCANNER_SOURCE_LABELS[String(key || '').trim().toLowerCase()] || String(key || '').trim();
 }
 
+function isLiveExecutionMode(env = process.env, options = {}) {
+  const tradingMode = String(options.tradingMode || env.TRADING_MODE || '').trim().toLowerCase();
+  const liveTradingEnabled = parseBool(env.LIVE_TRADING_ENABLED, false);
+  return tradingMode === 'live' || liveTradingEnabled === true;
+}
+
 function shouldUseStricterLiveEntryDefaults(env = process.env, options = {}) {
   const tradingMode = String(options.tradingMode || env.TRADING_MODE || '').trim().toLowerCase();
   const scannerMode = String(options.scannerMode || env.SCANNER_MODE || env.SCANNER_PROFILE || '').trim().toLowerCase();
@@ -174,6 +180,9 @@ function createStockScanner(options = {}) {
   const singleProviderMinOpportunityScore = Math.max(0, safeNumber(options.singleProviderMinOpportunityScore ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MIN_OPPORTUNITY_SCORE, 45));
   const singleProviderMaxSpreadPct = Math.max(0, safeNumber(options.singleProviderMaxSpreadPct ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MAX_SPREAD_PCT, 2.0));
   const singleProviderMinRelativeVolume = Math.max(0, safeNumber(options.singleProviderMinRelativeVolume ?? env.STOCK_SCANNER_SINGLE_PROVIDER_MIN_RELATIVE_VOLUME, 0.70));
+  const isLive = isLiveExecutionMode(env, options);
+  const minStockPrice = Math.max(0, safeNumber(options.minStockPrice ?? options.minPrice ?? env.STOCK_SCANNER_MIN_PRICE, isLive ? 12.0 : 0));
+  const maxAllowedSpreadPct = Math.max(0, safeNumber(options.maxAllowedSpreadPct ?? options.maxSpreadPct ?? env.STOCK_SCANNER_MAX_SPREAD_PCT, isLive ? 0.35 : 0));
   const minMovePct = Math.max(0, safeNumber(options.minMovePct ?? scannerConfig.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minMovePct : 0));
   const requireRecentMomentum = options.requireRecentMomentum ?? scannerConfig.requireRecentMomentum ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, stricterLiveEntryDefaults);
   const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? scannerConfig.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03));
@@ -222,7 +231,7 @@ function createStockScanner(options = {}) {
   const setupFatigueCleanWinRecoveryPoints = Math.max(0, safeNumber(options.setupFatigueCleanWinRecoveryPoints ?? env.SETUP_FATIGUE_CLEAN_WIN_RECOVERY_POINTS, 10));
   const setupFatiguePauseSeconds = Math.max(0, safeNumber(options.setupFatiguePauseSeconds ?? env.SETUP_FATIGUE_PAUSE_SECONDS, 15 * 60));
   const setupFatigueMaxPauseSeconds = Math.max(0, safeNumber(options.setupFatigueMaxPauseSeconds ?? env.SETUP_FATIGUE_MAX_PAUSE_SECONDS, 90 * 60));
-  const sessionGuardsEnabled = options.sessionGuardsEnabled ?? parseBool(env.SESSION_GUARDS_ENABLED, false);
+  const sessionGuardsEnabled = options.sessionGuardsEnabled ?? parseBool(env.SESSION_GUARDS_ENABLED, stricterLiveEntryDefaults);
   const stopoutClusterBlockMinutes = Math.max(0, safeNumber(options.stopoutClusterBlockMinutes ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_MINUTES, 30));
   const stopoutClusterBlockCount = Math.max(0, Math.floor(safeNumber(options.stopoutClusterBlockCount ?? env.STOCK_SCANNER_STOPOUT_CLUSTER_BLOCK_COUNT, 2)));
   const maxBuyRiskScore = Math.max(0, safeNumber(options.maxBuyRiskScore ?? env.STOCK_SCANNER_MAX_BUY_RISK_SCORE, 70));
@@ -243,11 +252,11 @@ function createStockScanner(options = {}) {
   const scannerSelectionV2AuthorityEnabled = options.scannerSelectionV2AuthorityEnabled ?? parseBool(env.SCANNER_SELECTION_V2_AUTHORITY_ENABLED, false);
   const scannerSelectionV2OutcomeTrackingEnabled = options.scannerSelectionV2OutcomeTrackingEnabled ?? parseBool(env.SCANNER_SELECTION_V2_OUTCOME_TRACKING_ENABLED, scannerSelectionV2ShadowEnabled);
   const scannerSelectionV2Config = {
-    selectionV2MaxSpreadPct: safeNumber(options.selectionV2MaxSpreadPct ?? env.SCANNER_SELECTION_V2_MAX_SPREAD_PCT, stricterLiveEntryDefaults ? 2.0 : 2.5),
-    selectionV2HardBlockSpreadPct: safeNumber(options.selectionV2HardBlockSpreadPct ?? env.SCANNER_SELECTION_V2_HARD_BLOCK_SPREAD_PCT, 5),
-    selectionV2MinRelativeVolume: safeNumber(options.selectionV2MinRelativeVolume ?? env.SCANNER_SELECTION_V2_MIN_RELATIVE_VOLUME, stricterLiveEntryDefaults ? 0.75 : 0.25),
+    selectionV2MaxSpreadPct: safeNumber(options.selectionV2MaxSpreadPct ?? env.SCANNER_SELECTION_V2_MAX_SPREAD_PCT, isLive ? 0.35 : (stricterLiveEntryDefaults ? 2.0 : 2.5)),
+    selectionV2HardBlockSpreadPct: safeNumber(options.selectionV2HardBlockSpreadPct ?? env.SCANNER_SELECTION_V2_HARD_BLOCK_SPREAD_PCT, isLive ? 0.50 : 5),
+    selectionV2MinRelativeVolume: safeNumber(options.selectionV2MinRelativeVolume ?? env.SCANNER_SELECTION_V2_MIN_RELATIVE_VOLUME, isLive ? 1.0 : (stricterLiveEntryDefaults ? 0.75 : 0.25)),
     selectionV2MinFreshnessScore: safeNumber(options.selectionV2MinFreshnessScore ?? env.SCANNER_SELECTION_V2_MIN_FRESHNESS_SCORE, stricterLiveEntryDefaults ? 60 : 35),
-    selectionV2MaxVwapExtensionPct: safeNumber(options.selectionV2MaxVwapExtensionPct ?? env.SCANNER_SELECTION_V2_MAX_VWAP_EXTENSION_PCT, 7),
+    selectionV2MaxVwapExtensionPct: safeNumber(options.selectionV2MaxVwapExtensionPct ?? env.SCANNER_SELECTION_V2_MAX_VWAP_EXTENSION_PCT, isLive ? 3.5 : 7),
     selectionV2SpreadPenaltyThresholdPct: safeNumber(options.selectionV2SpreadPenaltyThresholdPct ?? env.SCANNER_SELECTION_V2_SPREAD_PENALTY_THRESHOLD_PCT, 0.75),
     selectionV2RegularWatchMaxBonus: safeNumber(options.selectionV2RegularWatchMaxBonus ?? env.SCANNER_SELECTION_V2_REGULAR_WATCH_MAX_BONUS, 12),
     selectionV2RegularWatchMaxAgeSeconds: safeNumber(options.selectionV2RegularWatchMaxAgeSeconds ?? env.SCANNER_SELECTION_V2_REGULAR_WATCH_MAX_AGE_SECONDS, 180),
@@ -2376,6 +2385,8 @@ function buildCandidates(bundle, options = {}) {
       requireMultiSourceConfirmation: options.requireMultiSourceConfirmation,
       singleSourceMomentumEnabled: options.singleSourceMomentumEnabled,
       singleSourceMomentumMinRankScore: options.singleSourceMomentumMinRankScore,
+      minStockPrice: options.minStockPrice,
+      maxAllowedSpreadPct: options.maxAllowedSpreadPct,
       minMovePct: options.minMovePct,
       requireRecentMomentum: options.requireRecentMomentum,
       minRecentMovePct: options.minRecentMovePct,
@@ -3980,6 +3991,24 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
   const minBuyNotional = Math.max(1, safeNumber(options.minBuyNotional ?? options.allocation?.floor ?? 25, 25));
   if (!Number.isFinite(notional) || notional <= 0) {
     options.skipTracker?.record?.('BELOW_MINIMUM_BUY_NOTIONAL', { symbol, notional });
+    return null;
+  }
+  const minStockPrice = Math.max(0, safeNumber(options.minStockPrice ?? options.minPrice, 0));
+  if (minStockPrice > 0 && currentPrice < minStockPrice) {
+    options.skipTracker?.record?.('PRICE_BELOW_MINIMUM_FLOOR', {
+      symbol,
+      current_price: roundEquityPrice(currentPrice),
+      min_price: minStockPrice,
+    });
+    return null;
+  }
+  const maxAllowedSpreadPct = Math.max(0, safeNumber(options.maxAllowedSpreadPct ?? options.maxSpreadHardBlockPct, 0));
+  if (maxAllowedSpreadPct > 0 && spreadPct > maxAllowedSpreadPct) {
+    options.skipTracker?.record?.('SPREAD_TOO_WIDE', {
+      symbol,
+      spread_pct: roundScore(spreadPct),
+      max_spread_pct: maxAllowedSpreadPct,
+    });
     return null;
   }
   const minMovePct = Math.max(0, safeNumber(options.minMovePct, 0));
