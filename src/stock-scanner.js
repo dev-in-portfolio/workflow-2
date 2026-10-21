@@ -183,6 +183,7 @@ function createStockScanner(options = {}) {
   const isLive = isLiveExecutionMode(env, options);
   const minStockPrice = Math.max(0, safeNumber(options.minStockPrice ?? options.minPrice ?? env.STOCK_SCANNER_MIN_PRICE, isLive ? 12.0 : 0));
   const maxAllowedSpreadPct = Math.max(0, safeNumber(options.maxAllowedSpreadPct ?? options.maxSpreadPct ?? env.STOCK_SCANNER_MAX_SPREAD_PCT, isLive ? 0.35 : 0));
+  const minVolume = Math.max(0, safeNumber(options.minVolume ?? options.minLiquidityVolume ?? env.STOCK_SCANNER_MIN_VOLUME ?? env.MIN_VOLUME, isLive ? 25000 : 0));
   const minMovePct = Math.max(0, safeNumber(options.minMovePct ?? scannerConfig.minMovePct ?? env.STOCK_SCANNER_MIN_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minMovePct : 0));
   const requireRecentMomentum = options.requireRecentMomentum ?? scannerConfig.requireRecentMomentum ?? parseBool(env.STOCK_SCANNER_REQUIRE_RECENT_MOMENTUM, stricterLiveEntryDefaults);
   const minRecentMovePct = Math.max(0, safeNumber(options.minRecentMovePct ?? scannerConfig.minRecentMovePct ?? env.STOCK_SCANNER_MIN_RECENT_MOVE_PCT, stricterLiveEntryDefaults ? LIVE_STOCK_POLICY_DEFAULTS.minRecentMovePct : 0.03));
@@ -317,6 +318,7 @@ function createStockScanner(options = {}) {
     timer: null,
     lastRunAt: null,
     hotSlotRotation: null,
+    riskRejectedCooldowns: new Map(),
   };
   let latestSourceUniverse = null;
   let latestActiveSymbols = approvedSymbols.slice();
@@ -765,6 +767,9 @@ function createStockScanner(options = {}) {
         singleProviderMinOpportunityScore,
         singleProviderMaxSpreadPct,
         singleProviderMinRelativeVolume,
+        minStockPrice,
+        maxAllowedSpreadPct,
+        minVolume,
         minMovePct,
         requireRecentMomentum,
         minRecentMovePct,
@@ -788,6 +793,7 @@ function createStockScanner(options = {}) {
         regularWatchRankingEnabled,
         regularWatchPositionAwarenessEnabled,
         excludedBuySymbols,
+        riskRejectedCooldowns: state.riskRejectedCooldowns,
         recentTradePenalties,
         antiChurnState,
         antiChurnSummary,
@@ -938,6 +944,9 @@ function createStockScanner(options = {}) {
           singleProviderMinOpportunityScore,
           singleProviderMaxSpreadPct,
           singleProviderMinRelativeVolume,
+          minStockPrice,
+          maxAllowedSpreadPct,
+          minVolume,
           minMovePct,
           requireRecentMomentum,
           minRecentMovePct,
@@ -961,6 +970,7 @@ function createStockScanner(options = {}) {
           regularWatchRankingEnabled,
           regularWatchPositionAwarenessEnabled,
           excludedBuySymbols,
+          riskRejectedCooldowns: state.riskRejectedCooldowns,
           recentTradePenalties,
           antiChurnState,
           antiChurnSummary,
@@ -1158,6 +1168,13 @@ function createStockScanner(options = {}) {
           const reasons = responseBody?.reason_codes || responseBody?.riskDecision?.reason_codes || responseBody?.risk_decision?.reason_codes || [];
           for (const reason of Array.isArray(reasons) ? reasons : [reasons].filter(Boolean)) {
             skipTracker.record(reason || 'RISK_REJECTED', { symbol: candidate.symbol, stage: 'risk' });
+          }
+          if (candidate.payload?.side === 'buy' && state.riskRejectedCooldowns) {
+            const cooldownMs = 5 * 60 * 1000;
+            state.riskRejectedCooldowns.set(normalizeWatchSymbol(candidate.symbol), {
+              expiresAt: Date.now() + cooldownMs,
+              reasons: Array.isArray(reasons) ? reasons : [reasons].filter(Boolean),
+            });
           }
         }
         return result;
@@ -2392,6 +2409,7 @@ function buildCandidates(bundle, options = {}) {
       singleSourceMomentumMinRankScore: options.singleSourceMomentumMinRankScore,
       minStockPrice: options.minStockPrice,
       maxAllowedSpreadPct: options.maxAllowedSpreadPct,
+      minVolume: options.minVolume,
       minMovePct: options.minMovePct,
       requireRecentMomentum: options.requireRecentMomentum,
       minRecentMovePct: options.minRecentMovePct,
@@ -2407,6 +2425,7 @@ function buildCandidates(bundle, options = {}) {
       sellMaxPriceDiffPct: options.sellMaxPriceDiffPct,
       assetType: 'stock',
       excludedBuySymbols: options.excludedBuySymbols,
+      riskRejectedCooldowns: options.riskRejectedCooldowns,
       riskBudgetSizingEnabled: options.riskBudgetSizingEnabled,
       positionSizingMode: options.positionSizingMode,
       maxBuyingPowerDeploymentPct: options.maxBuyingPowerDeploymentPct,
@@ -3022,6 +3041,15 @@ function buildStockCandidateForSymbol(symbol, snapshot, latestQuote, options = {
   if (!options.allowRotationBuyEvaluation && options.portfolio?.remaining_position_slots !== null && options.portfolio?.remaining_position_slots <= 0) {
     if (previewMode) previewReasonCodes.push('MAX_POSITION_SLOTS_FILLED');
     else return skip('MAX_POSITION_SLOTS_FILLED');
+  }
+  const riskRejectedCooldown = options.riskRejectedCooldowns?.get?.(normalizeWatchSymbol(symbol));
+  if (riskRejectedCooldown) {
+    if (Date.now() < riskRejectedCooldown.expiresAt) {
+      if (previewMode) previewReasonCodes.push('RISK_REJECTED_COOLDOWN');
+      else return skip('RISK_REJECTED_COOLDOWN', { symbol, reasons: riskRejectedCooldown.reasons });
+    } else {
+      options.riskRejectedCooldowns.delete(normalizeWatchSymbol(symbol));
+    }
   }
   if (Array.isArray(options.excludedBuySymbols) && options.excludedBuySymbols.includes(symbol)) {
     if (previewMode) previewReasonCodes.push('SYMBOL_EXCLUDED_FROM_BUYS');
@@ -4013,6 +4041,18 @@ function buildBuyCandidate({ symbol, snapshot, latestQuote, currentPrice, previo
       symbol,
       spread_pct: roundScore(spreadPct),
       max_spread_pct: maxAllowedSpreadPct,
+    });
+    return null;
+  }
+  const minVolume = Math.max(0, safeNumber(options.minVolume, 0));
+  const minuteVolume = safeNumber(snapshot.minuteBar?.v ?? 0, 0);
+  const dailyVolume = safeNumber(snapshot.prevDailyBar?.v ?? snapshot.dailyBar?.v ?? 0, 0);
+  const candidateVolume = Math.max(minuteVolume, dailyVolume, minuteVolume * currentPrice, dailyVolume * currentPrice);
+  if (minVolume > 0 && candidateVolume < minVolume) {
+    options.skipTracker?.record?.('MIN_VOLUME_NOT_MET', {
+      symbol,
+      volume: candidateVolume,
+      min_volume: minVolume,
     });
     return null;
   }

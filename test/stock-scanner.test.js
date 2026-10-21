@@ -3284,3 +3284,54 @@ test('stock scanner skips wide spread stocks when maxAllowedSpreadPct is enabled
   });
   assert.equal(candidate, null);
 });
+
+
+test('stock scanner skips low volume candidates when minVolume is enabled', () => {
+  const skips = [];
+  const candidate = buildStockCandidateForSymbol('VIVO', {
+    latestQuote: { bp: 20.00, ap: 20.04, t: '2026-10-20T13:45:00.000Z' },
+    latestTrade: { p: 20.02, t: '2026-10-20T13:45:00.000Z' },
+    minuteBar: { v: 100, h: 20.05, l: 20.00, t: '2026-10-20T13:45:00.000Z' },
+    dailyBar: { v: 500 },
+    prevDailyBar: { c: 19.50, v: 500 },
+  }, {
+    bp: 20.00, ap: 20.04, t: '2026-10-20T13:45:00.000Z',
+  }, {
+    receivedAt: '2026-10-20T13:45:01.000Z',
+    minStockPrice: 12.0,
+    maxAllowedSpreadPct: 0.35,
+    minVolume: 25000,
+    notional: 80,
+    skipTracker: { record: (code, payload) => skips.push({ code, payload }) },
+  });
+  assert.equal(candidate, null);
+  assert.equal(skips.some((s) => s.code === 'MIN_VOLUME_NOT_MET'), true);
+});
+
+test('stock scanner skips risk-rejected candidates during cooldown', () => {
+  const skips = [];
+  const riskRejectedCooldowns = new Map();
+  riskRejectedCooldowns.set('VIVO', {
+    expiresAt: Date.now() + 300000,
+    reasons: ['MIN_VOLUME_NOT_MET'],
+  });
+
+  const candidate = buildStockCandidateForSymbol('VIVO', {
+    latestQuote: { bp: 20.00, ap: 20.04, t: '2026-10-20T13:45:00.000Z' },
+    latestTrade: { p: 20.02, t: '2026-10-20T13:45:00.000Z' },
+    minuteBar: { v: 50000, h: 20.05, l: 20.00, t: '2026-10-20T13:45:00.000Z' },
+    prevDailyBar: { c: 19.50, v: 500000 },
+  }, {
+    bp: 20.00, ap: 20.04, t: '2026-10-20T13:45:00.000Z',
+  }, {
+    receivedAt: '2026-10-20T13:45:01.000Z',
+    minStockPrice: 12.0,
+    maxAllowedSpreadPct: 0.35,
+    minVolume: 25000,
+    notional: 80,
+    riskRejectedCooldowns,
+    skipTracker: { record: (code, payload) => skips.push({ code, payload }) },
+  });
+  assert.equal(candidate, null);
+  assert.equal(skips.some((s) => s.code === 'RISK_REJECTED_COOLDOWN'), true);
+});
