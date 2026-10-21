@@ -619,6 +619,8 @@ function createStockScanner(options = {}) {
             nearCloseManageOnlyMinutes,
             maxDailyDrawdownDollars: options.maxDailyDrawdownDollars ?? env.MAX_DAILY_DRAWDOWN_DOLLARS,
             maxRollingDrawdownDollars: options.maxRollingDrawdownDollars ?? env.MAX_ROLLING_DRAWDOWN_DOLLARS,
+            highChurnTradeCount: options.highChurnTradeCount ?? env.LOW_PROFIT_HIGH_CHURN_TRADE_COUNT,
+            badSessionMinTrades: options.badSessionMinTrades ?? env.BAD_SESSION_MIN_TRADES,
           })
           : {
             status: 'CLEAR',
