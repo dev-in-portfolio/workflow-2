@@ -158,6 +158,8 @@ function render(snapshot) {
   $('reportDate').textContent = snapshot?.live?.report?.date || snapshot?.live?.status?.started_at || missingText;
   renderPositionCard($('positionOne'), exitPositions[0], snapshot, { primary: true, slotLabel: 'Primary position' });
   renderPositionCard($('positionTwo'), exitPositions[1], snapshot, { primary: false, slotLabel: 'Secondary position' });
+  renderPositionCard($('positionThree'), exitPositions[2], snapshot, { primary: false, slotLabel: 'Position 3' });
+  renderPositionCard($('positionFour'), exitPositions[3], snapshot, { primary: false, slotLabel: 'Position 4' });
   renderRecentTrades(recentTrades, summary.last_trade_at);
   renderGuards(live?.session_guards, live?.setup_fatigue_summary);
   renderCandidateLifecycle(live?.candidate_lifecycle_summary || live?.scanner_runtime?.candidate_lifecycle_summary);
