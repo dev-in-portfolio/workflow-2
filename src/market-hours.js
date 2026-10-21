@@ -72,7 +72,13 @@ function resolveIntradayStockRegime(date = new Date(), options = {}) {
       minutes_until_close: minutesUntilClose,
     };
   }
-  const middayLullThrottleEnabled = Boolean(options.middayLullThrottleEnabled ?? (process.env.MIDDAY_LULL_THROTTLE_ENABLED === 'true' || process.env.LIVE_TRADING_ENABLED === 'true'));
+  const middayLullThrottleEnabled = Boolean(
+    options.middayLullThrottleEnabled ?? (
+      process.env.MIDDAY_LULL_THROTTLE_ENABLED !== undefined
+        ? process.env.MIDDAY_LULL_THROTTLE_ENABLED === 'true'
+        : false
+    )
+  );
   const middayLullStartMinutes = Math.max(0, Number(options.middayLullStartMinutes ?? 120) || 120);
   const middayLullEndMinutes = Math.max(middayLullStartMinutes, Number(options.middayLullEndMinutes ?? 240) || 240);
   if (middayLullThrottleEnabled && minutesSinceOpen >= middayLullStartMinutes && minutesSinceOpen < middayLullEndMinutes) {
