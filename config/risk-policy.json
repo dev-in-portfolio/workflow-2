@@ -3,6 +3,7 @@
   "killSwitch": false,
   "maxDailyLoss": 6,
   "maxPositionNotional": 1000,
+  "maxOpenPositions": 3,
   "maxTradesPerDay": 4,
   "maxExposurePerAsset": 1500,
   "maxExposurePerSector": 3000,
