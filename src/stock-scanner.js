@@ -244,7 +244,7 @@ function createStockScanner(options = {}) {
   const brokerReentryGuardEnabled = options.brokerReentryGuardEnabled
     ?? parseBool(env.BROKER_REENTRY_GUARD_ENABLED, runtimeStateEnabled && keepAlive);
   const requireMarketOpen = options.requireMarketOpen ?? parseBool(env.STOCK_SCANNER_REQUIRE_MARKET_OPEN, true);
-  const openingNoiseMinutes = Math.max(0, safeNumber(options.openingNoiseMinutes ?? env.STOCK_SCANNER_OPENING_NOISE_MINUTES, 5));
+  const openingNoiseMinutes = Math.max(0, safeNumber(options.openingNoiseMinutes ?? env.STOCK_SCANNER_OPENING_NOISE_MINUTES, stricterLiveEntryDefaults ? 15 : 5));
   const nearCloseManageOnlyMinutes = Math.max(0, safeNumber(options.nearCloseManageOnlyMinutes ?? env.STOCK_SCANNER_NEAR_CLOSE_MANAGE_ONLY_MINUTES, 15));
   const volatilityStopEnabled = options.volatilityStopEnabled ?? parseBool(env.STOCK_SCANNER_VOLATILITY_STOP_ENABLED, false);
   const marketQualityRankingEnabled = options.marketQualityRankingEnabled ?? parseBool(env.STOCK_SCANNER_MARKET_QUALITY_RANKING_ENABLED, false);
@@ -617,6 +617,8 @@ function createStockScanner(options = {}) {
             intradayRegime: computedIntradayRegime,
             openingNoiseMinutes,
             nearCloseManageOnlyMinutes,
+            maxDailyDrawdownDollars: options.maxDailyDrawdownDollars ?? env.MAX_DAILY_DRAWDOWN_DOLLARS,
+            maxRollingDrawdownDollars: options.maxRollingDrawdownDollars ?? env.MAX_ROLLING_DRAWDOWN_DOLLARS,
           })
           : {
             status: 'CLEAR',
@@ -651,6 +653,7 @@ function createStockScanner(options = {}) {
         }
         : allocateBuyNotional({
             targetNotional: notional,
+            maxBuyNotional: notional,
             minBuyNotional,
             portfolio,
             requireBrokerCash: true,
